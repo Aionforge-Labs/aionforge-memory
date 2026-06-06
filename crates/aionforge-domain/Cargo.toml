@@ -10,6 +10,19 @@ homepage.workspace = true
 description = "Memory-kind domain types and subsystem contract traits for Aionforge Memory (type-only, no I/O)."
 
 [dependencies]
+serde.workspace = true
+serde_json.workspace = true
+jiff.workspace = true
+thiserror.workspace = true
+blake3.workspace = true
+ulid.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+jiff.workspace = true
+ulid.workspace = true
 
 [lints]
 workspace = true

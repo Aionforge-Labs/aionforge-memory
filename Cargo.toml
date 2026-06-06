@@ -55,7 +55,7 @@ print_stdout = "warn"
 # selene-db denies multiple-versions and Aionforge consumes it as a path dep, so
 # the shared transitive tree must agree. Verified against selene-db/Cargo.toml.
 serde = { version = "1.0", features = ["derive", "rc"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["float_roundtrip"] }
 thiserror = "2.0"
 miette = { version = "7.6", features = ["derive"] }
 jiff = { version = "0.2", features = ["serde"] }
@@ -63,6 +63,14 @@ uuid = { version = "1.23", features = ["v4", "v7", "serde"] }
 blake3 = "1.8"
 tracing = "0.1"
 metrics = "0.24"
+
+# --- New top-level pins (selene-db has none of these). ---
+ulid = "1.2"
+
+# --- Test / dev dependencies (versions match selene-db). ---
+proptest = { version = "1.11", default-features = false, features = ["std"] }
+insta = "1.47"
+rstest = "0.26"
 
 # --- selene-db substrate (path dep; tracks the `development` branch). ---
 # Declared here so aionforge-store can opt in at M0.T03. Unused workspace deps are
