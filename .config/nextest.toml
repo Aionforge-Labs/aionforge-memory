@@ -1,0 +1,19 @@
+# nextest configuration for local and CI test runs.
+# See https://nexte.st/docs/configuration/ for the profile schema.
+
+[profile.default]
+# Local development: surface slow tests without failing normal iteration.
+slow-timeout = { period = "5s", terminate-after = 12 }
+
+# Absorb rare local timing noise in sleep-bearing concurrency/consolidation tests.
+retries = 1
+
+[profile.ci]
+# CI runners are slower than local M-series machines on corpus-style tests.
+slow-timeout = { period = "5s", terminate-after = 24 }
+
+# CI must not hide flakes behind retries.
+retries = 0
+
+# Run the full CI test set even if one test fails.
+fail-fast = false

@@ -1,0 +1,129 @@
+# Fast iteration CI for aionforge-memory — runs on PRs into `development`.
+#
+# Workflow model (mirrors selene-db): everyday work merges into `development`
+# behind this CHEAP gate + local hooks; releases batch `development` -> `main`
+# where release.yml runs the full suite. This gate is deliberately cheap — no
+# Rust compilation on source-only PRs — so changes iterate fast.
+#
+# Kept here (near-instant): rustfmt, file-size cap (700 LOC), no-secret scan,
+# the GQL parameter-binding gate, and (only when dependency manifests change)
+# cargo-deny + THIRDPARTY.md currency.
+#
+# Security: no `${{ github.event.* }}` in any `run:` (confined to if:/with:/env:).
+
+name: ci
+
+on:
+  pull_request:
+    branches: [development]
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: short
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    name: detect changes
+    if: github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    outputs:
+      deps: ${{ steps.filter.outputs.deps }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            deps:
+              - 'Cargo.lock'
+              - 'Cargo.toml'
+              - 'crates/*/Cargo.toml'
+              - 'deny.toml'
+              - 'about.hbs'
+              - 'about.toml'
+
+  fmt:
+    name: fmt
+    if: github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  file-size-cap:
+    name: file-size cap (700 LOC)
+    if: github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash .github/scripts/check-file-size.sh
+
+  no-secret-scan:
+    name: no-secret scan
+    if: github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash .github/scripts/check-no-secrets.sh
+
+  gql-binding-gate:
+    name: GQL parameter-binding gate
+    if: github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash .github/scripts/check-no-gql-interpolation.sh
+
+  deny:
+    name: cargo-deny
+    needs: changes
+    if: |
+      (github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch')
+      && needs.changes.outputs.deps == 'true'
+    runs-on: ubuntu-latest
+    env:
+      SELENE_DB_REF: ${{ vars.SELENE_DB_REF || 'development' }}
+    steps:
+      - uses: actions/checkout@v4
+      # cargo-deny runs `cargo metadata`, which must resolve the selene-db path
+      # dependency; clone it as a sibling at the configured ref.
+      - name: clone selene-db substrate
+        run: git clone --filter=blob:none https://github.com/jscott3201/selene-db.git ../selene-db
+          && git -C ../selene-db checkout "$SELENE_DB_REF"
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check bans licenses sources
+
+  thirdparty-current:
+    name: third-party attribution current
+    needs: changes
+    if: |
+      (github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch')
+      && needs.changes.outputs.deps == 'true'
+    runs-on: ubuntu-latest
+    env:
+      SELENE_DB_REF: ${{ vars.SELENE_DB_REF || 'development' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: clone selene-db substrate
+        run: git clone --filter=blob:none https://github.com/jscott3201/selene-db.git ../selene-db
+          && git -C ../selene-db checkout "$SELENE_DB_REF"
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about
+      - run: bash .github/scripts/check-thirdparty-current.sh

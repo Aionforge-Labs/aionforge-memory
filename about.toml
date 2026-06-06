@@ -1,0 +1,47 @@
+# cargo-about configuration. Drives generation of THIRDPARTY.md from Cargo.lock.
+# Verified in CI by .github/scripts/check-thirdparty-current.sh. The accepted
+# list mirrors deny.toml's [licenses].allow.
+
+accepted = [
+  "MIT",
+  "MIT-0",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-DFS-2016",
+  "Unicode-3.0",
+  "CC0-1.0",
+  "Zlib",
+  "BSL-1.0",
+  "MPL-2.0",
+]
+
+# License-file discovery clarifications. cargo-about's default discovery is
+# filesystem-order-dependent, which makes THIRDPARTY.md non-deterministic across
+# macOS and Linux for crates shipping multiple license files. Both crates below
+# reach Aionforge's tree (rkyv via the selene-db path dep; mimalloc as the binary
+# allocator), so the same pins selene-db uses apply here.
+
+# rkyv_derive ships a top-level MIT LICENSE plus a second src/serde/LICENSE
+# (vendored serde MIT, no copyright header). Pin to the top-level file so the
+# regenerated THIRDPARTY.md is byte-deterministic across environments.
+[rkyv_derive.clarify]
+license = "MIT"
+
+[[rkyv_derive.clarify.files]]
+path = "LICENSE"
+checksum = "635111a955495b5d8d34b8052f69656e8e45f6437f9266329077b9aad5fbe8d3"
+license = "MIT"
+
+# libmimalloc-sys ships the Rust-wrapper MIT license at the crate root and the
+# bundled C allocator MIT license under c_src. Pin the allocator license so
+# THIRDPARTY.md is deterministic and names the Microsoft/Daan Leijen copyright.
+[libmimalloc-sys.clarify]
+license = "MIT"
+
+[[libmimalloc-sys.clarify.files]]
+path = "c_src/mimalloc/v3/LICENSE"
+checksum = "82ade5d7d9b029044b5fbbc326207fc47c2d44ee4dd71e8a559c36d728217de9"
+license = "MIT"

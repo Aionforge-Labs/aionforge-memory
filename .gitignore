@@ -1,0 +1,15 @@
+/target
+.DS_Store
+*.swp
+.idea/
+.vscode/
+.direnv/
+.claude/
+node_modules/
+.env
+.env.*
+
+# Local working directories — spec, planning, research, design artifacts.
+# These are working documents (and the frozen build spec) that never get
+# committed. The leading underscore is the convention; the glob covers all.
+_*/

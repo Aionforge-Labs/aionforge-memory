@@ -1,0 +1,28 @@
+aionforge-memory
+Copyright 2026 Justin Scott
+
+This product is licensed under the dual MIT OR Apache-2.0 license; see
+LICENSE-MIT and LICENSE-APACHE at the repo root.
+
+----------------------------------------------------------------------------
+
+Third-party attributions
+----------------------------------------------------------------------------
+
+Transitive dependency attributions (license texts and per-crate copyright
+notices required by Apache-2.0 / BSD / MPL-2.0 / etc.) are maintained in
+THIRDPARTY.md at the repo root, generated automatically from Cargo.lock by
+cargo-about. CI verifies the file is current; drift is a merge block.
+
+This product builds on selene-db (https://github.com/jscott3201/selene-db),
+also dual-licensed MIT OR Apache-2.0, consumed as a path dependency.
+
+This NOTICE file lists source-level adaptations or vendored source fixtures:
+code or data that was copied or non-trivially derived from a third-party
+project rather than pulled in as a crate dependency.
+
+(None at this time.)
+
+If you add a source-level adaptation in the future, append a section here
+naming the upstream source, its license (SPDX), and a brief note on what
+was adapted.

@@ -1,0 +1,68 @@
+# Nightly advisory-drift + full validation for aionforge-memory.
+#
+# Runs on a schedule and on push to `main`. Catches RUSTSEC advisories that
+# appear between release gates (the release gate audits at PR time; advisories
+# land continuously) and re-runs the full macOS validation off the per-PR path.
+# As the substrate moves on `development`, the scheduled run also surfaces
+# substrate drift early (it builds against the current SELENE_DB_REF).
+#
+# Security: no `${{ github.event.* }}` in any `run:` (confined to if:/with:/env:).
+
+name: nightly
+
+on:
+  schedule:
+    - cron: "27 8 * * *"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: nightly-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: short
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+  SELENE_DB_REF: ${{ vars.SELENE_DB_REF || 'development' }}
+
+permissions:
+  contents: read
+
+jobs:
+  audit-drift:
+    name: cargo-audit advisory drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: clone selene-db substrate
+        run: git clone --filter=blob:none https://github.com/jscott3201/selene-db.git ../selene-db
+          && git -C ../selene-db checkout "$SELENE_DB_REF"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - run: cargo audit --color always
+
+  macos-validation:
+    name: macOS full validation
+    runs-on: macos-latest
+    env:
+      CARGO_PROFILE_TEST_DEBUG: 0
+    steps:
+      - uses: actions/checkout@v4
+      - name: clone selene-db substrate
+        run: git clone --filter=blob:none https://github.com/jscott3201/selene-db.git ../selene-db
+          && git -C ../selene-db checkout "$SELENE_DB_REF"
+      - uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+      - name: clippy + tests
+        run: |
+          cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+          cargo nextest run --workspace --locked --all-features --profile ci
+          cargo test --workspace --locked --all-features --doc

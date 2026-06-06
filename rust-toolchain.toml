@@ -1,0 +1,7 @@
+# Pinned to match the selene-db substrate exactly (edition 2024 / 1.95.0).
+# Every Aionforge build pins this file at the workspace root; CI uses the
+# same pinned channel (not @stable) so CI and local builds agree exactly.
+[toolchain]
+channel = "1.95.0"
+components = ["rustfmt", "clippy"]
+profile = "default"

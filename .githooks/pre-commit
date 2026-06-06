@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# aionforge-memory fast pre-commit gate — mirrors the cheap PR->development CI.
+# Heavy checks (clippy, tests) run in .githooks/pre-push and the release gate.
+# Skip once:    git commit --no-verify
+# Skip session: export AIONFORGE_SKIP_HOOKS=1
+set -euo pipefail
+[ -n "${AIONFORGE_SKIP_HOOKS:-}" ] && { echo "[pre-commit] skipped (AIONFORGE_SKIP_HOOKS)"; exit 0; }
+cd "$(git rev-parse --show-toplevel)"
+
+if [ -f Cargo.toml ]; then
+  echo "[pre-commit] cargo fmt --all --check"
+  cargo fmt --all --check
+else
+  echo "[pre-commit] (no Cargo.toml yet — skipping cargo fmt)"
+fi
+
+echo "[pre-commit] file-size cap (700 LOC)"
+bash .github/scripts/check-file-size.sh
+
+echo "[pre-commit] no-secret scan"
+bash .github/scripts/check-no-secrets.sh
+
+echo "[pre-commit] GQL parameter-binding gate"
+bash .github/scripts/check-no-gql-interpolation.sh
+
+echo "[pre-commit] ok"

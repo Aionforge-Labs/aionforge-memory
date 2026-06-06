@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# aionforge-memory pre-push gate — FAST lint/build guard only.
+#
+# The full nextest + doctest suite intentionally does NOT run here: it takes
+# minutes and is redundant with (a) agent workflows that run the full gates
+# before pushing, and (b) .github/workflows/release.yml, which runs the complete
+# suite on the development -> main release PR. Keeping pre-push to a fast clippy
+# lets per-change pushes to `development` stay quick.
+# Skip once:    git push --no-verify
+# Skip session: export AIONFORGE_SKIP_HOOKS=1
+set -euo pipefail
+[ -n "${AIONFORGE_SKIP_HOOKS:-}" ] && { echo "[pre-push] skipped (AIONFORGE_SKIP_HOOKS)"; exit 0; }
+cd "$(git rev-parse --show-toplevel)"
+
+if [ -f Cargo.toml ]; then
+  echo "[pre-push] cargo clippy --workspace --locked -- -D warnings  (fast; full suite at CI release gate)"
+  cargo clippy --workspace --locked -- -D warnings
+else
+  echo "[pre-push] (no Cargo.toml yet — skipping clippy)"
+fi
+
+echo "[pre-push] ok"

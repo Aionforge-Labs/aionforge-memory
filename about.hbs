@@ -1,0 +1,33 @@
+# Third-party attributions
+
+This file is generated from `Cargo.lock` by `cargo-about` per the attribution
+policy in `AGENTS.md`. Do not hand-edit; regenerate after any dependency change:
+
+```bash
+cargo about generate about.hbs > THIRDPARTY.md
+```
+
+CI enforces that this file is in sync with `Cargo.lock` (see
+`.github/scripts/check-thirdparty-current.sh`). Drift blocks merge.
+
+aionforge-memory itself is dual-licensed MIT OR Apache-2.0; see `LICENSE-MIT`
+and `LICENSE-APACHE`. The licenses below cover the transitive dependencies
+pulled in via `cargo build`.
+
+---
+
+{{#each licenses}}
+## {{name}} ({{id}})
+
+Used by:
+{{#each used_by}}
+- {{crate.name}} v{{crate.version}}{{#if crate.repository}} — {{crate.repository}}{{/if}}
+{{/each}}
+
+```
+{{text}}
+```
+
+---
+
+{{/each}}

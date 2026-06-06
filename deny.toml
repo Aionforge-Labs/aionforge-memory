@@ -1,0 +1,85 @@
+# cargo-deny baseline for aionforge-memory.
+#
+# Mirrors the selene-db substrate's posture (Aionforge consumes selene-db as a
+# PATH dependency and inherits its transitive tree, so the license allow-list,
+# the rustls-only bans, and the duplicate-version skips must agree):
+#   - rustls-only TLS posture (no native-tls / openssl* / schannel /
+#     security-framework) PLUS aws-lc-rs/aws-lc-sys banned so the rustls *ring*
+#     provider is the only crypto backend (musl/distroless-clean — GAP-7/deploy)
+#   - dual MIT OR Apache-2.0 posture; permissive allow-list for transitive deps;
+#     MPL-2.0 allowed (imbl via selene-db; webpki-roots)
+#   - crates.io as the only registry; git deps must be pinned to a sha
+
+[graph]
+all-features = false
+no-default-features = false
+
+[advisories]
+version = 2
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked = "deny"
+ignore = []
+# Documented advisory ignores must carry reason + owner.
+
+[licenses]
+version = 2
+confidence-threshold = 0.93
+allow = [
+  "MIT",
+  "MIT-0",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-DFS-2016",
+  "Unicode-3.0",
+  "CC0-1.0",
+  "Zlib",
+  "BSL-1.0",
+  # MPL-2.0: file-level copyleft (NOT infectious to dependents). Reaches the
+  # tree via imbl (through the selene-db path dep) and webpki-roots. Aionforge
+  # itself stays dual MIT/Apache-2.0.
+  "MPL-2.0",
+]
+exceptions = []
+
+[bans]
+multiple-versions = "deny"
+wildcards = "deny"
+highlight = "all"
+deny = [
+  # rustls-only TLS posture
+  { name = "native-tls" },
+  { name = "openssl-sys" },
+  { name = "openssl-src" },
+  { name = "openssl" },
+  { name = "openssl-probe" },
+  { name = "schannel" },
+  { name = "security-framework" },
+  # Force the rustls *ring* crypto provider: aws-lc-rs needs cmake/Go and fails
+  # on musl, breaking the static/distroless image. ring is musl-clean.
+  { name = "aws-lc-rs" },
+  { name = "aws-lc-sys" },
+]
+# Seeded from selene-db's documented duplicate-version lines (inherited through
+# the path dep). The new tokio/reqwest/hyper/tower/axum/dalek tree will add more
+# duplicate lines on the first `cargo deny` run during M0.T01/T08; each new entry
+# needs a documented, owner-attributed reason added here after lockfile review.
+skip = [
+  { name = "wit-bindgen", version = "0.51.0" },
+  { name = "getrandom", version = "0.3.4" },
+  { name = "r-efi", version = "5.3.0" },
+  { name = "hashbrown", version = "0.16.1" },
+  { name = "cpufeatures", version = "0.2.17" },
+]
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# If hosted CI switches selene-db from a PATH dep to a sha-pinned git dep, add
+# the selene-db repo here (git deps must be sha-pinned, never branch-floating).
+allow-git = []
