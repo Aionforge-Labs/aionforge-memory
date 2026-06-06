@@ -1,0 +1,19 @@
+[package]
+name = "aionforge-consolidate"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Asynchronous consolidation: fact extraction, entity resolution, supersession/contradiction, and summarization."
+
+[dependencies]
+aionforge-domain = { path = "../aionforge-domain", version = "0.1.0" }
+aionforge-store = { path = "../aionforge-store", version = "0.1.0" }
+aionforge-embed = { path = "../aionforge-embed", version = "0.1.0" }
+aionforge-security = { path = "../aionforge-security", version = "0.1.0" }
+
+[lints]
+workspace = true

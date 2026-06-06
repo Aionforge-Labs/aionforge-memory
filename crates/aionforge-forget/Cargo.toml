@@ -1,0 +1,18 @@
+[package]
+name = "aionforge-forget"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Decay and importance, active forgetting, erasure cascade, attested core memory, and drift detection."
+
+[dependencies]
+aionforge-domain = { path = "../aionforge-domain", version = "0.1.0" }
+aionforge-store = { path = "../aionforge-store", version = "0.1.0" }
+aionforge-embed = { path = "../aionforge-embed", version = "0.1.0" }
+
+[lints]
+workspace = true

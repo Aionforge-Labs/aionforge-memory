@@ -1,0 +1,22 @@
+[package]
+name = "aionforge-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "The aionforge single binary: serve, doctor, migrate, and recover subcommands."
+
+[[bin]]
+name = "aionforge"
+path = "src/main.rs"
+
+[dependencies]
+aionforge = { path = "../aionforge", version = "0.1.0" }
+aionforge-mcp = { path = "../aionforge-mcp", version = "0.1.0" }
+aionforge-tui = { path = "../aionforge-tui", version = "0.1.0" }
+
+[lints]
+workspace = true

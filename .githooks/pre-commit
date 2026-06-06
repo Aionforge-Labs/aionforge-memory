@@ -23,4 +23,7 @@ bash .github/scripts/check-no-secrets.sh
 echo "[pre-commit] GQL parameter-binding gate"
 bash .github/scripts/check-no-gql-interpolation.sh
 
+echo "[pre-commit] store-only-selene gate"
+bash .github/scripts/check-store-only-selene.sh
+
 echo "[pre-commit] ok"

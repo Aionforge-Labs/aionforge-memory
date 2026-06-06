@@ -1,0 +1,17 @@
+[package]
+name = "aionforge-trust"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Namespaces, CRDT merge, Ed25519 provenance, attestation/quorum promotion, trust scoring, and the audit subgraph."
+
+[dependencies]
+aionforge-domain = { path = "../aionforge-domain", version = "0.1.0" }
+aionforge-store = { path = "../aionforge-store", version = "0.1.0" }
+
+[lints]
+workspace = true

@@ -1,0 +1,16 @@
+[package]
+name = "aionforge-store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "L0 storage over the selene-db SharedGraph: typed read/write, parameter-bound GQL, schema/migration, and persistence."
+
+[dependencies]
+aionforge-domain = { path = "../aionforge-domain", version = "0.1.0" }
+
+[lints]
+workspace = true

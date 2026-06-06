@@ -87,6 +87,14 @@ jobs:
       - uses: actions/checkout@v4
       - run: bash .github/scripts/check-no-gql-interpolation.sh
 
+  store-only-selene-gate:
+    name: store-only-selene gate
+    if: github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash .github/scripts/check-store-only-selene.sh
+
   deny:
     name: cargo-deny
     needs: changes

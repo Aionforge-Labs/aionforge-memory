@@ -68,11 +68,10 @@ deny = [
 # duplicate lines on the first `cargo deny` run during M0.T01/T08; each new entry
 # needs a documented, owner-attributed reason added here after lockfile review.
 skip = [
-  { name = "wit-bindgen", version = "0.51.0" },
-  { name = "getrandom", version = "0.3.4" },
-  { name = "r-efi", version = "5.3.0" },
-  { name = "hashbrown", version = "0.16.1" },
-  { name = "cpufeatures", version = "0.2.17" },
+  # Empty until the selene-db path dep + heavier frameworks (tokio/reqwest/dalek/
+  # ratatui...) bring duplicate version lines into the tree at M0.T03/T08. selene-db's
+  # documented duplicates (getrandom/wit-bindgen/r-efi/hashbrown/cpufeatures) get
+  # re-added here, each owner-attributed, only once they actually appear.
 ]
 skip-tree = []
 

@@ -1,0 +1,17 @@
+[package]
+name = "aionforge-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Optional Model Context Protocol server surface (Tools, Resources, Prompts) for Aionforge Memory."
+
+[dependencies]
+aionforge-engine = { path = "../aionforge-engine", version = "0.1.0" }
+aionforge-domain = { path = "../aionforge-domain", version = "0.1.0" }
+
+[lints]
+workspace = true

@@ -1,0 +1,15 @@
+[package]
+name = "aionforge-domain"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Memory-kind domain types and subsystem contract traits for Aionforge Memory (type-only, no I/O)."
+
+[dependencies]
+
+[lints]
+workspace = true

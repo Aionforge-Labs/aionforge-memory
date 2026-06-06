@@ -1,0 +1,25 @@
+[package]
+name = "aionforge-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "The Aionforge Memory facade: composes the subsystems, owns lifecycle, and enforces cross-cutting policy."
+
+[dependencies]
+aionforge-domain = { path = "../aionforge-domain", version = "0.1.0" }
+aionforge-store = { path = "../aionforge-store", version = "0.1.0" }
+aionforge-embed = { path = "../aionforge-embed", version = "0.1.0" }
+aionforge-capture = { path = "../aionforge-capture", version = "0.1.0" }
+aionforge-retrieval = { path = "../aionforge-retrieval", version = "0.1.0" }
+aionforge-consolidate = { path = "../aionforge-consolidate", version = "0.1.0" }
+aionforge-procedural = { path = "../aionforge-procedural", version = "0.1.0" }
+aionforge-trust = { path = "../aionforge-trust", version = "0.1.0" }
+aionforge-forget = { path = "../aionforge-forget", version = "0.1.0" }
+aionforge-security = { path = "../aionforge-security", version = "0.1.0" }
+
+[lints]
+workspace = true
