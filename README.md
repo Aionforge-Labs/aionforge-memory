@@ -1,62 +1,72 @@
 # Aionforge Memory
 
-> **Status: early development (pre-alpha).** The architecture and build contract are
-> set; the implementation is being built milestone by milestone. APIs, schema, and
-> surfaces will change. Not yet released.
+> **Status: pre-alpha.** The design is settled and the build is underway, milestone
+> by milestone. Schema, APIs, and surfaces will still move around. Nothing here is
+> released yet.
 
-**Aionforge Memory** is a Rust-native **agentic-memory substrate**: long-term,
-secure, temporally-correct recall for AI agents, built entirely on the native
-surfaces of the embeddable graph engine [`selene-db`](https://github.com/jscott3201/selene-db).
-It gives a single agent cross-session cohesion, gives a multi-agent system a shared
-and provenance-bearing memory plane, and gives every agent a procedural-memory
-(skill) layer.
+Aionforge Memory gives AI agents a real long-term memory: one that remembers across
+sessions, keeps its facts straight over time, and can be shared safely between
+agents. It's a Rust library built on [`selene-db`](https://github.com/jscott3201/selene-db),
+an embeddable graph engine, and it uses that engine's own storage, search, and graph
+machinery instead of bolting on a separate database or vector index.
 
-It is exposed two ways:
+Three things it's good at:
 
-- **As a Rust library** an embedding host links directly (the lowest-latency path).
-- **As an optional [MCP](https://modelcontextprotocol.io) server** (Tools, Resources,
-  Prompts) over stdio and streamable HTTP, for agentic harnesses such as Claude Code,
-  Codex, Copilot, Cursor, and OpenCode.
+- A single agent stops forgetting what happened last session.
+- A team of agents shares one memory plane, and every write carries provenance, so
+  you always know who said what.
+- Agents keep a library of skills (procedures that worked) and bad patterns (ones
+  that didn't).
 
-A read-only [ratatui](https://ratatui.rs) operator TUI and a single CLI binary round
-out the surface. It runs locally on macOS and Linux, or via Docker.
+You can use it two ways. Link the Rust library straight into your host for the
+lowest latency, or run it as an [MCP](https://modelcontextprotocol.io) server over
+stdio or HTTP and point a harness at it (Claude Code, Codex, Copilot, Cursor,
+OpenCode). There's also a read-only [ratatui](https://ratatui.rs) terminal UI for
+watching what the memory is doing, plus a single CLI binary. It runs on macOS and
+Linux, natively or in Docker.
 
-## Honest scope
+## What it is, and what it isn't
 
-Aionforge is **exemplar-based (retrieval) memory**, not weight-based (parametric)
-memory. It improves recall quality, temporal correctness, multi-hop association,
-cross-session cohesion, security, and token efficiency. It does **not** claim to make
-a base model generalize or develop expertise by accumulating memories, and it ships no
-weight-based learning. It runs no inference itself — it calls an external
-OpenAI-compatible endpoint for embeddings (and, optionally, extraction/rerank).
+This is retrieval memory, not learning. It makes an agent recall better, stay
+temporally accurate, follow multi-hop connections, hold together across sessions,
+and waste fewer tokens doing it. It does not make the underlying model smarter, and
+it does not train or fine-tune anything. It runs no inference of its own either;
+embeddings (and optional extraction or reranking) come from an OpenAI-compatible
+endpoint you point it at.
 
-## Design pillars
+We'd rather say that plainly up front than oversell it.
 
-- **Engine-native only** — all storage, indexing, hybrid search (BM25 + dense vectors
-  + graph), and graph algorithms go through selene-db; no bolt-on search engine or
-  external vector index.
-- **Bi-temporal and non-lossy** — facts carry event-time and transaction-time windows;
-  updates supersede rather than destroy; hard erasure is a separate, auditable path.
-- **Two-path writes** — fast millisecond capture plus slow asynchronous consolidation.
-- **Query-class-conditional hybrid retrieval** — rank-fused signals with graph
-  expansion applied only where it helps precision.
-- **Security as a v1 requirement** — provenance, per-writer trust, namespace
-  authorization, quarantine-on-contradiction, structural untrusted-data tagging, and a
-  red-team acceptance suite.
-- **Determinism** — identical inputs and graph state yield identical retrieval
-  ordering; derived state is rebuildable from the primary graph.
+## How it's built
+
+- **Everything goes through the engine.** Storage, BM25 text search, dense vectors,
+  and graph algorithms are all selene-db. No second search engine, no separate vector
+  store.
+- **Time is first-class, and nothing gets thrown away.** Facts record when they were
+  true and when we learned them. A correction supersedes the old fact instead of
+  overwriting it. Hard deletion is its own deliberate, audited path.
+- **Writes split into two lanes.** Capture is fast, on the order of milliseconds, so
+  it never blocks the agent. The slower work (pulling out facts, resolving entities,
+  summarizing) happens in the background.
+- **Retrieval picks its strategy per query.** Lexical, dense, graph, recency, and
+  trust signals get rank-fused, and graph expansion only kicks in for the queries it
+  actually helps.
+- **Security isn't a later milestone.** Provenance, per-writer trust, namespace
+  boundaries, quarantine when a new fact contradicts a trusted one, tagging recalled
+  text as untrusted data, and a red-team suite are all in scope for v1.
+- **Same input, same output.** Given the same graph state, retrieval returns the same
+  ordering every time, and derived state can always be rebuilt from the primary graph.
 
 ## Building
 
-Requires the Rust toolchain pinned in `rust-toolchain.toml` (1.95.0, edition 2024).
+You'll need the toolchain pinned in `rust-toolchain.toml` (Rust 1.95.0, edition 2024).
 
-Aionforge depends on `selene-db` as a path dependency. Check it out as a **sibling**
-directory:
+Aionforge depends on `selene-db` as a path dependency, so check it out right next
+door as a sibling directory:
 
 ```text
 parent/
-├── aionforge-memory/   # this repository
-└── selene-db/          # https://github.com/jscott3201/selene-db (development branch)
+├── aionforge-memory/   # this repo
+└── selene-db/          # github.com/jscott3201/selene-db, development branch
 ```
 
 ```bash
@@ -65,7 +75,7 @@ cargo build --workspace --locked
 cargo nextest run --workspace --locked --all-features
 ```
 
-Install the shared git hooks once per clone:
+Set up the shared git hooks once after cloning:
 
 ```bash
 bash scripts/install-hooks.sh
@@ -73,11 +83,6 @@ bash scripts/install-hooks.sh
 
 ## License
 
-Dual-licensed under either of
-
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-- MIT license ([LICENSE-MIT](LICENSE-MIT))
-
-at your option. Unless you explicitly state otherwise, any contribution
-intentionally submitted for inclusion in this work, as defined in the Apache-2.0
-license, shall be dual-licensed as above, without any additional terms or conditions.
+Dual-licensed under either [Apache 2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), your
+choice. Anything you contribute is dual-licensed the same way unless you say
+otherwise.
