@@ -99,6 +99,123 @@ fn a_repeated_marker_is_flagged_once() {
 }
 
 #[test]
+fn redacts_a_luhn_valid_card_in_any_formatting() {
+    // A real (Luhn-valid) card is caught whether it is spaced or contiguous. 4111… is the
+    // canonical Visa test number.
+    for card in [
+        "4111 1111 1111 1111",
+        "4111111111111111",
+        "3782 822463 10005",
+    ] {
+        let input = format!("my card is {card} thanks");
+        let out = filter().filter(&input).expect("filter");
+        let kinds: Vec<&str> = out.redactions.iter().map(|r| r.kind.as_str()).collect();
+        assert!(
+            kinds.contains(&"card"),
+            "card not redacted: {card:?} -> {kinds:?}"
+        );
+        assert!(
+            !out.cleaned.contains(card),
+            "raw card survived into cleaned content: {card:?}"
+        );
+    }
+}
+
+#[test]
+fn does_not_redact_an_isbn_or_product_code_as_a_card() {
+    // 13–19 digit runs that are not payment cards fail the Luhn check, so they are left intact.
+    // "978-0-262-03384-8" is a real ISBN-13; the 16-digit run is a non-Luhn product code.
+    for not_a_card in ["978-0-262-03384-8", "order 1234 5678 9012 3456 shipped"] {
+        let out = filter().filter(not_a_card).expect("filter");
+        let card_hits = out.redactions.iter().filter(|r| r.kind == "card").count();
+        assert_eq!(
+            card_hits, 0,
+            "a non-card digit run was wrongly redacted as a card: {not_a_card:?}"
+        );
+    }
+}
+
+#[test]
+fn a_card_overlapping_an_earlier_phone_match_is_still_fully_redacted() {
+    // The widened card regex can start inside an earlier phone match; the fail-closed walk
+    // must still redact the card's uncovered tail rather than leak the raw digits. Here the
+    // phone matches bytes [1,14) ("650) 253-0000") and the Luhn-valid 19-digit card run
+    // matches [10,30) — they overlap on the "0000", so the old walk dropped the card and the
+    // trailing "378282246310005" leaked. (Reverting the walk makes this assertion fail.)
+    let out = filter()
+        .filter("(650) 253-0000 378282246310005")
+        .expect("filter");
+    let kinds: Vec<&str> = out.redactions.iter().map(|r| r.kind.as_str()).collect();
+    assert!(kinds.contains(&"phone"), "phone not redacted: {kinds:?}");
+    assert!(
+        kinds.contains(&"card"),
+        "an overlapped card was not redacted: {kinds:?}"
+    );
+    assert!(
+        !out.cleaned.contains("378282246310005"),
+        "raw card digits leaked past an overlapping redaction: {:?}",
+        out.cleaned
+    );
+}
+
+#[test]
+fn redacts_each_of_several_independent_cards() {
+    // Two distinct Luhn-valid cards (Visa + Mastercard) in one input are each recorded.
+    let out = filter()
+        .filter("charge 4111 1111 1111 1111 then refund 5555 5555 5555 4444 done")
+        .expect("filter");
+    let card_hits = out.redactions.iter().filter(|r| r.kind == "card").count();
+    assert_eq!(card_hits, 2, "expected two independent card redactions");
+    assert!(!out.cleaned.contains("4111"), "first card leaked");
+    assert!(!out.cleaned.contains("4444"), "second card leaked");
+}
+
+#[test]
+fn does_not_redact_near_miss_luhn_invalid_cards() {
+    // One digit off a valid card breaks the checksum, so it must pass through unredacted.
+    for near_miss in ["4111111111111112", "4111111111111110"] {
+        let input = format!("my card is {near_miss} thanks");
+        let out = filter().filter(&input).expect("filter");
+        let card_hits = out.redactions.iter().filter(|r| r.kind == "card").count();
+        assert_eq!(
+            card_hits, 0,
+            "a Luhn-invalid near-miss was redacted: {near_miss:?}"
+        );
+    }
+}
+
+#[test]
+fn card_match_requires_word_boundaries() {
+    // A digit run glued to letters on either side is not a card token; the \b anchors reject
+    // it (the conservative v1.0 boundary — M6.T03 may revisit embedded runs).
+    for embedded in ["x4111111111111111", "4111111111111111x"] {
+        let out = filter().filter(embedded).expect("filter");
+        let card_hits = out.redactions.iter().filter(|r| r.kind == "card").count();
+        assert_eq!(
+            card_hits, 0,
+            "an embedded digit run was redacted as a card: {embedded:?}"
+        );
+    }
+}
+
+#[test]
+fn redacts_cards_across_networks_and_lengths() {
+    // The filter is network-agnostic (Luhn only, no BIN check) and honors the 13–19 digit
+    // policy: Mastercard/Discover plus a 17- and 19-digit Luhn-valid run all redact.
+    for card in [
+        "5555 5555 5555 4444", // Mastercard, 16
+        "6011 1111 1111 1117", // Discover, 16
+        "41111111111111113",   // 17 digits, Luhn-valid
+        "4111111111111111110", // 19 digits, Luhn-valid
+    ] {
+        let input = format!("card on file {card} ok");
+        let out = filter().filter(&input).expect("filter");
+        let card_hits = out.redactions.iter().filter(|r| r.kind == "card").count();
+        assert_eq!(card_hits, 1, "card not redacted: {card:?}");
+    }
+}
+
+#[test]
 fn custom_pattern_set_is_honored() {
     let ssn = RedactionPattern::new("ssn", "ssn", r"\b\d{3}-\d{2}-\d{4}\b").expect("compile");
     let custom = CaptureFilter::new(vec![ssn], vec![]);
@@ -106,6 +223,24 @@ fn custom_pattern_set_is_honored() {
     assert_eq!(out.redactions.len(), 1);
     assert_eq!(out.redactions[0].kind, "ssn");
     assert!(out.cleaned.contains("[redacted:ssn]"));
+}
+
+#[test]
+fn overlapping_redactions_resolve_to_the_earliest_longest_match() {
+    // Two rules whose matches overlap: the earliest start wins, the longer breaks a tie, and the
+    // overlapping later match is dropped — one deterministic, non-overlapping edit pass. The
+    // registration order must not matter (the narrow rule is registered first on purpose).
+    let narrow = RedactionPattern::new("narrow", "narrow", r"cde").expect("compile");
+    let wide = RedactionPattern::new("wide", "wide", r"abcdef").expect("compile");
+    let custom = CaptureFilter::new(vec![narrow, wide], vec![]);
+    let out = custom.filter("xx abcdef yy").expect("filter");
+    assert_eq!(out.redactions.len(), 1, "the overlapped match is dropped");
+    assert_eq!(
+        out.redactions[0].kind, "wide",
+        "the longer match wins the span"
+    );
+    assert!(out.cleaned.contains("[redacted:wide]"));
+    assert!(!out.cleaned.contains("abcdef"));
 }
 
 #[test]

@@ -16,8 +16,10 @@
 //! `Redaction.span` contract), and the matched text is replaced with a typed
 //! `[redacted:<kind>]` placeholder; injection markers are stripped from the cleaned
 //! content and their ids collected into `injection_flags`. Matches are applied as a
-//! single deterministic, non-overlapping edit pass: the earliest start wins, the
-//! longer match breaks a tie, and a later overlapping match is dropped.
+//! single deterministic, non-overlapping edit pass: the earliest start wins and the
+//! longer match breaks a tie. A later match fully covered by an applied one is
+//! dropped; one that only partially overlaps still has its uncovered tail replaced,
+//! so the pass is fail-closed — no matched (sensitive) byte is ever copied out.
 
 use aionforge_domain::nodes::episodic::Redaction;
 use aionforge_domain::{FilterOutcome, PrivacyFilter};
@@ -25,12 +27,33 @@ use regex::Regex;
 
 use crate::error::SecurityError;
 
-/// A configured redaction rule: a regex whose matches are recorded and replaced.
+/// An extra check a regex match must pass before it is treated as a real hit — a cheap way to
+/// cut false positives a regex alone cannot (e.g. distinguishing a card number from an ISBN or
+/// product code). M6.T03 may add more.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatchValidator {
+    /// The match's digits must satisfy the Luhn checksum (payment-card numbers do; ISBNs,
+    /// tracking numbers, and arbitrary digit runs almost never do).
+    Luhn,
+}
+
+impl MatchValidator {
+    /// Whether `matched` (the raw matched text, separators and all) passes this check.
+    fn accepts(self, matched: &str) -> bool {
+        match self {
+            MatchValidator::Luhn => luhn_valid(matched),
+        }
+    }
+}
+
+/// A configured redaction rule: a regex whose matches are recorded and replaced, optionally
+/// gated by a [`MatchValidator`] that rejects regex matches failing a structural check.
 #[derive(Debug, Clone)]
 pub struct RedactionPattern {
     id: String,
     kind: String,
     regex: Regex,
+    validator: Option<MatchValidator>,
 }
 
 impl RedactionPattern {
@@ -53,8 +76,40 @@ impl RedactionPattern {
             id,
             kind: kind.into(),
             regex,
+            validator: None,
         })
     }
+
+    /// Gate this rule's matches on `validator`; a match that fails the check is not redacted.
+    #[must_use]
+    pub fn with_validator(mut self, validator: MatchValidator) -> Self {
+        self.validator = Some(validator);
+        self
+    }
+}
+
+/// The Luhn (mod-10) checksum over the digits in `candidate`, requiring a payment-card-length
+/// run (13–19 digits). Separators are ignored; non-card digit runs (ISBN-13, UPC, order ids)
+/// almost never satisfy it, so it sharply cuts the card pattern's false positives.
+fn luhn_valid(candidate: &str) -> bool {
+    let digits: Vec<u32> = candidate.chars().filter_map(|c| c.to_digit(10)).collect();
+    if !(13..=19).contains(&digits.len()) {
+        return false;
+    }
+    let sum: u32 = digits
+        .iter()
+        .rev()
+        .enumerate()
+        .map(|(i, &d)| {
+            if i % 2 == 1 {
+                let doubled = d * 2;
+                if doubled > 9 { doubled - 9 } else { doubled }
+            } else {
+                d
+            }
+        })
+        .sum();
+    sum.is_multiple_of(10)
 }
 
 /// A known prompt-injection marker: a regex whose matches are flagged and stripped.
@@ -106,8 +161,14 @@ impl CaptureFilter {
     pub fn with_defaults() -> Result<Self, SecurityError> {
         let redactions = DEFAULT_REDACTIONS
             .iter()
-            .map(|&(id, kind, pattern)| RedactionPattern::new(id, kind, pattern))
-            .collect::<Result<Vec<_>, _>>()?;
+            .map(|&(id, kind, pattern, validator)| {
+                let rule = RedactionPattern::new(id, kind, pattern)?;
+                Ok(match validator {
+                    Some(v) => rule.with_validator(v),
+                    None => rule,
+                })
+            })
+            .collect::<Result<Vec<_>, SecurityError>>()?;
         let markers = DEFAULT_MARKERS
             .iter()
             .map(|&(id, pattern)| InjectionMarker::new(id, pattern))
@@ -133,6 +194,13 @@ impl PrivacyFilter for CaptureFilter {
 
         for pattern in &self.redactions {
             for m in pattern.regex.find_iter(content) {
+                // A validated rule (e.g. Luhn for cards) drops matches that fail the check, so a
+                // regex that necessarily over-matches stays low-false-positive.
+                if let Some(validator) = pattern.validator
+                    && !validator.accepts(m.as_str())
+                {
+                    continue;
+                }
                 edits.push(Edit {
                     start: m.start(),
                     end: m.end(),
@@ -159,8 +227,10 @@ impl PrivacyFilter for CaptureFilter {
         }
 
         // Deterministic, non-overlapping edit order: earliest start first, longer
-        // match first on a tie. The walk below drops any later edit that overlaps an
-        // applied one.
+        // match first on a tie. The walk below is fail-closed: a later edit fully
+        // covered by an applied one is dropped, but one that only partially overlaps
+        // still has its uncovered tail replaced — a redaction silently dropped here
+        // would leak the raw sensitive bytes its match started inside.
         edits.sort_by(|a, b| a.start.cmp(&b.start).then(b.end.cmp(&a.end)));
 
         let mut cleaned = String::with_capacity(content.len());
@@ -169,10 +239,15 @@ impl PrivacyFilter for CaptureFilter {
         let mut cursor = 0usize;
 
         for edit in edits {
-            if edit.start < cursor {
-                continue; // overlaps an already-applied edit
+            if edit.end <= cursor {
+                continue; // fully covered by an already-applied edit
             }
-            cleaned.push_str(&content[cursor..edit.start]);
+            if edit.start >= cursor {
+                // Copy the run of unmatched (non-sensitive) text before this edit.
+                cleaned.push_str(&content[cursor..edit.start]);
+            }
+            // Emit the placeholder, never the raw tail, and advance past the whole
+            // match so a partially overlapped sensitive span cannot survive.
             cleaned.push_str(&edit.replacement);
             cursor = edit.end;
             if let Some(redaction) = edit.redaction {
@@ -196,19 +271,29 @@ impl PrivacyFilter for CaptureFilter {
 
 /// Default redaction rules: `(id, kind, regex)`. Conservative to keep the benign
 /// false-positive rate low (07 §2 acceptance); M6.T03 expands and tunes these.
-const DEFAULT_REDACTIONS: &[(&str, &str, &str)] = &[
+const DEFAULT_REDACTIONS: &[(&str, &str, &str, Option<MatchValidator>)] = &[
     (
         "email",
         "email",
         r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}",
+        None,
     ),
     (
         "us_phone",
         "phone",
         r"\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b",
+        None,
     ),
-    ("credit_card", "card", r"\b(?:\d[ -]?){13,16}\b"),
-    ("secret_key", "secret", r"\bsk-[A-Za-z0-9_-]{20,}\b"),
+    // 13–19 digits in single space/dash-separated groups, then a Luhn check — so a real card
+    // is caught whatever its formatting, while an ISBN-13 or product code (which fail Luhn) is
+    // left alone. The raw `{13,16}`-digit regex matched any such run; the validator is the fix.
+    (
+        "credit_card",
+        "card",
+        r"\b\d(?:[ -]?\d){12,18}\b",
+        Some(MatchValidator::Luhn),
+    ),
+    ("secret_key", "secret", r"\bsk-[A-Za-z0-9_-]{20,}\b", None),
 ];
 
 /// Default injection markers: `(id, regex)`. All case-insensitive. A starting set
