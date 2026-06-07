@@ -12,6 +12,7 @@ description = "Hybrid retrieval: lexical/dense/graph/recency/trust signals, RRF 
 [dependencies]
 aionforge-domain = { path = "../aionforge-domain", version = "0.1.0" }
 aionforge-store = { path = "../aionforge-store", version = "0.1.0" }
+regex = { workspace = true }
 thiserror = { workspace = true }
 miette = { workspace = true }
 
