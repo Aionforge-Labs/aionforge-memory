@@ -5,10 +5,11 @@
 //! Entity`, `Fact|Episode -SUPPORTS-> Fact` — so a record reachable only through that
 //! structure (a fact two hops away over a `SUPPORTS` chain, an episode that mentions the
 //! entity) surfaces even when it sits far from the query in vector space and shares no
-//! token with it. These tests pin four things: graph expansion surfaces such records; the
-//! router gates it (suppressed for the single-hop class); Current mode never lets a graph
-//! reach leak a non-current fact the support provider excludes; and the signal survives an
-//! embedder outage because seeds also resolve lexically.
+//! token with it. These tests pin: graph expansion surfaces such records (proven by the
+//! record's only fusion contribution being the graph signal); the router gates it
+//! (suppressed for the single-hop class) and it is skipped when no entity seed resolves;
+//! Current mode never lets a graph reach leak a non-current fact the support provider
+//! excludes; and the signal survives an embedder outage because seeds also resolve lexically.
 //!
 //! Hermetic: a fake embedder maps queries and records to small fixed vectors, and a tight
 //! fan-out plus near-query distractors push the graph-only records past the dense and
@@ -258,15 +259,18 @@ fn mention(store: &Store, episode_id: &Id, entity_id: &Id) {
     store.execute(&q).expect("insert MENTIONS");
 }
 
-/// Wire `Fact -SUPPORTS-> Fact` by domain id (`weight` is `NOT NULL` on the type).
+/// Wire `Fact -SUPPORTS-> Fact` by domain id (`weight` is `NOT NULL` on the type, bound
+/// as a parameter like every other GQL value).
 fn support(store: &Store, from: &Id, to: &Id) {
     let q = BoundQuery::new(
         "MATCH (a:Fact {id: $from}), (b:Fact {id: $to}) \
-         INSERT (a)-[:SUPPORTS {weight: 1.0}]->(b)",
+         INSERT (a)-[:SUPPORTS {weight: $weight}]->(b)",
     )
     .bind_str("from", from.as_str())
     .unwrap()
     .bind_str("to", to.as_str())
+    .unwrap()
+    .bind("weight", Value::Float(1.0))
     .unwrap();
     store.execute(&q).expect("insert SUPPORTS");
 }
@@ -404,23 +408,40 @@ fn has_episode(bundle: &RecallBundle, content: &str) -> bool {
         .any(|e| matches!(e, StructuredEntry::Episode(ep) if ep.content == content))
 }
 
+/// The signals that contributed to the fact entry with `statement`, in fusion's canonical
+/// order, or `None` if no such fact is in the bundle. Used to prove which signal surfaced a
+/// record, not merely that it is present.
+fn fact_signals(bundle: &RecallBundle, statement: &str) -> Option<Vec<Signal>> {
+    bundle.structured.iter().find_map(|e| match e {
+        StructuredEntry::Fact(f) if f.statement == statement => {
+            Some(f.contributions.iter().map(|c| c.signal).collect())
+        }
+        _ => None,
+    })
+}
+
 // --- Tests -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn graph_expansion_surfaces_a_supports_chained_fact() {
     // The query names `acme`; the chained fact is two hops away (acme <- direct -SUPPORTS->
-    // chained), far in vector space, with no token overlap. A tight fan-out of 3 keeps the
-    // dense ranking on the near distractors, so only graph expansion reaches the chained
-    // fact.
+    // chained), far in vector space, with no token overlap. The WINDOW near noise facts fill
+    // the dense top-k (fan-out is WINDOW), so the far chained fact falls outside both the
+    // dense and lexical rankings — only graph expansion reaches it.
     let seeded = supports_chain_store();
     let r = retriever(seeded.store, embedder_up());
 
     let bundle = recall(&r, QueryClass::MultiHop, TemporalMode::Current).await;
 
-    assert!(
-        has_fact(&bundle, CHAINED_FACT),
-        "graph expansion surfaces the supports-chained fact: {:?}",
-        bundle.explanation.signals_run,
+    // Presence, and — decisively — the chained fact's *only* contribution is the graph
+    // signal. Dense never reaches it (far, past the fan-out) and lexical never reaches it
+    // (no shared token), so this proves graph expansion is what surfaced it, not a wide
+    // fan-out sweeping the small fixture or a node-id tie-break.
+    let chained_signals = fact_signals(&bundle, CHAINED_FACT).expect("chained fact present");
+    assert_eq!(
+        chained_signals,
+        vec![Signal::Graph],
+        "the chained fact is surfaced by the graph signal alone",
     );
     assert!(
         bundle.explanation.signals_run.contains(&Signal::Graph),
@@ -548,5 +569,23 @@ async fn graph_expansion_survives_an_embedder_outage() {
     assert!(
         has_fact(&bundle, CHAINED_FACT),
         "the supports-chained fact surfaces through lexically-seeded graph expansion",
+    );
+}
+
+#[tokio::test]
+async fn graph_signal_is_skipped_when_no_entity_seed_resolves() {
+    // An empty store: neither the entity text index nor the entity vector search resolves
+    // anything, so `resolve_seed_entities` returns `None` and the retriever short-circuits
+    // the graph signal rather than running an unseeded (global) PageRank. The router would
+    // otherwise enable graph expansion for the multi-hop class, so this exercises the
+    // seed-side gate, not the class gate.
+    let r = retriever(store(), embedder_up());
+
+    let bundle = recall(&r, QueryClass::MultiHop, TemporalMode::Current).await;
+
+    assert!(
+        !bundle.explanation.signals_run.contains(&Signal::Graph),
+        "with no resolvable entity seed the graph signal does not run: {:?}",
+        bundle.explanation.signals_run,
     );
 }
