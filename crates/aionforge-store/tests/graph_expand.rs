@@ -208,6 +208,27 @@ fn current_composition_excludes_a_contradicted_but_active_evidence_fact() {
         nodes_of(&hits).contains(&root_node),
         "the still-current root remains",
     );
+
+    // The same expansion with Union (state ∪ expanded) keeps the contradicted evidence —
+    // it is in the expanded set, just not in the current-state set. This proves the
+    // expansion did reach it, so the Intersection above excluded it via the current-state
+    // composition, not because expansion silently failed to find it.
+    let unioned = store
+        .vector_score_state_expanded(
+            SearchKind::Fact,
+            &query(NEAR),
+            CandidateSet::CurrentSupportFacts,
+            &[root_node],
+            ExpandEdge::Supports,
+            ExpandDirection::Incoming,
+            SetOp::Union,
+            10,
+        )
+        .expect("unioned score");
+    assert!(
+        nodes_of(&unioned).contains(&ev_node),
+        "Union keeps the expansion-reached evidence the Intersection dropped: {unioned:?}",
+    );
 }
 
 #[test]
@@ -331,5 +352,87 @@ fn scoring_uses_cosine_distance_not_squared_euclidean() {
     assert!(
         pos(aligned_node) < pos(off_node),
         "the direction-aligned evidence ranks ahead of the off-axis one under cosine: {hits:?}",
+    );
+}
+
+#[test]
+fn both_direction_reaches_neighbors_on_either_side() {
+    let store = store();
+    let (topic_ent, topic_node) = topic(&store, "topic");
+    let (root_id, root_node) =
+        embedded_fact(&store, &topic_ent, topic_node, "the root claim", NEAR);
+    // Evidence supports the root (incoming); the root supports a downstream fact (outgoing).
+    let (ev_id, ev_node) = embedded_fact(&store, &topic_ent, topic_node, "incoming evidence", FAR);
+    support(&store, &ev_id, &root_id);
+    let (down_id, down_node) =
+        embedded_fact(&store, &topic_ent, topic_node, "downstream fact", FAR);
+    support(&store, &root_id, &down_id);
+
+    let hits = store
+        .vector_score_state_expanded(
+            SearchKind::Fact,
+            &query(NEAR),
+            CandidateSet::CurrentSupportFacts,
+            &[root_node],
+            ExpandEdge::Supports,
+            ExpandDirection::Both,
+            SetOp::Intersection,
+            10,
+        )
+        .expect("expanded score");
+    let got = nodes_of(&hits);
+    assert!(
+        got.contains(&ev_node) && got.contains(&down_node),
+        "Both reaches the incoming evidence and the outgoing downstream fact: {hits:?}",
+    );
+}
+
+#[test]
+fn multiple_roots_expand_independently() {
+    let store = store();
+    let (topic_ent, topic_node) = topic(&store, "topic");
+    let (r1_id, r1_node) = embedded_fact(&store, &topic_ent, topic_node, "first root", NEAR);
+    let (r2_id, r2_node) = embedded_fact(&store, &topic_ent, topic_node, "second root", NEAR);
+    let (e1_id, e1_node) = embedded_fact(&store, &topic_ent, topic_node, "first evidence", FAR);
+    let (e2_id, e2_node) = embedded_fact(&store, &topic_ent, topic_node, "second evidence", FAR);
+    support(&store, &e1_id, &r1_id);
+    support(&store, &e2_id, &r2_id);
+
+    let hits = store
+        .vector_score_state_expanded(
+            SearchKind::Fact,
+            &query(NEAR),
+            CandidateSet::CurrentSupportFacts,
+            &[r1_node, r2_node],
+            ExpandEdge::Supports,
+            ExpandDirection::Incoming,
+            SetOp::Intersection,
+            10,
+        )
+        .expect("expanded score");
+    let got = nodes_of(&hits);
+    assert!(
+        got.contains(&e1_node) && got.contains(&e2_node),
+        "both roots' evidence surface from one expansion: {hits:?}",
+    );
+
+    // k caps the ranking: the two NEAR roots are the nearest of the four, so k=1 yields one
+    // hit and it is a root, not a far evidence fact.
+    let capped = store
+        .vector_score_state_expanded(
+            SearchKind::Fact,
+            &query(NEAR),
+            CandidateSet::CurrentSupportFacts,
+            &[r1_node, r2_node],
+            ExpandEdge::Supports,
+            ExpandDirection::Incoming,
+            SetOp::Intersection,
+            1,
+        )
+        .expect("expanded score");
+    assert_eq!(capped.len(), 1, "k bounds the expanded ranking");
+    assert!(
+        capped[0].node == r1_node || capped[0].node == r2_node,
+        "the single capped hit is the nearest root, not a far evidence fact",
     );
 }
