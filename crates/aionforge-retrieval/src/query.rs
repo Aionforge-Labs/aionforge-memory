@@ -93,10 +93,12 @@ pub struct RecallOptions {
     /// How many candidates to pull from each signal before fusion. Zero falls back to
     /// the retriever's configured default.
     pub fanout: usize,
-    /// Whether this is a sensitive query: the high-precision path then composes against
-    /// `provenance_current_support_facts` (facts grounded by incoming support and
-    /// provenance) instead of `current_support_facts` (03 §4). Conservative default
-    /// `false`; automatic sensitivity detection is deferred to a later milestone.
+    /// Whether this is a sensitive query: every Current-mode fact signal (lexical, the
+    /// composed high-precision dense, and its fallback) then reads against
+    /// `provenance_current_support_facts` — facts grounded by incoming support and
+    /// provenance — instead of `current_support_facts`, so an ungrounded fact never
+    /// surfaces (03 §4). Conservative default `false`; automatic sensitivity detection is
+    /// deferred to a later milestone.
     pub sensitive: bool,
 }
 

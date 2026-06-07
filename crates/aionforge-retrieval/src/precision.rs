@@ -41,7 +41,10 @@ pub(crate) fn derive_graph_seed(
     store: &Store,
     embedding: Option<&Embedding>,
 ) -> Result<Option<Vec<NodeId>>, RetrievalError> {
-    // Scope membership is the precise primary seed when scopes are populated.
+    // Scope membership is the precise primary seed when scopes are populated. The provider
+    // is label-agnostic, so the set can hold non-fact members (episodes, notes); they are
+    // dropped downstream when the caller intersects this seed with the fact-labeled
+    // current-support set, so the seed needs no explicit kind filter here.
     let scope = store.candidate_state_members(CandidateSet::ScopeMembership)?;
     if !scope.is_empty() {
         return Ok(Some(dedup_sorted(scope)));

@@ -154,6 +154,30 @@ fn entity(store: &Store, name: &str, embedding: [f32; 4]) -> (Id, NodeId) {
     (id, node)
 }
 
+/// An entity with no embedding — absent from the vector index, so a query never resolves
+/// it. Used to force the no-seed dense fallback while the embedder is up.
+fn entity_unembedded(store: &Store, name: &str) -> (Id, NodeId) {
+    let id = Id::generate();
+    let entity = Entity {
+        identity: Identity {
+            id: id.clone(),
+            ingested_at: ts(T0),
+            namespace: Namespace::Global,
+            expired_at: None,
+        },
+        stats: stats(),
+        canonical_name: name.to_string(),
+        entity_type: "Concept".to_string(),
+        aliases: vec![],
+        description: None,
+        embedding: None,
+        embedder_model: None,
+        attributes: None,
+    };
+    let node = store.insert_entity(&entity).expect("insert entity");
+    (id, node)
+}
+
 fn assert_fact(store: &Store, subject: &Id, subject_node: NodeId, statement: &str, emb: [f32; 4]) {
     let fact = Fact {
         identity: Identity {
@@ -359,6 +383,38 @@ async fn sensitive_queries_compose_against_provenance_and_exclude_ungrounded_fac
     assert!(
         !has_fact(&sensitive, "alpha widget"),
         "a sensitive query excludes the ungrounded fact (provenance set): {}",
+        sensitive.rendered,
+    );
+}
+
+#[tokio::test]
+async fn sensitive_scopes_the_dense_fallback_to_provenance_too() {
+    // The entity has no embedding, so the query resolves no root and the seed is None: the
+    // dense fact ranking takes the no-seed fallback path. That path must still honor
+    // `sensitive` — an ungrounded current fact is kept for a normal query but dropped for a
+    // sensitive one, which reads the fallback against the provenance set. The fact's
+    // statement does not match the query text, so only the dense path decides its presence.
+    let store = store();
+    let (acme, acme_node) = entity_unembedded(&store, "acme");
+    assert_fact(
+        &store,
+        &acme,
+        acme_node,
+        "alpha widget",
+        [1.0, 0.0, 0.0, 0.0],
+    );
+    let r = retriever(store, FakeEmbedder::new(&[("acme", [1.0, 0.0, 0.0, 0.0])]));
+
+    let standard = recall(&r, "acme", TemporalMode::Current, false).await;
+    assert!(
+        has_fact(&standard, "alpha widget"),
+        "the no-seed fallback surfaces the ungrounded current fact for a normal query"
+    );
+
+    let sensitive = recall(&r, "acme", TemporalMode::Current, true).await;
+    assert!(
+        !has_fact(&sensitive, "alpha widget"),
+        "the no-seed fallback also reads against provenance for a sensitive query: {}",
         sensitive.rendered,
     );
 }
