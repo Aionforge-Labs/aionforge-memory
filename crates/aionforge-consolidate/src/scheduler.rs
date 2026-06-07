@@ -202,6 +202,14 @@ impl<C: Clock> Consolidator<C> {
     ) -> Result<EpisodeOutcome, ConsolidationError> {
         let now = self.clock.now();
         let rule_versions = self.rule_versions();
+
+        // Mark the episode `in_progress` before any pass runs, so in-flight work is observable
+        // and a crash mid-pass leaves a visible marker (reset to `raw` at the next startup). The
+        // guard expects the state we discovered it in (`raw`, normally; `in_progress` only on a
+        // direct re-tick without a startup reset, where the mark is an idempotent no-op).
+        self.store
+            .begin_consolidation_episode(item.node_id, item.episode.consolidation_state)?;
+
         // Accumulate every enabled pass's derived output, then materialize the merged set
         // in the same commit as the flip — so all of one episode's consolidation lands
         // atomically, never partially.
@@ -229,10 +237,9 @@ impl<C: Clock> Consolidator<C> {
             }
         }
 
-        // Every pass succeeded: materialize the derived memory, flip the episode, and
-        // advance the cursor atomically. The expected state is the episode's current
-        // state (raw, or in_progress after a crash-recovery reset), so the guard accepts
-        // exactly the row we discovered.
+        // Every pass succeeded: materialize the derived memory, flip the episode, and advance
+        // the cursor atomically. The episode is `in_progress` (marked above), so that is the
+        // expected state the guard accepts.
         let cursor = ConsolidationCursor {
             last_position: ConsolidationCursor::watermark_for(&item.episode),
             last_episode_id: Some(item.episode.identity.id.clone()),
@@ -241,7 +248,7 @@ impl<C: Clock> Consolidator<C> {
         };
         self.store.commit_consolidation_episode(
             item.node_id,
-            item.episode.consolidation_state,
+            ConsolidationState::InProgress,
             ConsolidationState::Consolidated,
             &cursor,
             &now,

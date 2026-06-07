@@ -218,6 +218,56 @@ impl Store {
         Ok(items)
     }
 
+    /// Mark an episode `in_progress` before its passes run, guarded on its `expected` state.
+    ///
+    /// The scheduler calls this before applying passes so in-flight work is observable and a
+    /// crash mid-pass leaves a visible `in_progress` marker (cleaned up by
+    /// [`Self::reset_in_progress_episodes`] at startup). The flip is guarded — the episode must
+    /// still be in `expected` state under the write lock — so it composes with the same
+    /// exactly-once discipline as the terminal flip; re-marking an already-`in_progress` episode
+    /// (a direct re-tick without a startup reset) is an idempotent no-op.
+    ///
+    /// # Errors
+    /// Returns [`StoreError::Invariant`] if the episode is not in `expected` state, or
+    /// [`StoreError`] if the mutation or commit fails.
+    pub fn begin_consolidation_episode(
+        &self,
+        episode_node_id: NodeId,
+        expected: ConsolidationState,
+    ) -> Result<(), StoreError> {
+        let mut txn = self.graph().begin_write();
+        {
+            let mut mutator = txn.mutator();
+            let current: ConsolidationState = {
+                let read = mutator.read();
+                let props = read
+                    .node_properties(episode_node_id)
+                    .ok_or_else(|| StoreError::decode("episode to begin no longer exists"))?;
+                enum_from_value(props.get(&db_string(CONSOLIDATION_STATE)?).ok_or_else(|| {
+                    StoreError::decode("episode has no consolidation_state property")
+                })?)?
+            };
+            if current != expected {
+                return Err(StoreError::invariant(format!(
+                    "episode is {current:?}, expected {expected:?} to begin consolidation"
+                )));
+            }
+            mutator.update_node(
+                episode_node_id,
+                LabelDiff::new([], [])?,
+                PropertyDiff::new(
+                    [(
+                        db_string(CONSOLIDATION_STATE)?,
+                        enum_value(&ConsolidationState::InProgress)?,
+                    )],
+                    [],
+                )?,
+            )?;
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
     /// Reset every `in_progress` episode back to `raw` (crash-recovery hook).
     ///
     /// An episode is only `in_progress` if a pass was interrupted before its terminal
@@ -328,14 +378,14 @@ impl Store {
         Ok(self.graph().read().meta.generation)
     }
 
-    /// Record a `consolidation_failed` audit event, optionally marking the episode
-    /// `failed`, in one commit (write-and-consolidation §3).
+    /// Record a `consolidation_failed` audit event and settle the episode's state, in one
+    /// commit (write-and-consolidation §3).
     ///
-    /// The cursor is deliberately *not* advanced — it holds at the failure until the
-    /// episode is resolved or skipped. A transient failure leaves the episode `raw`
-    /// (retried next tick); a fatal failure marks it `failed` (excluded from the
-    /// queue, retained and auditable). The audit event is written unsigned, mirroring
-    /// the non-signed capture path.
+    /// The cursor is deliberately *not* advanced — it holds at the failure until the episode is
+    /// resolved or skipped. A transient failure returns the episode to `raw` (clearing the
+    /// `in_progress` mark the scheduler set before running passes, so it is plainly pending and
+    /// retried next tick); a fatal failure marks it `failed` (excluded from the queue, retained
+    /// and auditable). The audit event is written unsigned, mirroring the non-signed capture path.
     ///
     /// # Errors
     /// Returns [`StoreError`] if translation, a mutation, or the commit fails.
@@ -345,6 +395,11 @@ impl Store {
         audit_event: &AuditEvent,
         mark_failed: bool,
     ) -> Result<(), StoreError> {
+        let settled = if mark_failed {
+            ConsolidationState::Failed
+        } else {
+            ConsolidationState::Raw
+        };
         let mut txn = self.graph().begin_write();
         {
             let mut mutator = txn.mutator();
@@ -365,19 +420,15 @@ impl Store {
                 episode_node_id,
                 PropertyMap::from_pairs(Vec::new())?,
             )?;
-            if mark_failed {
-                mutator.update_node(
-                    episode_node_id,
-                    LabelDiff::new([], [])?,
-                    PropertyDiff::new(
-                        [(
-                            db_string(CONSOLIDATION_STATE)?,
-                            enum_value(&ConsolidationState::Failed)?,
-                        )],
-                        [],
-                    )?,
-                )?;
-            }
+            // Settle the episode: failed (terminal) or back to raw (clears any in_progress mark).
+            mutator.update_node(
+                episode_node_id,
+                LabelDiff::new([], [])?,
+                PropertyDiff::new(
+                    [(db_string(CONSOLIDATION_STATE)?, enum_value(&settled)?)],
+                    [],
+                )?,
+            )?;
         }
         txn.commit()?;
         Ok(())

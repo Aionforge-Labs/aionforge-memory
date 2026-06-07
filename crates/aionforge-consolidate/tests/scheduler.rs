@@ -3,8 +3,8 @@
 //! and a crash mid-pass resumes from the last position and never double-applies.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use aionforge_consolidate::{
@@ -199,6 +199,32 @@ impl ConsolidationPass for AlwaysFailPass {
         } else {
             Err(PassError::Transient("temporary".to_string()))
         }
+    }
+}
+
+/// Records the episode's own `consolidation_state` as observed from inside `apply` — proving
+/// the scheduler marks the episode `in_progress` before any pass runs.
+struct ObserveStatePass {
+    observed: Arc<Mutex<Option<ConsolidationState>>>,
+}
+
+#[async_trait]
+impl ConsolidationPass for ObserveStatePass {
+    fn name(&self) -> &'static str {
+        "observe-state"
+    }
+    fn version(&self) -> u32 {
+        1
+    }
+    async fn apply(&self, cx: &PassContext<'_>) -> Result<PassOutput, PassError> {
+        let state = cx
+            .store
+            .episode_by_node_id(cx.episode_node_id)
+            .expect("read episode")
+            .expect("episode present")
+            .consolidation_state;
+        *self.observed.lock().expect("observed mutex") = Some(state);
+        Ok(PassOutput::default())
     }
 }
 
@@ -555,6 +581,48 @@ async fn transient_failures_escalate_to_fatal_after_max_retries() {
     assert_eq!(report.failed, 1);
     assert_eq!(episode_state(&store, node), ConsolidationState::Failed);
     assert_eq!(store.consolidation_lag().expect("lag").episodes_failed, 1);
+}
+
+#[tokio::test]
+async fn an_episode_is_marked_in_progress_while_its_passes_run() {
+    // The scheduler flips the episode to in_progress before any pass runs, so in-flight work is
+    // observable; a pass reading its own episode state sees in_progress, not raw.
+    let store = in_memory();
+    insert_episode(&store, "watch", 1);
+    let observed = Arc::new(Mutex::new(None));
+    let mut consolidator = Consolidator::with_clock(store.clone(), config(), fixed_clock());
+    consolidator.register(Box::new(ObserveStatePass {
+        observed: observed.clone(),
+    }));
+
+    consolidator.tick_once().await.expect("tick");
+    assert_eq!(
+        *observed.lock().expect("observed"),
+        Some(ConsolidationState::InProgress),
+        "the episode is in_progress while its passes run"
+    );
+}
+
+#[tokio::test]
+async fn a_tick_resumes_an_already_in_progress_episode() {
+    // An episode left in_progress (a tick that marked it then crashed, before the next startup
+    // reset) is still discovered and consolidated: discovery includes in_progress, and re-marking
+    // in_progress is an idempotent no-op, so the tick resumes it cleanly.
+    let store = in_memory();
+    let node = insert_episode(&store, "interrupted", 1);
+    store
+        .begin_consolidation_episode(node, ConsolidationState::Raw)
+        .expect("mark in_progress");
+    assert_eq!(episode_state(&store, node), ConsolidationState::InProgress);
+
+    let mut consolidator = Consolidator::with_clock(store.clone(), config(), fixed_clock());
+    consolidator.register(Box::new(NoopPass));
+    let report = consolidator.tick_once().await.expect("tick");
+    assert_eq!(report.consolidated, 1, "the in_progress episode is resumed");
+    assert_eq!(
+        episode_state(&store, node),
+        ConsolidationState::Consolidated
+    );
 }
 
 #[tokio::test]
