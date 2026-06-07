@@ -103,7 +103,9 @@ fn role_tag(role: Role) -> &'static str {
 /// The output is a pure function of the entries' serialization ids, roles, and
 /// content — no clock, no run-varying state — so the same recalled set renders
 /// byte-identically every time. Each memory sits inside a `memory` tag, and the whole
-/// block is marked as untrusted third-party data (07).
+/// block is marked as untrusted third-party data (07). Content is tag-escaped so it
+/// cannot break out of its `memory` wrapper and pose as instructions or as another
+/// memory; semantic injection-marker hardening is the capture filter's job (07 §2).
 #[must_use]
 pub fn render(entries: &[StructuredEntry]) -> String {
     let mut out = String::new();
@@ -114,10 +116,19 @@ pub fn render(entries: &[StructuredEntry]) -> String {
             entry.serialization_id,
             role_tag(entry.role),
         ));
-        out.push_str(&entry.content);
+        out.push_str(&tag_escape(&entry.content));
         out.push('\n');
         out.push_str("</memory>\n");
     }
     out.push_str("</recalled-memory-context>\n");
     out
+}
+
+/// Escape the characters that delimit the structural tags, so recalled content cannot
+/// forge or close a tag. `&` is escaped first so the replacements do not compound.
+fn tag_escape(content: &str) -> String {
+    content
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }

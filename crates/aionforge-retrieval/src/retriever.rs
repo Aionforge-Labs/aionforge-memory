@@ -120,7 +120,14 @@ impl<E: Embedder> HybridRetriever<E> {
         //    serialization id so the same set renders byte-identically (03 §6).
         let structured = selection.entries;
         let mut rendered_order = structured.clone();
-        rendered_order.sort_by(|a, b| a.serialization_id.cmp(&b.serialization_id));
+        // Explicit tie-break by content (itself content-derived, so stable) for the
+        // rare case of two entries sharing a serialization id; never by the mint-time
+        // domain id, which would not be stable across a rebuild (03 §6).
+        rendered_order.sort_by(|a, b| {
+            a.serialization_id
+                .cmp(&b.serialization_id)
+                .then_with(|| a.content.cmp(&b.content))
+        });
         let rendered = render(&rendered_order);
         let assemble_ms = assemble_started.elapsed().as_millis();
 
@@ -239,8 +246,9 @@ fn effective_fanout(query: &RecallQuery, config: &RetrieverConfig) -> usize {
     base.max(query.limit).max(1)
 }
 
-/// Whether an episode may surface for this query: not a system-role message, active
-/// unless history was asked for, and visible to the viewer's namespace (03 §5, §8).
+/// Whether an episode may surface for this query: not a system-role message (07 §4),
+/// active unless history was asked for (03 §5), and visible to the viewer's namespace
+/// (03 §8, 06 §1).
 fn admit(query: &RecallQuery, episode: &Episode) -> bool {
     if episode.role == Role::System {
         return false;
