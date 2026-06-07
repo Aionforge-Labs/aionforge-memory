@@ -139,7 +139,9 @@ fn does_not_redact_an_isbn_or_product_code_as_a_card() {
 fn a_card_overlapping_an_earlier_phone_match_is_still_fully_redacted() {
     // The widened card regex can start inside an earlier phone match; the fail-closed walk
     // must still redact the card's uncovered tail rather than leak the raw digits. Here the
-    // phone "(650) 253-0000" overlaps the leading zeros of a Luhn-valid Amex that follows.
+    // phone matches bytes [1,14) ("650) 253-0000") and the Luhn-valid 19-digit card run
+    // matches [10,30) — they overlap on the "0000", so the old walk dropped the card and the
+    // trailing "378282246310005" leaked. (Reverting the walk makes this assertion fail.)
     let out = filter()
         .filter("(650) 253-0000 378282246310005")
         .expect("filter");
