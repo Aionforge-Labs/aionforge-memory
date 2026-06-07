@@ -128,6 +128,24 @@ pub trait Embedder: Send + Sync {
     fn model(&self) -> &EmbedderModel;
 }
 
+/// A shared embedder is itself an embedder, so one client can back several
+/// subsystems (the capture path and the retrieval path share one) without being
+/// cloneable — embedders hold secret material that must not be copied around.
+impl<E: Embedder + ?Sized> Embedder for std::sync::Arc<E> {
+    type Error = E::Error;
+
+    fn embed(
+        &self,
+        inputs: &[String],
+    ) -> impl Future<Output = Result<Vec<Embedding>, Self::Error>> + Send {
+        (**self).embed(inputs)
+    }
+
+    fn model(&self) -> &EmbedderModel {
+        (**self).model()
+    }
+}
+
 /// The outcome of the capture-path privacy/injection filter (04 §1, 02 §6.1, 07).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FilterOutcome {

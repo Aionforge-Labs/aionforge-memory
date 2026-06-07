@@ -28,6 +28,7 @@ version = "0.1.0"
 dependencies = [
  "aionforge-domain",
  "aionforge-engine",
+ "tokio",
 ]
 
 [[package]]
@@ -118,6 +119,9 @@ dependencies = [
  "aionforge-security",
  "aionforge-store",
  "aionforge-trust",
+ "miette",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]
