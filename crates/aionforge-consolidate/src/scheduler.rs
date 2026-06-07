@@ -32,7 +32,7 @@ use crate::clock::{Clock, SystemClock};
 use crate::config::ConsolidationConfig;
 use crate::error::ConsolidationError;
 use crate::lag::ConsolidationLag;
-use crate::pass::{ConsolidationPass, PassContext, PassError};
+use crate::pass::{ConsolidationPass, PassContext, PassError, PassOutput};
 
 /// What one tick accomplished.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -208,6 +208,10 @@ impl<C: Clock> Consolidator<C> {
     ) -> Result<EpisodeOutcome, ConsolidationError> {
         let now = self.clock.now();
         let rule_versions = self.rule_versions();
+        // Accumulate every enabled pass's derived output, then materialize the merged set
+        // in the same commit as the flip — so all of one episode's consolidation lands
+        // atomically, never partially.
+        let mut artifacts = PassOutput::default();
         for pass in self.passes.iter().filter(|pass| pass.enabled()) {
             let cx = PassContext {
                 store: &self.store,
@@ -225,16 +229,16 @@ impl<C: Clock> Consolidator<C> {
                         self.config.apply_timeout
                     ))),
                 };
-            if let Err(error) = result {
-                return self.handle_failure(item, pass.name(), &error, &now);
+            match result {
+                Ok(output) => artifacts.merge(output),
+                Err(error) => return self.handle_failure(item, pass.name(), &error, &now),
             }
-            // M2.T03: a successful pass derives nothing to materialize; the flip below is
-            // the whole of the committed progress.
         }
 
-        // Every pass succeeded: flip the episode and advance the cursor atomically. The
-        // expected state is the episode's current state (raw, or in_progress after a
-        // crash-recovery reset), so the guard accepts exactly the row we discovered.
+        // Every pass succeeded: materialize the derived memory, flip the episode, and
+        // advance the cursor atomically. The expected state is the episode's current
+        // state (raw, or in_progress after a crash-recovery reset), so the guard accepts
+        // exactly the row we discovered.
         let cursor = ConsolidationCursor {
             last_position: ConsolidationCursor::watermark_for(&item.episode),
             last_episode_id: Some(item.episode.identity.id.clone()),
@@ -247,6 +251,7 @@ impl<C: Clock> Consolidator<C> {
             ConsolidationState::Consolidated,
             &cursor,
             &now,
+            &artifacts,
         )?;
         self.forget_attempts(item.episode.identity.id.as_str());
         Ok(EpisodeOutcome::Consolidated)

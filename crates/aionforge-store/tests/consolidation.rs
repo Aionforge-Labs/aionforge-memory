@@ -8,11 +8,20 @@ use aionforge_domain::namespace::Namespace;
 use aionforge_domain::nodes::episodic::{ConsolidationState, Episode, Role};
 use aionforge_domain::nodes::forensic::{AuditEvent, AuditKind};
 use aionforge_domain::time::Timestamp;
-use aionforge_store::{BoundQuery, ConsolidationCursor, NodeId, QueryResult, Store, StoreConfig};
+use aionforge_store::{
+    BoundQuery, ConsolidationArtifacts, ConsolidationCursor, NodeId, QueryResult, Store,
+    StoreConfig,
+};
 use serde_json::json;
 
 fn ts(text: &str) -> Timestamp {
     text.parse().expect("valid zoned datetime literal")
+}
+
+/// The empty derived-artifact set: these tests exercise the flip/cursor mechanics, not
+/// materialization (which has its own coverage in `materialize.rs` / the engine tests).
+fn no_artifacts() -> ConsolidationArtifacts {
+    ConsolidationArtifacts::default()
 }
 
 fn now() -> Timestamp {
@@ -113,6 +122,7 @@ fn cursor_is_absent_until_the_first_flip_then_round_trips() {
             ConsolidationState::Consolidated,
             &cursor,
             &now(),
+            &no_artifacts(),
         )
         .expect("flip");
 
@@ -165,6 +175,7 @@ fn discovery_is_oldest_first_skips_consolidated_and_respects_the_limit() {
             ConsolidationState::Consolidated,
             &cursor_at(&e1),
             &now(),
+            &no_artifacts(),
         )
         .expect("flip e1");
     let remaining: Vec<String> = store
@@ -200,6 +211,7 @@ fn reset_in_progress_returns_episodes_to_raw() {
             ConsolidationState::InProgress,
             &cursor_at(&episode),
             &now(),
+            &no_artifacts(),
         )
         .expect("claim");
     assert_eq!(
@@ -236,6 +248,7 @@ fn flip_guard_refuses_a_wrong_expected_state() {
         ConsolidationState::Consolidated,
         &cursor_at(&episode),
         &now(),
+        &no_artifacts(),
     );
     assert!(result.is_err(), "the guard rejects a wrong expected state");
     assert_eq!(
@@ -269,6 +282,7 @@ fn flip_marks_consolidated_and_advances_the_generation() {
             ConsolidationState::Consolidated,
             &cursor_at(&episode),
             &now(),
+            &no_artifacts(),
         )
         .expect("flip");
     assert!(
@@ -313,6 +327,7 @@ fn lag_reports_the_oldest_pending_and_drains_as_work_completes() {
             ConsolidationState::Consolidated,
             &cursor_at(&e1),
             &now(),
+            &no_artifacts(),
         )
         .expect("flip oldest");
     let lag = store.consolidation_lag().expect("lag");

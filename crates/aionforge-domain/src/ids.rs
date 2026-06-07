@@ -20,6 +20,24 @@ impl Id {
         Self(ulid::Ulid::new().to_string())
     }
 
+    /// Derive a deterministic, ULID-shaped identifier from canonical content bytes.
+    ///
+    /// Unlike [`Id::generate`], the result is a pure function of the input: the same
+    /// bytes always yield the same id. Consolidation uses this to give an extracted
+    /// fact a stable identity (over namespace, subject, predicate, object, source
+    /// episode, and rule version) so re-running a cursor position dedups to a no-op
+    /// rather than duplicating the assertion (04 §2). The blake3 digest's leading
+    /// 128 bits are packed into the ULID byte layout, so the value round-trips
+    /// through [`Id::parse`] like any other identifier — it is simply not
+    /// time-sortable, which derived (non-temporal) ids never need to be.
+    #[must_use]
+    pub fn from_content_hash(bytes: &[u8]) -> Self {
+        let digest = blake3::hash(bytes);
+        let mut packed = [0u8; 16];
+        packed.copy_from_slice(&digest.as_bytes()[..16]);
+        Self(ulid::Ulid::from_bytes(packed).to_string())
+    }
+
     /// Construct an identifier from an existing string, validating its ULID shape.
     ///
     /// # Errors
@@ -122,5 +140,32 @@ impl SerializationId {
 impl fmt::Display for SerializationId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn content_hash_id_is_deterministic() {
+        let a = Id::from_content_hash(b"ns|alice|works_on|aionforge|ep01|v1");
+        let b = Id::from_content_hash(b"ns|alice|works_on|aionforge|ep01|v1");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn content_hash_id_separates_distinct_inputs() {
+        let a = Id::from_content_hash(b"ns|alice|works_on|aionforge|ep01|v1");
+        let b = Id::from_content_hash(b"ns|alice|works_on|selene|ep01|v1");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn content_hash_id_is_a_valid_ulid() {
+        // A derived id must round-trip through the same validation as any boundary
+        // id, so the store can persist it without a special path.
+        let derived = Id::from_content_hash(b"anything");
+        assert!(Id::parse(derived.as_str()).is_ok());
     }
 }

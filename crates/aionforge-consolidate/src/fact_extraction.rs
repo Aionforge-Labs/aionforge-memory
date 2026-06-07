@@ -1,0 +1,371 @@
+//! The fact-extraction consolidation pass (write-and-consolidation §2, M2.T04).
+//!
+//! This is the first rule that derives memory: it runs the injected [`FactExtractor`]
+//! over an episode, resolves every subject and entity-object surface to a canonical
+//! entity (see [`crate::resolve`]), and assembles the [`PassOutput`] the scheduler
+//! materializes atomically with the flip. It reads only a snapshot — every write is the
+//! scheduler's — so an interrupted pass leaves the episode `raw` to be re-run, and the
+//! content-derived fact and entity ids make that re-run a no-op.
+//!
+//! Each derived fact carries its extraction provenance (extractor identity, source
+//! spans, rule version) and its support edges; each resolution decision is recorded as a
+//! `canonicalize` audit event. The pass embeds entity names and fact statements through
+//! the injected [`Embedder`] so the derived nodes are immediately retrievable.
+
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+
+use aionforge_domain::blocks::{Identity, Stats};
+use aionforge_domain::contracts::{Embedder, EntitySurface, ExtractedObject, FactExtractor};
+use aionforge_domain::embedding::Embedding;
+use aionforge_domain::ids::Id;
+use aionforge_domain::namespace::Namespace;
+use aionforge_domain::nodes::episodic::Episode;
+use aionforge_domain::nodes::forensic::{AuditEvent, AuditKind};
+use aionforge_domain::nodes::semantic::{Entity, Extraction, Fact, FactStatus};
+use aionforge_domain::time::{BiTemporal, Timestamp};
+use aionforge_domain::value::ObjectValue;
+use aionforge_store::MaterializedFact;
+use serde_json::json;
+
+use crate::config::ResolutionConfig;
+use crate::pass::{ConsolidationPass, PassContext, PassError, PassOutput};
+use crate::resolve::{CorefTable, Resolution, resolve_surface};
+
+/// The fact-extraction pass: extract triples, resolve entities, derive facts.
+///
+/// Generic over the [`FactExtractor`] (a deterministic rule extractor in M2, the
+/// model-backed client in M4) and the [`Embedder`] (the real client in production, a
+/// fake in tests); both are shared so one instance backs the whole consolidator.
+pub struct FactExtractionPass<X, E> {
+    extractor: Arc<X>,
+    embedder: Arc<E>,
+    config: ResolutionConfig,
+    /// The substrate actor id stamped on this pass's `canonicalize` audit events.
+    actor_id: Id,
+}
+
+impl<X, E> FactExtractionPass<X, E>
+where
+    X: FactExtractor + 'static,
+    E: Embedder + 'static,
+{
+    /// Build the pass over a shared extractor and embedder.
+    #[must_use]
+    pub fn new(extractor: Arc<X>, embedder: Arc<E>, config: ResolutionConfig) -> Self {
+        Self {
+            extractor,
+            embedder,
+            config,
+            actor_id: Id::generate(),
+        }
+    }
+
+    /// Embed a batch of strings, mapping the (possibly fatal) embedder error to a
+    /// transient pass failure — a down embedder is retryable, not a bad episode.
+    async fn embed(&self, inputs: Vec<String>) -> Result<Vec<Embedding>, PassError> {
+        if inputs.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.embedder
+            .embed(&inputs)
+            .await
+            .map_err(|error| PassError::Transient(format!("embedder failed: {error}")))
+    }
+}
+
+#[async_trait::async_trait]
+impl<X, E> ConsolidationPass for FactExtractionPass<X, E>
+where
+    X: FactExtractor + 'static,
+    E: Embedder + 'static,
+{
+    fn name(&self) -> &'static str {
+        "extract_facts"
+    }
+
+    fn version(&self) -> u32 {
+        1
+    }
+
+    async fn apply(&self, cx: &PassContext<'_>) -> Result<PassOutput, PassError> {
+        let episode = cx.episode;
+        let extracted = self
+            .extractor
+            .extract(episode)
+            .await
+            .map_err(|error| PassError::Transient(format!("extractor failed: {error}")))?;
+        if extracted.is_empty() {
+            return Ok(PassOutput::default());
+        }
+
+        // Embed each distinct surface TEXT once. The embedder is a pure function of the
+        // input string — an entity's type never reaches it — so two surfaces with the
+        // same text but different types share one embedding, and keying by text is exact.
+        // The resolution-time type filter (resolve.rs) is what keeps those two apart.
+        let surfaces = distinct_surfaces(&extracted);
+        let mut distinct_texts: Vec<String> = Vec::new();
+        let mut seen_text: HashSet<&str> = HashSet::new();
+        for surface in &surfaces {
+            if seen_text.insert(surface.surface.as_str()) {
+                distinct_texts.push(surface.surface.clone());
+            }
+        }
+        let text_embeddings = self.embed(distinct_texts.clone()).await?;
+        let embedding_of: HashMap<&str, &Embedding> = distinct_texts
+            .iter()
+            .map(String::as_str)
+            .zip(text_embeddings.iter())
+            .collect();
+
+        // Resolve each surface (read-only) within the episode's namespace.
+        let namespace = &episode.identity.namespace;
+        let store: &aionforge_store::Store = cx.store;
+        let mut coref = CorefTable::default();
+        let mut resolutions: HashMap<(String, String), Resolution> = HashMap::new();
+        let mut audit_events = Vec::new();
+        for surface in &surfaces {
+            let embedding = embedding_of
+                .get(surface.surface.as_str())
+                .ok_or_else(|| PassError::Fatal("surface embedding missing".to_string()))?;
+            let resolution = resolve_surface(
+                store,
+                &self.config,
+                namespace,
+                surface,
+                embedding,
+                &mut coref,
+            )
+            .map_err(|error| PassError::Transient(format!("entity resolution failed: {error}")))?;
+            audit_events.push(self.canonicalize_audit(surface, &resolution, namespace, &cx.now));
+            resolutions.insert(surface_key(surface), resolution);
+        }
+
+        // Build the new entities the resolver discovered, embedded by canonical name.
+        let model = self.embedder.model().clone();
+        let mut new_entities = Vec::new();
+        for (id, canonical_name, entity_type, aliases) in coref.new_entities() {
+            let embedding = embedding_of
+                .get(canonical_name.as_str())
+                .map(|e| (*e).clone());
+            new_entities.push(Entity {
+                identity: identity(id, namespace, &cx.now),
+                stats: derived_stats(episode, &cx.now),
+                canonical_name,
+                entity_type,
+                aliases,
+                description: None,
+                embedding,
+                embedder_model: Some(model.clone()),
+                attributes: None,
+            });
+        }
+
+        // Build the facts, resolving subject and entity objects to canonical ids.
+        let rule_version = self.extractor.identity().rule_version.clone();
+        let identity_ref = self.extractor.identity();
+        let mut facts = Vec::new();
+        let mut statements = Vec::new();
+        let mut mentioned: Vec<Id> = Vec::new();
+        let mut mentioned_seen: HashSet<String> = HashSet::new();
+        for extracted_fact in &extracted {
+            let Some(subject) = resolutions.get(&surface_key(&extracted_fact.subject)) else {
+                continue;
+            };
+            note_mention(&mut mentioned, &mut mentioned_seen, &subject.id);
+            let object = match &extracted_fact.object {
+                ExtractedObject::Entity(object_surface) => {
+                    let Some(resolved) = resolutions.get(&surface_key(object_surface)) else {
+                        continue;
+                    };
+                    note_mention(&mut mentioned, &mut mentioned_seen, &resolved.id);
+                    ObjectValue::Entity(resolved.id.clone())
+                }
+                ExtractedObject::Literal(value) => value.clone(),
+            };
+
+            let fact_id = fact_id(
+                namespace,
+                &subject.id,
+                &extracted_fact.predicate,
+                &object,
+                &episode.identity.id,
+                &rule_version,
+            );
+            let extraction = Extraction {
+                extractor_model_family: identity_ref.model_family.clone(),
+                extractor_model_version: identity_ref.model_version.clone(),
+                source_spans: extracted_fact.source_spans.clone(),
+                extraction_rule_version: Some(rule_version.clone()),
+            };
+            statements.push(extracted_fact.statement.clone());
+            facts.push(MaterializedFact {
+                fact: Fact {
+                    identity: identity(fact_id, namespace, &cx.now),
+                    stats: derived_stats(episode, &cx.now),
+                    subject_id: subject.id.clone(),
+                    predicate: extracted_fact.predicate.clone(),
+                    object,
+                    confidence: extracted_fact.confidence,
+                    status: FactStatus::Active,
+                    statement: extracted_fact.statement.clone(),
+                    embedding: None,
+                    embedder_model: Some(model.clone()),
+                    extraction: Some(extraction),
+                },
+                about: about_window(episode, &cx.now),
+            });
+        }
+
+        // Embed fact statements so the derived facts are immediately vector-searchable.
+        let statement_embeddings = self.embed(statements).await?;
+        for (materialized, embedding) in facts.iter_mut().zip(statement_embeddings) {
+            materialized.fact.embedding = Some(embedding);
+        }
+
+        let mut out = PassOutput::default();
+        out.new_entities = new_entities;
+        out.facts = facts;
+        out.mentioned_entities = mentioned;
+        out.audit_events = audit_events;
+        Ok(out)
+    }
+}
+
+impl<X, E> FactExtractionPass<X, E> {
+    /// Build the `canonicalize` audit event recording one resolution decision.
+    fn canonicalize_audit(
+        &self,
+        surface: &EntitySurface,
+        resolution: &Resolution,
+        namespace: &Namespace,
+        now: &Timestamp,
+    ) -> AuditEvent {
+        AuditEvent {
+            identity: Identity {
+                id: Id::generate(),
+                ingested_at: now.clone(),
+                namespace: namespace.clone(),
+                expired_at: None,
+            },
+            kind: AuditKind::Canonicalize,
+            subject_id: resolution.id.clone(),
+            actor_id: self.actor_id.clone(),
+            payload: json!({
+                "surface": surface.surface,
+                "type": surface.entity_type,
+                "resolved_to": resolution.id.as_str(),
+                "canonical_name": resolution.canonical_name,
+                "method": resolution.method.as_str(),
+                "is_new": resolution.is_new,
+                "confidence": resolution.confidence,
+                "candidates": resolution.candidates,
+            }),
+            signature: String::new(),
+            occurred_at: now.clone(),
+        }
+    }
+}
+
+/// The distinct surface forms (subjects plus entity objects) in appearance order.
+fn distinct_surfaces(facts: &[aionforge_domain::contracts::ExtractedFact]) -> Vec<EntitySurface> {
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    let mut surfaces = Vec::new();
+    let push = |surface: &EntitySurface,
+                surfaces: &mut Vec<EntitySurface>,
+                seen: &mut HashSet<(String, String)>| {
+        if seen.insert(surface_key(surface)) {
+            surfaces.push(surface.clone());
+        }
+    };
+    for fact in facts {
+        push(&fact.subject, &mut surfaces, &mut seen);
+        if let ExtractedObject::Entity(object) = &fact.object {
+            push(object, &mut surfaces, &mut seen);
+        }
+    }
+    surfaces
+}
+
+/// The map key identifying a surface form: its text and provisional type.
+fn surface_key(surface: &EntitySurface) -> (String, String) {
+    (
+        surface.surface.trim().to_string(),
+        surface.entity_type.clone(),
+    )
+}
+
+/// Record an entity id as mentioned by the episode, once.
+fn note_mention(mentioned: &mut Vec<Id>, seen: &mut HashSet<String>, id: &Id) {
+    if seen.insert(id.as_str().to_string()) {
+        mentioned.push(id.clone());
+    }
+}
+
+/// The deterministic fact id: a content hash over the canonical triple key plus source
+/// episode and rule version, so re-extracting an episode yields the same id (04 §2).
+fn fact_id(
+    namespace: &Namespace,
+    subject_id: &Id,
+    predicate: &str,
+    object: &ObjectValue,
+    episode_id: &Id,
+    rule_version: &str,
+) -> Id {
+    let key = format!(
+        "{}|{}|{}|{}|{}|{}",
+        namespace,
+        subject_id,
+        predicate,
+        object_canonical(object),
+        episode_id,
+        rule_version,
+    );
+    Id::from_content_hash(key.as_bytes())
+}
+
+/// A stable canonical string for an object value, for the fact id key.
+fn object_canonical(object: &ObjectValue) -> String {
+    match object {
+        ObjectValue::Entity(id) => format!("entity:{id}"),
+        other => serde_json::to_string(other).unwrap_or_default(),
+    }
+}
+
+/// The identity block for a derived node: a fresh transaction time, the episode's
+/// namespace, and a content-derived id.
+fn identity(id: Id, namespace: &Namespace, now: &Timestamp) -> Identity {
+    Identity {
+        id,
+        ingested_at: now.clone(),
+        namespace: namespace.clone(),
+        expired_at: None,
+    }
+}
+
+/// The stats block for a derived node: derivation trust/importance inherited from the
+/// source episode, accessed now, never pinned.
+fn derived_stats(episode: &Episode, now: &Timestamp) -> Stats {
+    Stats {
+        importance: episode.stats.importance,
+        trust: episode.stats.trust,
+        last_access: now.clone(),
+        access_count_recent: 0,
+        referenced_count: 0,
+        surprise: 0.0,
+        is_pinned: false,
+    }
+}
+
+/// The `ABOUT` validity window: event time opens at the episode's `captured_at`,
+/// transaction time at `now`, both open-ended.
+fn about_window(episode: &Episode, now: &Timestamp) -> aionforge_domain::edges::About {
+    aionforge_domain::edges::About {
+        temporal: BiTemporal {
+            valid_from: episode.captured_at.clone(),
+            valid_to: None,
+            ingested_at: now.clone(),
+            expired_at: None,
+        },
+    }
+}

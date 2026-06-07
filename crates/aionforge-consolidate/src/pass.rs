@@ -17,6 +17,16 @@ use aionforge_domain::nodes::episodic::Episode;
 use aionforge_domain::time::Timestamp;
 use aionforge_store::{NodeId, Store};
 
+/// What a pass derived for the scheduler to commit.
+///
+/// This is the store's [`ConsolidationArtifacts`](aionforge_store::ConsolidationArtifacts)
+/// payload — the entities, facts, and edges the scheduler materializes atomically with
+/// the episode flip. It is re-exported under this name because "pass output" is the seam
+/// vocabulary, while "consolidation artifacts" is the storage vocabulary; they are one
+/// type so a pass's return value is exactly what the commit writes, with no copy step.
+/// A no-deriving pass returns [`PassOutput::default`]; M2.T04+ passes fill it in.
+pub use aionforge_store::ConsolidationArtifacts as PassOutput;
+
 /// One consolidation rule over a single episode.
 #[async_trait::async_trait]
 pub trait ConsolidationPass: Send + Sync + 'static {
@@ -55,16 +65,6 @@ pub struct PassContext<'a> {
     /// The `{pass_name: version}` set in force at this cursor position.
     pub rule_versions: &'a serde_json::Value,
 }
-
-/// What a pass derived for the scheduler to commit.
-///
-/// In M2.T03 a successful pass commits nothing beyond the episode's state-flip, so this
-/// is empty. M2.T04–T06 grow it with the derived facts/entities/edges they extract; the
-/// scheduler will materialize those in the same atomic flip. The trait signature does
-/// not change as that happens — only this payload.
-#[derive(Debug, Default, Clone)]
-#[non_exhaustive]
-pub struct PassOutput {}
 
 /// A pass-level failure, classified for the scheduler's retry/halt decision.
 #[derive(Debug, thiserror::Error)]
