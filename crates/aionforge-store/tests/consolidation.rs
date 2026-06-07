@@ -233,6 +233,28 @@ fn reset_in_progress_returns_episodes_to_raw() {
 }
 
 #[test]
+fn begin_consolidation_guard_refuses_a_wrong_expected_state() {
+    let store = store();
+    let (node_id, _episode) = insert_episode(
+        &store,
+        "guarded-begin",
+        "2026-06-06T09:00:00-05:00[America/Chicago]",
+        "2026-06-06T09:00:00-05:00[America/Chicago]",
+    );
+    // The episode is raw, but we claim it is already consolidated: the begin flip is refused.
+    let result = store.begin_consolidation_episode(node_id, ConsolidationState::Consolidated);
+    assert!(
+        result.is_err(),
+        "the begin guard rejects a wrong expected state"
+    );
+    assert_eq!(
+        episode_state(&store, node_id),
+        ConsolidationState::Raw,
+        "a refused begin leaves the episode raw, not in_progress"
+    );
+}
+
+#[test]
 fn flip_guard_refuses_a_wrong_expected_state() {
     let store = store();
     let (node_id, episode) = insert_episode(

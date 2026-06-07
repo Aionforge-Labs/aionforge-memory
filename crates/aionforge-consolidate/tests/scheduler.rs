@@ -2,254 +2,17 @@
 //! §2–§3): the cursor persists and resumes, concurrency is bounded, lag is observable,
 //! and a crash mid-pass resumes from the last position and never double-applies.
 
-use std::path::PathBuf;
+mod common;
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use aionforge_consolidate::{
-    Clock, ConsolidationConfig, ConsolidationPass, Consolidator, NoopPass, PassContext, PassError,
-    PassOutput,
-};
-use aionforge_domain::blocks::{Identity, Stats};
-use aionforge_domain::ids::{ContentHash, Id};
-use aionforge_domain::namespace::Namespace;
-use aionforge_domain::nodes::episodic::{ConsolidationState, Episode, Role};
-use aionforge_domain::time::Timestamp;
-use aionforge_store::{BoundQuery, NodeId, QueryResult, Store, StoreConfig, Value};
-use async_trait::async_trait;
+use aionforge_consolidate::{ConsolidationConfig, Consolidator, NoopPass};
+use aionforge_domain::nodes::episodic::ConsolidationState;
+use aionforge_store::{BoundQuery, QueryResult, Store, Value};
 
-fn ts(text: &str) -> Timestamp {
-    text.parse().expect("valid zoned datetime literal")
-}
-
-/// A fixed clock so lag and stamped times are deterministic.
-#[derive(Clone)]
-struct FixedClock(Timestamp);
-
-impl Clock for FixedClock {
-    fn now(&self) -> Timestamp {
-        self.0.clone()
-    }
-}
-
-fn fixed_clock() -> FixedClock {
-    FixedClock(ts("2026-06-06T12:00:00-05:00[America/Chicago]"))
-}
-
-fn config() -> ConsolidationConfig {
-    ConsolidationConfig::default()
-}
-
-fn store_config() -> StoreConfig {
-    StoreConfig {
-        embedding_dimension: 4,
-    }
-}
-
-fn in_memory() -> Arc<Store> {
-    let store = Store::open_with_config(store_config()).expect("open store");
-    store
-        .migrate(&ts("2026-01-01T00:00:00-06:00[America/Chicago]"))
-        .expect("migrate");
-    Arc::new(store)
-}
-
-fn temp_dir(label: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "aionforge-consolidate-{label}-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    dir
-}
-
-fn stats() -> Stats {
-    Stats {
-        importance: 0.5,
-        trust: 0.8,
-        last_access: ts("2026-06-06T10:00:00-05:00[America/Chicago]"),
-        access_count_recent: 0,
-        referenced_count: 0,
-        surprise: 0.1,
-        is_pinned: false,
-    }
-}
-
-/// Insert a `raw` episode; minute `n` sets a distinct, ordered ingested/captured time.
-fn insert_episode(store: &Store, content: &str, minute: u32) -> NodeId {
-    let stamp = format!("2026-06-06T09:{minute:02}:00-05:00[America/Chicago]");
-    let episode = Episode {
-        identity: Identity {
-            id: Id::generate(),
-            ingested_at: ts(&stamp),
-            namespace: Namespace::Agent("alice".to_string()),
-            expired_at: None,
-        },
-        stats: stats(),
-        content: content.to_string(),
-        role: Role::User,
-        captured_at: ts(&stamp),
-        agent_id: Id::generate(),
-        session_id: None,
-        content_hash: ContentHash::of(format!("{content}-{minute}").as_bytes()),
-        embedding: None,
-        embedder_model: None,
-        consolidation_state: ConsolidationState::Raw,
-        origin: None,
-    };
-    store.insert_episode(&episode).expect("insert episode")
-}
-
-fn episode_state(store: &Store, node_id: NodeId) -> ConsolidationState {
-    store
-        .episode_by_node_id(node_id)
-        .expect("read")
-        .expect("present")
-        .consolidation_state
-}
-
-fn pending(store: &Store) -> u64 {
-    store.consolidation_lag().expect("lag").episodes_pending
-}
-
-// --- Test passes ------------------------------------------------------------------
-
-/// Counts how many times `apply` runs.
-struct CountingPass {
-    applied: Arc<AtomicUsize>,
-}
-
-#[async_trait]
-impl ConsolidationPass for CountingPass {
-    fn name(&self) -> &'static str {
-        "counting"
-    }
-    fn version(&self) -> u32 {
-        1
-    }
-    async fn apply(&self, _cx: &PassContext<'_>) -> Result<PassOutput, PassError> {
-        self.applied.fetch_add(1, Ordering::SeqCst);
-        Ok(PassOutput::default())
-    }
-}
-
-/// Fails transiently for the first `fail_times` applies, then succeeds.
-struct FlakyPass {
-    applied: Arc<AtomicUsize>,
-    fail_times: usize,
-}
-
-#[async_trait]
-impl ConsolidationPass for FlakyPass {
-    fn name(&self) -> &'static str {
-        "flaky"
-    }
-    fn version(&self) -> u32 {
-        1
-    }
-    async fn apply(&self, _cx: &PassContext<'_>) -> Result<PassOutput, PassError> {
-        let n = self.applied.fetch_add(1, Ordering::SeqCst) + 1;
-        if n <= self.fail_times {
-            Err(PassError::Transient(format!("attempt {n}")))
-        } else {
-            Ok(PassOutput::default())
-        }
-    }
-}
-
-/// Fails transiently only on the episode whose content matches.
-struct FailOnContentPass {
-    fail_content: String,
-}
-
-#[async_trait]
-impl ConsolidationPass for FailOnContentPass {
-    fn name(&self) -> &'static str {
-        "fail-on-content"
-    }
-    fn version(&self) -> u32 {
-        1
-    }
-    async fn apply(&self, cx: &PassContext<'_>) -> Result<PassOutput, PassError> {
-        if cx.episode.content == self.fail_content {
-            Err(PassError::Transient("targeted failure".to_string()))
-        } else {
-            Ok(PassOutput::default())
-        }
-    }
-}
-
-/// Always fails; `fatal` chooses the classification.
-struct AlwaysFailPass {
-    fatal: bool,
-}
-
-#[async_trait]
-impl ConsolidationPass for AlwaysFailPass {
-    fn name(&self) -> &'static str {
-        "always-fail"
-    }
-    fn version(&self) -> u32 {
-        1
-    }
-    async fn apply(&self, _cx: &PassContext<'_>) -> Result<PassOutput, PassError> {
-        if self.fatal {
-            Err(PassError::Fatal("permanent".to_string()))
-        } else {
-            Err(PassError::Transient("temporary".to_string()))
-        }
-    }
-}
-
-/// Records the episode's own `consolidation_state` as observed from inside `apply` — proving
-/// the scheduler marks the episode `in_progress` before any pass runs.
-struct ObserveStatePass {
-    observed: Arc<Mutex<Option<ConsolidationState>>>,
-}
-
-#[async_trait]
-impl ConsolidationPass for ObserveStatePass {
-    fn name(&self) -> &'static str {
-        "observe-state"
-    }
-    fn version(&self) -> u32 {
-        1
-    }
-    async fn apply(&self, cx: &PassContext<'_>) -> Result<PassOutput, PassError> {
-        let state = cx
-            .store
-            .episode_by_node_id(cx.episode_node_id)
-            .expect("read episode")
-            .expect("episode present")
-            .consolidation_state;
-        *self.observed.lock().expect("observed mutex") = Some(state);
-        Ok(PassOutput::default())
-    }
-}
-
-/// Tracks the maximum number of concurrent `apply` calls observed.
-struct ConcurrencyProbePass {
-    in_flight: Arc<AtomicUsize>,
-    max_in_flight: Arc<AtomicUsize>,
-}
-
-#[async_trait]
-impl ConsolidationPass for ConcurrencyProbePass {
-    fn name(&self) -> &'static str {
-        "probe"
-    }
-    fn version(&self) -> u32 {
-        1
-    }
-    async fn apply(&self, _cx: &PassContext<'_>) -> Result<PassOutput, PassError> {
-        let current = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
-        self.max_in_flight.fetch_max(current, Ordering::SeqCst);
-        tokio::time::sleep(Duration::from_millis(5)).await;
-        self.in_flight.fetch_sub(1, Ordering::SeqCst);
-        Ok(PassOutput::default())
-    }
-}
+use common::*;
 
 // --- Tests ------------------------------------------------------------------------
 
@@ -623,6 +386,99 @@ async fn a_tick_resumes_an_already_in_progress_episode() {
         episode_state(&store, node),
         ConsolidationState::Consolidated
     );
+}
+
+#[tokio::test]
+async fn a_fatal_failure_settles_from_in_progress_to_failed() {
+    // The episode is marked in_progress before the pass runs, and a fatal failure settles it from
+    // in_progress to failed (not from raw). The observed mid-run state proves begin ran first.
+    let store = in_memory();
+    let node = insert_episode(&store, "doomed", 1);
+    let observed = Arc::new(Mutex::new(None));
+    let mut consolidator = Consolidator::with_clock(store.clone(), config(), fixed_clock());
+    consolidator.register(Box::new(ObserveThenFailPass {
+        observed: observed.clone(),
+        fatal: true,
+    }));
+
+    let report = consolidator.tick_once().await.expect("tick");
+    assert_eq!(report.failed, 1);
+    assert_eq!(
+        *observed.lock().expect("observed"),
+        Some(ConsolidationState::InProgress),
+        "the pass ran while the episode was in_progress"
+    );
+    assert_eq!(
+        episode_state(&store, node),
+        ConsolidationState::Failed,
+        "a fatal failure settles the in_progress episode to failed"
+    );
+}
+
+#[tokio::test]
+async fn an_interrupted_in_progress_episode_recovers_across_a_restart() {
+    // The full crash-recovery loop with durability: an episode left in_progress (a tick that
+    // marked it then crashed) survives a WAL restart as in_progress, the startup reset returns it
+    // to raw, and a fresh tick rediscovers and consolidates it exactly once.
+    let dir = temp_dir("inprogress-recover");
+    let migrate_at = ts("2026-01-01T00:00:00-06:00[America/Chicago]");
+
+    let episode_id = {
+        let store = Arc::new(
+            Store::open_persistent_migrated(&dir, store_config(), &migrate_at).expect("open"),
+        );
+        let node = insert_episode(&store, "interrupted", 1);
+        // Simulate a tick that marked the episode in_progress, then crashed before committing.
+        store
+            .begin_consolidation_episode(node, ConsolidationState::Raw)
+            .expect("mark in_progress");
+        assert_eq!(episode_state(&store, node), ConsolidationState::InProgress);
+        let id = store
+            .episode_by_node_id(node)
+            .expect("read")
+            .expect("present")
+            .identity
+            .id;
+        drop(store);
+        id
+    };
+
+    // Recover from the WAL alone: the in_progress marker is durable.
+    let store = Arc::new(Store::recover(&dir, store_config()).expect("recover"));
+    assert_eq!(
+        store.consolidation_lag().expect("lag").episodes_pending,
+        1,
+        "the interrupted episode survives the restart, still pending"
+    );
+    // The startup crash-recovery hook returns it to raw.
+    assert_eq!(
+        store.reset_in_progress_episodes().expect("reset"),
+        1,
+        "the interrupted episode is reset to raw on recovery"
+    );
+
+    // A fresh tick rediscovers and consolidates it exactly once.
+    let applied = Arc::new(AtomicUsize::new(0));
+    let mut consolidator = Consolidator::with_clock(store.clone(), config(), fixed_clock());
+    consolidator.register(Box::new(CountingPass {
+        applied: applied.clone(),
+    }));
+    let report = consolidator.tick_once().await.expect("tick");
+    assert_eq!(report.consolidated, 1, "the recovered episode consolidates");
+    assert_eq!(applied.load(Ordering::SeqCst), 1, "applied exactly once");
+    assert_eq!(pending(&store), 0, "the backlog is drained");
+    // The cursor advanced to the recovered episode.
+    let cursor = store
+        .load_consolidation_cursor()
+        .expect("load")
+        .expect("cursor");
+    assert!(
+        cursor.last_episode_id.as_ref().map(|id| id.as_str()) == Some(episode_id.as_str()),
+        "the cursor advanced to the recovered episode"
+    );
+    drop(consolidator);
+    drop(store);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
