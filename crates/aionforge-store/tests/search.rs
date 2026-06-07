@@ -284,3 +284,46 @@ fn empty_candidate_set_returns_no_hits() {
             .is_empty()
     );
 }
+
+#[test]
+fn nearest_active_episode_returns_the_closest_active_match() {
+    let store = store();
+    // An expired (soft-forgotten) episode and an active one point the same way.
+    let mut expired = episode("forgotten turn", Some(vec![1.0, 0.0, 0.0, 0.0]));
+    expired.identity.expired_at = Some(ts("2026-06-07T00:00:00-05:00[America/Chicago]"));
+    store
+        .insert_episode(&expired)
+        .expect("seed expired episode");
+
+    let active = episode("remembered turn", Some(vec![1.0, 0.0, 0.0, 0.0]));
+    let active_id = active.identity.id.clone();
+    store.insert_episode(&active).expect("seed active episode");
+
+    let (id, distance) = store
+        .nearest_active_episode(&emb(vec![1.0, 0.0, 0.0, 0.0]), 8)
+        .expect("nearest active episode")
+        .expect("an active neighbour exists");
+    assert_eq!(id, active_id, "the soft-forgotten episode must be skipped");
+    assert!(
+        distance <= 0.001,
+        "identical direction is ~0 distance, got {distance}"
+    );
+}
+
+#[test]
+fn nearest_active_episode_is_none_when_every_neighbour_is_expired() {
+    let store = store();
+    let mut expired = episode("forgotten turn", Some(vec![1.0, 0.0, 0.0, 0.0]));
+    expired.identity.expired_at = Some(ts("2026-06-07T00:00:00-05:00[America/Chicago]"));
+    store
+        .insert_episode(&expired)
+        .expect("seed expired episode");
+
+    let nearest = store
+        .nearest_active_episode(&emb(vec![1.0, 0.0, 0.0, 0.0]), 8)
+        .expect("nearest active episode");
+    assert!(
+        nearest.is_none(),
+        "an expired-only neighbourhood yields no active match"
+    );
+}

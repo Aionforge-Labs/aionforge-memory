@@ -4,17 +4,23 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use aionforge_domain::edges::{Audit, HasProvenance};
+use aionforge_domain::embedding::Embedding;
+use aionforge_domain::ids::{ContentHash, Id};
 use aionforge_domain::nodes::episodic::Episode;
+use aionforge_domain::nodes::forensic::{AuditEvent, ProvenanceRecord};
 use aionforge_domain::time::Timestamp;
-use selene_core::{GraphId, NodeId, db_string};
+use selene_core::{GraphId, NodeId, PropertyMap, db_string};
 use selene_gql::{BindingTable, BuiltinProcedureRegistry, Session, StatementOutput};
 use selene_graph::{DEFAULT_WAL_FILE_NAME, GraphTypeDef, SeleneGraph, SharedGraph, WalConfig};
 
 use crate::config::StoreConfig;
-use crate::episode;
+use crate::convert::as_id;
 use crate::error::StoreError;
 use crate::gql::{BoundQuery, QueryResult, Rows};
 use crate::providers::candidate_state_provider;
+use crate::search::SearchKind;
+use crate::{audit, episode, provenance};
 
 /// The storage layer over a selene-db `SharedGraph`.
 ///
@@ -252,6 +258,146 @@ impl Store {
         let output = session.execute_source(query.source(), &registry)?;
         materialize(output)
     }
+
+    /// The id of a live episode with this content hash, if one exists.
+    ///
+    /// The exact-duplicate check on the capture path (04 §1): `content_hash` is an
+    /// indexed `STRING` column, so this is an index probe, not a scan. Only active
+    /// episodes match — a soft-forgotten one (`expired_at` set, 02 §3) must not block
+    /// re-capturing the same content, since soft-forget is reversible (05 §2).
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] if the query fails or the stored id is malformed.
+    pub fn episode_id_by_content_hash(
+        &self,
+        content_hash: &ContentHash,
+    ) -> Result<Option<Id>, StoreError> {
+        let query = BoundQuery::new(
+            "MATCH (e:Episode) WHERE e.content_hash = $h AND e.expired_at IS NULL \
+             RETURN e.id AS id LIMIT 1",
+        )
+        .bind_str("h", content_hash.as_str())?;
+        match self.execute(&query)? {
+            QueryResult::Rows(rows) => match rows.value(0, 0) {
+                Some(value) => Ok(Some(as_id(value)?)),
+                None => Ok(None),
+            },
+            _ => Ok(None),
+        }
+    }
+
+    /// The nearest *active* episode to `query` and its cosine distance, if any.
+    ///
+    /// The near-duplicate check on the capture path (04 §1 step 2). It scans the top
+    /// `k` ANN neighbors best-first and returns the first one that is still active
+    /// (`expired_at` unset, 02 §3), skipping soft-forgotten episodes so a near-dup is
+    /// never judged against a forgotten memory. Returning the domain [`Id`] keeps the
+    /// engine's `NodeId` inside this layer. The caller applies its own similarity
+    /// threshold to the returned distance (smaller is more similar).
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] if the search, a candidate read, or a decode fails.
+    pub fn nearest_active_episode(
+        &self,
+        query: &Embedding,
+        k: usize,
+    ) -> Result<Option<(Id, f64)>, StoreError> {
+        for hit in self.vector_search_ann(SearchKind::Episode, query, k)? {
+            if let Some(episode) = self.episode_by_node_id(hit.node)?
+                && episode.identity.expired_at.is_none()
+            {
+                return Ok(Some((episode.identity.id, hit.score)));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Commit a capture bundle through the single mutation funnel (04 §1).
+    ///
+    /// Writes the episode, its provenance record, and the capture audit event as one
+    /// atomic commit, wiring `Episode -HAS_PROVENANCE-> ProvenanceRecord` and
+    /// `AuditEvent -AUDIT-> Episode`. The caller has already set each record's
+    /// `subject_id`/`actor_id` to the episode's domain id; the edges connect the
+    /// freshly assigned node ids. Durable before visible, like every write here.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] if translation, any node/edge mutation, or the commit
+    /// fails; nothing is published if any step fails.
+    pub fn commit_capture(
+        &self,
+        episode: &Episode,
+        provenance: &ProvenanceRecord,
+        audit: &AuditEvent,
+    ) -> Result<CaptureWriteIds, StoreError> {
+        let (episode_labels, episode_props) = episode::to_node(episode)?;
+        let (provenance_labels, provenance_props) = provenance::to_node(provenance)?;
+        let (audit_labels, audit_props) = audit::to_node(audit)?;
+        let has_provenance = db_string(HasProvenance::LABEL)?;
+        let audit_edge = db_string(Audit::LABEL)?;
+
+        let mut txn = self.graph.begin_write();
+        let ids = {
+            let mut mutator = txn.mutator();
+            let episode_id = mutator.create_node(episode_labels, episode_props)?;
+            let provenance_id = mutator.create_node(provenance_labels, provenance_props)?;
+            mutator.create_edge(
+                has_provenance,
+                episode_id,
+                provenance_id,
+                PropertyMap::from_pairs(Vec::new())?,
+            )?;
+            let audit_id = mutator.create_node(audit_labels, audit_props)?;
+            mutator.create_edge(
+                audit_edge,
+                audit_id,
+                episode_id,
+                PropertyMap::from_pairs(Vec::new())?,
+            )?;
+            CaptureWriteIds {
+                episode: episode_id,
+                provenance: provenance_id,
+                audit: audit_id,
+            }
+        };
+        txn.commit()?;
+        Ok(ids)
+    }
+
+    /// Read a provenance record back by its node id (for tests and inspection).
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] if the stored data cannot be decoded.
+    pub fn provenance_by_node_id(
+        &self,
+        id: NodeId,
+    ) -> Result<Option<ProvenanceRecord>, StoreError> {
+        match self.graph.read().node_properties(id) {
+            Some(props) => Ok(Some(provenance::from_properties(props)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Read an audit event back by its node id (for tests and inspection).
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] if the stored data cannot be decoded.
+    pub fn audit_event_by_node_id(&self, id: NodeId) -> Result<Option<AuditEvent>, StoreError> {
+        match self.graph.read().node_properties(id) {
+            Some(props) => Ok(Some(audit::from_properties(props)?)),
+            None => Ok(None),
+        }
+    }
+}
+
+/// The node ids assigned by a [`Store::commit_capture`] write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CaptureWriteIds {
+    /// The committed episode.
+    pub episode: NodeId,
+    /// The provenance record proving the write.
+    pub provenance: NodeId,
+    /// The capture audit event.
+    pub audit: NodeId,
 }
 
 /// This store's fixed graph identity. A single graph per store, so a constant id;

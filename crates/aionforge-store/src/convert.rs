@@ -39,6 +39,14 @@ pub(crate) fn timestamp_value(at: &Timestamp) -> Value {
     Value::ZonedDateTime(Box::new(at.clone()))
 }
 
+pub(crate) fn id_list_value(ids: &[Id]) -> Result<Value, StoreError> {
+    let mut items = Vec::with_capacity(ids.len());
+    for id in ids {
+        items.push(Value::String(db_string(id.as_str())?));
+    }
+    Ok(Value::List(items))
+}
+
 pub(crate) fn embedding_value(embedding: &Embedding) -> Result<Value, StoreError> {
     Ok(Value::Vector(VectorValue::new(
         embedding.as_slice().to_vec(),
@@ -120,6 +128,15 @@ pub(crate) fn as_bool(value: &Value) -> Result<bool, StoreError> {
 
 pub(crate) fn as_id(value: &Value) -> Result<Id, StoreError> {
     Ok(Id::parse(as_str(value)?)?)
+}
+
+pub(crate) fn as_id_list(value: &Value) -> Result<Vec<Id>, StoreError> {
+    match value {
+        Value::List(items) => items.iter().map(as_id).collect(),
+        other => Err(StoreError::decode(format!(
+            "expected a list of ids, found {other:?}"
+        ))),
+    }
 }
 
 pub(crate) fn as_namespace(value: &Value) -> Result<Namespace, StoreError> {
