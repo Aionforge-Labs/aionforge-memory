@@ -91,6 +91,8 @@ rstest = "0.26"
 # Async runtime for tests and a mock HTTP server for the embedding client (M0.T08).
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 wiremock = "0.6"
+# Object-safe async traits for the consolidation pass seam (M2.T03).
+async-trait = "0.1"
 
 # --- selene-db substrate (private repo; git dep tracking the `development` branch). ---
 # selene-db is private and under active development, so we track its `development`

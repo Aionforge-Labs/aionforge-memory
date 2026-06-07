@@ -11,6 +11,7 @@
 mod audit;
 mod catalog;
 mod config;
+mod consolidation;
 mod convert;
 mod entity;
 mod episode;
@@ -27,6 +28,7 @@ mod store;
 
 pub use catalog::SCHEMA_VERSION;
 pub use config::{DEFAULT_EMBEDDING_DIMENSION, StoreConfig, default_data_dir};
+pub use consolidation::{ConsolidationCursor, ConsolidationWorkItem, LagSnapshot};
 pub use error::StoreError;
 pub use gql::{BoundQuery, QueryResult, Rows};
 pub use indexes::VectorIndexInfo;
