@@ -440,3 +440,46 @@ async fn consolidation_keeps_namespaces_isolated() {
         "no contradiction edge crosses a namespace"
     );
 }
+
+#[tokio::test]
+async fn whitespace_and_case_variant_surfaces_resolve_to_one_entity() {
+    // Two episodes name the same person with different internal spacing and case. The exact
+    // name gate normalizes both, so the second resolves to the first rather than minting a
+    // duplicate — the end-to-end payoff of routing the id derivation and the resolution gate
+    // through one `normalize` (the rule extractor preserves internal whitespace, so the variant
+    // surface reaches resolution intact).
+    let store = store();
+    let namespace = Namespace::Agent("alice".to_string());
+    insert_raw_episode(&store, "Mary Jane prefers Rust.", &namespace, 0);
+    insert_raw_episode(&store, "mary  jane prefers Rust.", &namespace, 1);
+
+    let mut consolidator = Consolidator::new(Arc::clone(&store), ConsolidationConfig::default());
+    consolidator.register(Box::new(FactExtractionPass::new(
+        Arc::new(RuleExtractor::with_default_rules()),
+        Arc::new(ClusterEmbedder::new()),
+        Arc::new(RuleSummarizer::with_default_rules()),
+        PassConfig::default(),
+    )));
+    drain(&consolidator).await;
+
+    let persons = person_entities(&store);
+    assert_eq!(
+        persons.len(),
+        1,
+        "spacing/case variants of one name resolve to a single person: {persons:?}"
+    );
+    assert_eq!(
+        persons[0].0, "Mary Jane",
+        "the first surface seen is canonical"
+    );
+    assert_eq!(
+        count(
+            &store,
+            BoundQuery::new("MATCH (f:Fact) WHERE f.predicate = $p RETURN f.id AS id")
+                .bind_str("p", "prefers")
+                .expect("bind predicate"),
+        ),
+        1,
+        "the same triple under a variant surface collapses to one fact"
+    );
+}

@@ -179,6 +179,17 @@ fn fact_count_by_id(store: &Store, id: &Id) -> usize {
     }
 }
 
+/// How many `Entity` nodes carry this id (proves a re-minted id deduped rather than dup'd).
+fn entity_count_by_id(store: &Store, id: &Id) -> usize {
+    let query = BoundQuery::new("MATCH (e:Entity) WHERE e.id = $id RETURN e.id AS id")
+        .bind_str("id", id.as_str())
+        .expect("bind id");
+    match store.execute(&query).expect("entity count") {
+        QueryResult::Rows(rows) => rows.row_count(),
+        _ => 0,
+    }
+}
+
 fn reset_to_raw(store: &Store) {
     let query =
         BoundQuery::new("MATCH (e:Episode) SET e.consolidation_state = $raw RETURN e.id AS id")
@@ -201,6 +212,130 @@ fn total_edges(store: &Store, label: &str) -> u64 {
         },
         _ => 0,
     }
+}
+
+#[test]
+fn materialize_dedups_a_re_minted_entity_id_without_violating_the_unique_constraint() {
+    // A resolution gate-miss can re-mint an existing entity's content-addressed id under a
+    // case/whitespace-variant canonical name — the id derivation and the resolution gate share
+    // one `normalize`, so the variant hashes to the same id. `Entity.id` is UNIQUE, so the
+    // write must dedup by id, not by the exact `canonical_name`; otherwise the flip collides
+    // and fails the episode. Here the committed entity is "New York"; the pass re-presents the
+    // same id as a "new" entity named "new york".
+    let store = store();
+    let (id, _node) = insert_entity(&store, "New York");
+    let (ep_node, episode) = insert_episode(&store);
+
+    let variant = Entity {
+        identity: identity(id.clone()),
+        stats: stats(),
+        canonical_name: "new york".to_string(),
+        entity_type: "Person".to_string(),
+        aliases: Vec::new(),
+        description: None,
+        embedding: None,
+        embedder_model: None,
+        attributes: None,
+    };
+    let about = fact(
+        &id,
+        "based_in",
+        ObjectValue::Text("USA".to_string()),
+        "New York is in the USA",
+    );
+    let mut artifacts = ConsolidationArtifacts::default();
+    artifacts.new_entities.push(variant);
+    artifacts.mentioned_entities.push(id.clone());
+    artifacts.facts.push(MaterializedFact {
+        fact: about.clone(),
+        about: open_window("2026-06-06T11:00:00Z[UTC]"),
+    });
+
+    store
+        .commit_consolidation_episode(
+            ep_node,
+            ConsolidationState::Raw,
+            ConsolidationState::Consolidated,
+            &cursor_at(&episode),
+            &now(),
+            &artifacts,
+        )
+        .expect("commit must dedup by id, not collide on the UNIQUE id constraint");
+
+    assert_eq!(
+        entity_count_by_id(&store, &id),
+        1,
+        "the re-minted id collapses onto the existing node — no duplicate, no UNIQUE violation"
+    );
+    assert_eq!(
+        fact_count_by_id(&store, &about.identity.id),
+        1,
+        "the fact about the deduped entity is written"
+    );
+}
+
+#[test]
+fn materialize_falls_back_to_canonical_name_across_id_schemes_but_respects_type() {
+    // The fallback probe bridges a prior id scheme: an entity minted under a different id (a
+    // pre-content-hash migration, say) is still found by exact canonical_name + type + namespace,
+    // so a re-presented "new" entity dedups onto it instead of duplicating. The type/namespace
+    // filters keep a same-name entity of a different type distinct (no false merge).
+    let store = store();
+    let (existing_id, _node) = insert_entity(&store, "Paris"); // type "Person"
+    let (ep_node, episode) = insert_episode(&store);
+
+    let typed = |name: &str, entity_type: &str| Entity {
+        identity: identity(Id::generate()), // a fresh id, distinct from `existing_id`
+        stats: stats(),
+        canonical_name: name.to_string(),
+        entity_type: entity_type.to_string(),
+        aliases: Vec::new(),
+        description: None,
+        embedding: None,
+        embedder_model: None,
+        attributes: None,
+    };
+    // (a) Same name + type + namespace under a different id: id-probe misses, name fallback hits.
+    let bridged = typed("Paris", "Person");
+    // (b) Same name, different type: the type filter must keep it distinct.
+    let other_type = typed("Paris", "City");
+
+    let mut artifacts = ConsolidationArtifacts::default();
+    artifacts.new_entities.push(bridged.clone());
+    artifacts.new_entities.push(other_type.clone());
+    artifacts
+        .mentioned_entities
+        .push(bridged.identity.id.clone());
+    artifacts
+        .mentioned_entities
+        .push(other_type.identity.id.clone());
+
+    store
+        .commit_consolidation_episode(
+            ep_node,
+            ConsolidationState::Raw,
+            ConsolidationState::Consolidated,
+            &cursor_at(&episode),
+            &now(),
+            &artifacts,
+        )
+        .expect("commit");
+
+    assert_eq!(
+        entity_count_by_id(&store, &bridged.identity.id),
+        0,
+        "the bridged id deduped onto the existing node via the name fallback — it minted no node"
+    );
+    assert_eq!(
+        entity_count_by_id(&store, &existing_id),
+        1,
+        "the existing Person:Paris remains the single canonical node"
+    );
+    assert_eq!(
+        entity_count_by_id(&store, &other_type.identity.id),
+        1,
+        "a same-name entity of a different type stays distinct (type filter blocks a false merge)"
+    );
 }
 
 #[test]

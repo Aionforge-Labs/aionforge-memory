@@ -13,6 +13,7 @@ mod catalog;
 mod config;
 mod consolidation;
 mod convert;
+mod dedup;
 mod entity;
 mod episode;
 mod error;
