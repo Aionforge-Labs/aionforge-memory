@@ -24,6 +24,13 @@ fn ts(text: &str) -> Timestamp {
     text.parse().expect("valid zoned datetime literal")
 }
 
+/// A store with the schema applied — the shape every typed write needs, since the
+/// graph is closed and rejects a node whose kind has not been declared.
+fn store() -> Store {
+    Store::open_in_memory_migrated(&ts("2026-01-01T00:00:00-06:00[America/Chicago]"))
+        .expect("open and migrate store")
+}
+
 fn stats() -> Stats {
     Stats {
         importance: 0.625,
@@ -123,7 +130,7 @@ fn assert_timestamps_render_identically(read: &Episode, original: &Episode) {
 
 #[test]
 fn episode_round_trips_through_the_store() {
-    let store = Store::open_in_memory().expect("open store");
+    let store = store();
     for original in [episode("a plain captured turn"), rich_episode()] {
         let id = store.insert_episode(&original).expect("commit episode");
         let read_back = store
@@ -137,7 +144,7 @@ fn episode_round_trips_through_the_store() {
 
 #[test]
 fn known_injection_payloads_round_trip_as_data() {
-    let store = Store::open_in_memory().expect("open store");
+    let store = store();
     // Seed real nodes so an injected mutation would change the count.
     for i in 0..3 {
         store
@@ -186,7 +193,7 @@ proptest! {
     /// value — proof that the parsed statement never depends on caller input.
     #[test]
     fn any_bound_string_round_trips_verbatim(text in "(?s).{0,256}") {
-        let store = Store::open_in_memory().expect("open store");
+        let store = store();
         let query = BoundQuery::new("RETURN $p AS p")
             .bind_str("p", &text)
             .expect("bind text");
@@ -205,22 +212,25 @@ proptest! {
 
 #[test]
 fn reads_are_snapshot_isolated_from_writes() {
-    let store = Store::open_in_memory().expect("open store");
+    let store = store();
+    // The migrated store already holds the SchemaVersion singleton, so reason in
+    // deltas from that baseline rather than from an empty graph.
+    let baseline = store.snapshot().node_count();
     store
         .insert_episode(&episode("first"))
         .expect("first write");
 
     let pinned = store.snapshot();
-    assert_eq!(pinned.node_count(), 1);
+    assert_eq!(pinned.node_count(), baseline + 1);
 
     store
         .insert_episode(&episode("second"))
         .expect("second write");
 
     // The pinned snapshot does not see the later commit (MVCC isolation)...
-    assert_eq!(pinned.node_count(), 1);
+    assert_eq!(pinned.node_count(), baseline + 1);
     // ...but a fresh snapshot does.
-    assert_eq!(store.snapshot().node_count(), 2);
+    assert_eq!(store.snapshot().node_count(), baseline + 2);
 }
 
 #[test]
@@ -231,7 +241,12 @@ fn reads_make_progress_during_a_concurrent_writer() {
     const WRITES: usize = 200;
     const READERS: usize = 4;
 
-    let store = Arc::new(Store::open_in_memory().expect("open store"));
+    let store = Arc::new(store());
+    // The migrated store starts with the SchemaVersion singleton; the writer adds
+    // WRITES episodes on top, so the visible count climbs from baseline to baseline +
+    // WRITES.
+    let baseline = store.snapshot().node_count();
+    let target = baseline + WRITES;
     let done = Arc::new(AtomicBool::new(false));
     // Readers and the writer (this thread) all release from the barrier together,
     // so the readers are guaranteed to be sampling while the writer commits.
@@ -252,13 +267,13 @@ fn reads_make_progress_during_a_concurrent_writer() {
                 loop {
                     let count = store.snapshot().node_count();
                     assert!(
-                        count <= WRITES,
-                        "snapshot observed {count} nodes, over the {WRITES} cap"
+                        count <= target,
+                        "snapshot observed {count} nodes, over the {target} cap"
                     );
-                    if count > 0 && count < WRITES {
+                    if count > baseline && count < target {
                         saw_intermediate = true;
                     }
-                    if done.load(Ordering::Acquire) && count == WRITES {
+                    if done.load(Ordering::Acquire) && count == target {
                         break;
                     }
                 }
@@ -291,5 +306,5 @@ fn reads_make_progress_during_a_concurrent_writer() {
         "no reader saw an intermediate node count; readers did not overlap the writer"
     );
     // Every write landed and is visible on a fresh snapshot.
-    assert_eq!(store.snapshot().node_count(), WRITES);
+    assert_eq!(store.snapshot().node_count(), target);
 }

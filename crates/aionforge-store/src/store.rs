@@ -4,9 +4,10 @@
 use std::sync::Arc;
 
 use aionforge_domain::nodes::episodic::Episode;
-use selene_core::{GraphId, NodeId};
+use aionforge_domain::time::Timestamp;
+use selene_core::{GraphId, NodeId, db_string};
 use selene_gql::{BindingTable, EmptyProcedureRegistry, Session, StatementOutput};
-use selene_graph::{SeleneGraph, SharedGraph};
+use selene_graph::{GraphTypeDef, SeleneGraph, SharedGraph};
 
 use crate::episode;
 use crate::error::StoreError;
@@ -21,6 +22,11 @@ use crate::gql::{BoundQuery, QueryResult, Rows};
 /// committer, durable before visible. Reads take a lock-free snapshot. Every
 /// caller-influenced value travels as a bound parameter, never spliced into the
 /// query text.
+///
+/// The graph is opened *closed* (bound to a graph type), because selene-db rejects
+/// catalog DDL on an open graph. A freshly opened store carries an empty type and
+/// holds no kinds until [`Store::migrate`] declares them; inserting a typed node
+/// before its kind is declared fails fast against the closed-graph validator.
 pub struct Store {
     graph: SharedGraph,
 }
@@ -33,18 +39,45 @@ impl std::fmt::Debug for Store {
 }
 
 impl Store {
-    /// Open an in-memory store with no persistence (the M0 / test path).
+    /// Open an in-memory store with no persistence and no schema applied yet.
     ///
-    /// Persistence (WAL, snapshots, recovery) is wired in a later task; this opens
-    /// a bare graph that holds everything in memory.
+    /// The graph is closed but bound to an empty type, so it accepts catalog DDL but
+    /// holds no kinds — call [`Store::migrate`] to declare the schema. Persistence
+    /// (WAL, snapshots, recovery) is wired in a later task; this holds everything in
+    /// memory.
     ///
     /// # Errors
-    /// Currently infallible, but returns [`StoreError`] so the persistent
-    /// constructor can share the signature.
+    /// Returns [`StoreError`] if the empty graph type fails the engine's
+    /// self-consistency check (it does not for an empty type, but the binding path is
+    /// fallible).
     pub fn open_in_memory() -> Result<Self, StoreError> {
-        Ok(Self {
-            graph: SharedGraph::new(GraphId::new(1)),
-        })
+        let graph = SharedGraph::builder(GraphId::new(1))
+            .bound_to(GraphTypeDef {
+                name: db_string("aionforge.memory")?,
+                node_types: Vec::new(),
+                edge_types: Vec::new(),
+            })?
+            .build()?;
+        Ok(Self { graph })
+    }
+
+    /// Open an in-memory store with the full schema already applied.
+    ///
+    /// Equivalent to [`Store::open_in_memory`] followed by [`Store::migrate`]; this is
+    /// the ready-to-use shape callers want when they are not exercising the migration
+    /// machinery itself. `now` stamps the `SchemaVersion` singleton.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] if opening or migrating fails.
+    pub fn open_in_memory_migrated(now: &Timestamp) -> Result<Self, StoreError> {
+        let store = Self::open_in_memory()?;
+        store.migrate(now)?;
+        Ok(store)
+    }
+
+    /// The owned shared graph, for the schema and migration machinery in this crate.
+    pub(crate) fn graph(&self) -> &SharedGraph {
+        &self.graph
     }
 
     /// Take a lock-free read snapshot of the current graph state.

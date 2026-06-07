@@ -8,14 +8,20 @@
 //! Higher layers depend on this crate, not on selene-db, so the engine's value and
 //! id types are re-exported here.
 
+mod catalog;
 mod convert;
 mod episode;
 mod error;
 mod gql;
+mod migrate;
+mod schema;
 mod store;
 
+pub use catalog::SCHEMA_VERSION;
 pub use error::StoreError;
 pub use gql::{BoundQuery, QueryResult, Rows};
+pub use migrate::{MigrationPlan, MigrationReport, PendingChange};
+pub use schema::{EdgeTypeShape, NodeTypeShape, PropertyKind, PropertyShape, SchemaSnapshot};
 pub use store::Store;
 
 pub use selene_core::{NodeId, Value};
