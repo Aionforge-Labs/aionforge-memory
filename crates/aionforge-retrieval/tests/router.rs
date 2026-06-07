@@ -22,6 +22,11 @@ fn temporal_markers_route_to_temporal() {
     );
     assert_eq!(classify("events in 2021"), QueryClass::Temporal);
     assert_eq!(classify("the policy last year"), QueryClass::Temporal);
+    assert_eq!(classify("trends in the last decade"), QueryClass::Temporal);
+    assert_eq!(
+        classify("growth over the past century"),
+        QueryClass::Temporal
+    );
     assert_eq!(
         classify("what did we decide yesterday"),
         QueryClass::Temporal
@@ -46,6 +51,32 @@ fn associative_cues_route_to_multi_hop() {
         classify("the connection between sleep and recall"),
         QueryClass::MultiHop
     );
+    // Causal phrases (added after review) route multi-hop.
+    assert_eq!(
+        classify("what leads to increased mortality"),
+        QueryClass::MultiHop
+    );
+    assert_eq!(
+        classify("errors that result in data loss"),
+        QueryClass::MultiHop
+    );
+}
+
+#[test]
+fn title_cased_topic_phrases_are_not_entities() {
+    // A long title-cased phrase reads as a topic, not a proper noun, so it stays on
+    // the safe single-hop default rather than triggering graph expansion (03 §3).
+    assert_eq!(
+        classify("Quantum Entanglement Breakthrough"),
+        QueryClass::SingleHopFactual
+    );
+    assert_eq!(
+        classify("Digital Transformation Initiative"),
+        QueryClass::SingleHopFactual
+    );
+    // One- and two-token proper nouns still route to entity.
+    assert_eq!(classify("France"), QueryClass::Entity);
+    assert_eq!(classify("Ada Lovelace"), QueryClass::Entity);
 }
 
 #[test]

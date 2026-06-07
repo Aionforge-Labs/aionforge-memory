@@ -190,18 +190,19 @@ pub fn route(query: &str) -> RetrievalProfile {
 static QUOTED_PHRASE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#""[^"]+"|“[^”]+”"#).expect("valid static pattern"));
 
-/// Temporal markers: when/before/after/since, relative-time words, and 4-digit years.
+/// Temporal markers: when/before/after/since, relative-time spans, and 4-digit years.
 static TEMPORAL_MARKERS: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)\b(when|before|after|during|since|until|yesterday|today|tomorrow|earlier|recently|ago|previously|originally)\b|\bas of\b|\blast (week|month|year|night|time)\b|\b(19|20)\d{2}\b",
+        r"(?i)\b(when|before|after|during|since|until|yesterday|today|tomorrow|earlier|recently|ago|previously|originally)\b|\bas of\b|\b(last|past) (week|month|year|decade|century|night|time)\b|\b(19|20)\d{2}\b",
     )
     .expect("valid static pattern")
 });
 
-/// Associative / multi-hop cue words.
+/// Associative / multi-hop cue words, plus a few strong causal phrases (kept as
+/// phrases, not bare words, so common verbs do not over-trigger graph expansion).
 static MULTIHOP_MARKERS: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)\b(why|how|because|relationship|related|relate|connection|connect|between|cause|caused|influence|influenced|impact|associated|associate|compare|versus|vs)\b",
+        r"(?i)\b(why|how|because|relationship|related|relate|connection|connect|between|cause|caused|influence|influenced|impact|associated|associate|compare|versus|vs)\b|\b(leads?|led) to\b|\bresults? in\b|\bdepends? on\b|\bdue to\b",
     )
     .expect("valid static pattern")
 });
@@ -237,14 +238,24 @@ pub fn classify(query: &str) -> QueryClass {
     }
 }
 
-/// A bare entity lookup: a short query with no question words whose alphabetic tokens
-/// all read as proper nouns (each starts uppercase), like `Ada Lovelace`.
+/// A bare entity lookup: a one- or two-token query with no question words whose
+/// alphabetic tokens all read as proper nouns (each starts uppercase), like
+/// `Ada Lovelace` or `France`.
+///
+/// Deliberately conservative. Capitalization alone cannot tell a proper noun from a
+/// title-cased common phrase (`Climate Change`), and the costly error is the
+/// false positive — entity routing turns on graph expansion, which the spec says
+/// hurts single-hop precision (03 §3). So the cap is two tokens, which keeps the
+/// common 1–2 word entity lookups while sending longer title-cased phrases
+/// (`Quantum Entanglement Breakthrough`) to the safe single-hop default. The
+/// residual two-word ambiguity is a known v1 limitation that degrades gracefully;
+/// the upgrade path is a learned classifier or a store-backed entity check.
 fn looks_like_entity(query: &str) -> bool {
     if INTERROGATIVE.is_match(query) {
         return false;
     }
     let tokens: Vec<&str> = query.split_whitespace().collect();
-    if tokens.is_empty() || tokens.len() > 3 {
+    if tokens.is_empty() || tokens.len() > 2 {
         return false;
     }
     let mut alphabetic = tokens
