@@ -157,6 +157,9 @@ version = "0.1.0"
 dependencies = [
  "aionforge-domain",
  "aionforge-store",
+ "miette",
+ "regex",
+ "thiserror",
 ]
 
 [[package]]

@@ -74,6 +74,9 @@ secrecy = "0.10"
 # OpenAI-compatible HTTP client, rustls-only per §8.4 (no native-tls/openssl).
 # Introduced at M0.T08.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# Capture-side privacy/injection filter patterns (M1.T02). Already in the tree
+# transitively via selene-db, so this direct pin reuses that exact locked version.
+regex = "1"
 
 # --- Test / dev dependencies (versions match selene-db). ---
 proptest = { version = "1.11", default-features = false, features = ["std"] }

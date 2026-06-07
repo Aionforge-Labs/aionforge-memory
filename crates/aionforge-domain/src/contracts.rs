@@ -139,7 +139,8 @@ pub struct FilterOutcome {
     pub injection_flags: Vec<String>,
 }
 
-/// The privacy and prompt-injection filter on the capture hot path (04 §1, 07). Implemented in M6.
+/// The privacy and prompt-injection filter on the capture hot path (04 §1, 07).
+/// Implemented in M1.T02; hardened against a published injection corpus in M6.T03.
 ///
 /// Synchronous because v1.0.0 filtering is local (configured redaction patterns
 /// plus known-marker detection), so it adds no network round-trip to capture.

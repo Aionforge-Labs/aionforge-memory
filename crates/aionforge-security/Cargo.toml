@@ -12,6 +12,9 @@ description = "Capture-side privacy/injection filtering, recall-side untrusted-d
 [dependencies]
 aionforge-domain = { path = "../aionforge-domain", version = "0.1.0" }
 aionforge-store = { path = "../aionforge-store", version = "0.1.0" }
+regex = { workspace = true }
+thiserror = { workspace = true }
+miette = { workspace = true }
 
 [lints]
 workspace = true
