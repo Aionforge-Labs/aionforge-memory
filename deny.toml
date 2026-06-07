@@ -48,9 +48,11 @@ allow = [
   # itself stays dual MIT/Apache-2.0.
   "MPL-2.0",
   # CDLA-Permissive-2.0: a permissive data license (no copyleft, no patent or
-  # distribution restrictions on dependents). Reaches the tree via
-  # webpki-root-certs, pulled by reqwest 0.13's rustls-platform-verifier (the
-  # cert-verification path). Aionforge itself stays dual MIT/Apache-2.0.
+  # distribution restrictions on dependents). Reaches the tree via webpki-root-certs,
+  # which rustls-platform-verifier (under reqwest 0.13) pulls only as a dev-dependency
+  # and a wasm32-target dependency — the native release binary verifies certs through
+  # the OS trust store, not this crate. cargo-deny scans all targets, so the license
+  # must still be allowed. Aionforge itself stays dual MIT/Apache-2.0.
   "CDLA-Permissive-2.0",
 ]
 exceptions = []
@@ -69,14 +71,14 @@ deny = [
   { name = "openssl-src" },
   { name = "openssl" },
   # Force the rustls *ring* crypto provider: aws-lc-rs needs cmake/Go and fails
-  # on musl, breaking the static/distroless image. ring is musl-clean.
+  # on musl, breaking the static Alpine (musl) image. ring is musl-clean.
   { name = "aws-lc-rs" },
   { name = "aws-lc-sys" },
 ]
-# Seeded from selene-db's documented duplicate-version lines (inherited through
-# the path dep). The new tokio/reqwest/hyper/tower/axum/dalek tree will add more
-# duplicate lines on the first `cargo deny` run during M0.T01/T08; each new entry
-# needs a documented, owner-attributed reason added here after lockfile review.
+# Duplicate-version lines inherited through the selene-db git dep plus the tokio /
+# reqwest / hyper / ratatui / dalek tree. Each entry needs a documented,
+# owner-attributed reason added here after a lockfile review; re-audit on every
+# `cargo update` and when the substrate pin moves.
 skip = [
   # Reviewed 2026-06-07 (jscott3201). Each line is a transitive duplicate where two
   # major lines legitimately coexist and deduping needs an upstream release we do not
