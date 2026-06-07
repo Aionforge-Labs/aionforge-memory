@@ -17,8 +17,10 @@ use std::future::Future;
 
 use crate::embedding::{EmbedderModel, Embedding};
 use crate::ids::Id;
-use crate::nodes::episodic::Redaction;
+use crate::nodes::episodic::{Episode, Redaction};
 use crate::nodes::procedural::Skill;
+use crate::nodes::semantic::SourceSpan;
+use crate::value::ObjectValue;
 
 /// The fast, ADD-oriented capture path (04 §1). Implemented in M1.
 pub trait Capture: Send + Sync {
@@ -168,4 +170,109 @@ pub trait PrivacyFilter: Send + Sync {
 
     /// Redact sensitive spans and flag injection markers in raw capture content (04 §1).
     fn filter(&self, content: &str) -> Result<FilterOutcome, Self::Error>;
+}
+
+/// A subject or object surface form as an extractor read it, before entity
+/// resolution maps it to a canonical [`Entity`](crate::nodes::semantic::Entity).
+///
+/// Carried for both the fact's subject and an entity-typed object so the two share
+/// one shape; the `entity_type` is the extractor's provisional guess that
+/// resolution may refine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntitySurface {
+    /// The surface string exactly as it appeared in the episode.
+    pub surface: String,
+    /// The extractor's provisional entity type (e.g. `Person`, `Project`, `Tool`).
+    pub entity_type: String,
+}
+
+/// A fact's object as the extractor produced it (04 §2).
+///
+/// Either another entity (still a surface form awaiting resolution to an
+/// `Entity.id`) or a literal already in its final typed [`ObjectValue`] form.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExtractedObject {
+    /// An entity reference; the surface resolves to a canonical `Entity.id`.
+    Entity(EntitySurface),
+    /// A settled literal value.
+    Literal(ObjectValue),
+}
+
+/// One candidate fact an extractor drew from an episode, before materialization
+/// (04 §2).
+///
+/// The subject and an entity-typed object are SURFACE forms — the resolution
+/// pipeline maps them to canonical entity ids before the fact is written.
+/// `confidence` and `source_spans` flow into `Fact.confidence` and
+/// `Fact.extraction` so every stored assertion carries its provenance (02 §6.2).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExtractedFact {
+    /// The subject surface form and its provisional type.
+    pub subject: EntitySurface,
+    /// The relation.
+    pub predicate: String,
+    /// The object — an entity surface form or a settled literal.
+    pub object: ExtractedObject,
+    /// Extraction confidence in `[0, 1]`.
+    pub confidence: f64,
+    /// Canonical natural-language rendering of the assertion (the BM25/embedding
+    /// surface once written to `Fact.statement`).
+    pub statement: String,
+    /// The episode byte spans the assertion was drawn from.
+    pub source_spans: Vec<SourceSpan>,
+}
+
+/// The identity of the extractor that produced a batch of facts (02 §6.2).
+///
+/// Recorded into every fact's [`Extraction`](crate::nodes::semantic::Extraction)
+/// provenance so the M6 cross-family consolidation guard can later refuse to mix
+/// assertions drawn by incompatible model families.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtractorIdentity {
+    /// Extractor model family, if model-backed (`None` for a pure rule extractor).
+    pub model_family: Option<String>,
+    /// Extractor model version, if model-backed.
+    pub model_version: Option<String>,
+    /// Version of the extraction rule set that produced the facts.
+    pub rule_version: String,
+}
+
+/// The fact-extraction seam (04 §2): turn one episode into candidate facts.
+///
+/// Mirrors [`Embedder`]'s `-> impl Future + Send` shape rather than `async fn` so
+/// the returned future's `Send` bound stays explicit for the multi-threaded
+/// runtime. The production implementation is model-backed (deferred to M4); M2
+/// ships a deterministic rule-based extractor so the consolidation tests stay
+/// hermetic and idempotency rests on a reproducible key.
+pub trait FactExtractor: Send + Sync {
+    /// The typed error this seam surfaces.
+    type Error: std::error::Error + Send + Sync + 'static;
+
+    /// Extract candidate facts from one episode's content.
+    fn extract(
+        &self,
+        episode: &Episode,
+    ) -> impl Future<Output = Result<Vec<ExtractedFact>, Self::Error>> + Send;
+
+    /// The identity recorded into every produced fact's extraction provenance.
+    fn identity(&self) -> &ExtractorIdentity;
+}
+
+/// A shared extractor is itself an extractor, so one instance can back both the
+/// consolidation pass and any future inline-extraction caller without being
+/// cloneable — a model-backed extractor may hold secret material that must not be
+/// copied around (mirrors the [`Embedder`] `Arc` forwarding).
+impl<X: FactExtractor + ?Sized> FactExtractor for std::sync::Arc<X> {
+    type Error = X::Error;
+
+    fn extract(
+        &self,
+        episode: &Episode,
+    ) -> impl Future<Output = Result<Vec<ExtractedFact>, Self::Error>> + Send {
+        (**self).extract(episode)
+    }
+
+    fn identity(&self) -> &ExtractorIdentity {
+        (**self).identity()
+    }
 }

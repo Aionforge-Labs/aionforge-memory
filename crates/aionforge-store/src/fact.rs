@@ -197,7 +197,7 @@ pub(crate) fn from_properties(props: &PropertyMap) -> Result<Fact, StoreError> {
 
 /// The four bi-temporal timestamp pairs shared by every bi-temporal edge (§5).
 /// `valid_to`/`expired_at` are omitted when open (`None`).
-fn bitemporal_pairs(temporal: &BiTemporal) -> Vec<(DbString, Value)> {
+pub(crate) fn bitemporal_pairs(temporal: &BiTemporal) -> Vec<(DbString, Value)> {
     let mut pairs = Vec::with_capacity(4);
     // key() only fails on an interior NUL, impossible for these static identifiers.
     pairs.push((

@@ -19,6 +19,7 @@ mod error;
 mod fact;
 mod gql;
 mod indexes;
+mod materialize;
 mod migrate;
 mod provenance;
 mod providers;
@@ -32,6 +33,7 @@ pub use consolidation::{ConsolidationCursor, ConsolidationWorkItem, LagSnapshot}
 pub use error::StoreError;
 pub use gql::{BoundQuery, QueryResult, Rows};
 pub use indexes::VectorIndexInfo;
+pub use materialize::{ConsolidationArtifacts, MaterializedFact};
 pub use migrate::{MigrationPlan, MigrationReport, PendingChange};
 pub use providers::CandidateStateInfo;
 pub use schema::{EdgeTypeShape, NodeTypeShape, PropertyKind, PropertyShape, SchemaSnapshot};

@@ -15,13 +15,17 @@
 use std::sync::Arc;
 
 use aionforge_capture::Capturer;
-use aionforge_domain::contracts::{Capture, Embedder, Retriever};
+use aionforge_consolidate::{Consolidator, FactExtractionPass};
+use aionforge_domain::contracts::{Capture, Embedder, FactExtractor, Retriever};
 use aionforge_domain::time::Timestamp;
 use aionforge_retrieval::HybridRetriever;
 use aionforge_security::{CaptureFilter, SecurityError};
 
 pub use aionforge_capture::{
     CaptureConfig, CaptureReceipt, CaptureRequest, CaptureVerdict, EmbeddingOutcome, WriterContext,
+};
+pub use aionforge_consolidate::{
+    ConsolidationConfig, ConsolidationHandle, ObjectRule, ResolutionConfig, Rule, RuleExtractor,
 };
 pub use aionforge_retrieval::{
     QueryClass, RecallBundle, RecallExplanation, RecallOptions, RecallQuery, RetrieverConfig,
@@ -41,6 +45,7 @@ pub struct MemoryConfig {
 /// The Aionforge Memory facade over a shared store and an embedder.
 pub struct Memory<E> {
     store: Arc<Store>,
+    embedder: Arc<E>,
     capturer: Capturer<CaptureFilter, Arc<E>>,
     retriever: HybridRetriever<Arc<E>>,
 }
@@ -64,9 +69,11 @@ impl<E: Embedder> Memory<E> {
             Arc::clone(&embedder),
             config.capture,
         );
-        let retriever = HybridRetriever::new(Arc::clone(&store), embedder, config.retriever);
+        let retriever =
+            HybridRetriever::new(Arc::clone(&store), Arc::clone(&embedder), config.retriever);
         Ok(Self {
             store,
+            embedder,
             capturer,
             retriever,
         })
@@ -111,6 +118,39 @@ impl<E: Embedder> Memory<E> {
     #[must_use]
     pub fn store(&self) -> &Arc<Store> {
         &self.store
+    }
+
+    /// The shared embedder backing capture, retrieval, and consolidation.
+    #[must_use]
+    pub fn embedder(&self) -> &Arc<E> {
+        &self.embedder
+    }
+}
+
+impl<E: Embedder + 'static> Memory<E> {
+    /// Start the background consolidator with the fact-extraction pass (04 §2, M2.T04).
+    ///
+    /// This is opt-in and explicit so `Memory::new` stays synchronous and runtime-free:
+    /// a host that wants slow consolidation calls this from inside a Tokio runtime and
+    /// holds the returned [`ConsolidationHandle`] for the process lifetime, shutting it
+    /// down on exit. The pass shares this memory's embedder, so derived entities and
+    /// facts are embedded with the same model as capture and retrieval. The injected
+    /// [`FactExtractor`] is the deterministic [`RuleExtractor`] in tests and the
+    /// model-backed client in production (M4).
+    pub fn start_consolidation<X>(
+        &self,
+        extractor: X,
+        config: ConsolidationConfig,
+        resolution: ResolutionConfig,
+    ) -> ConsolidationHandle
+    where
+        X: FactExtractor + 'static,
+    {
+        let pass =
+            FactExtractionPass::new(Arc::new(extractor), Arc::clone(&self.embedder), resolution);
+        let mut consolidator = Consolidator::new(Arc::clone(&self.store), config);
+        consolidator.register(Box::new(pass));
+        consolidator.start()
     }
 }
 

@@ -37,7 +37,8 @@ pub mod value;
 
 pub use blocks::{Identity, Stats};
 pub use contracts::{
-    Capture, Consolidator, Embedder, FilterOutcome, Forgetting, Merge, PrivacyFilter,
+    Capture, Consolidator, Embedder, EntitySurface, ExtractedFact, ExtractedObject,
+    ExtractorIdentity, FactExtractor, FilterOutcome, Forgetting, Merge, PrivacyFilter,
     ProceduralMemory, Retriever,
 };
 pub use embedding::{EmbedderModel, Embedding};

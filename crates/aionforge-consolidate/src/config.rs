@@ -33,3 +33,25 @@ impl Default for ConsolidationConfig {
         }
     }
 }
+
+/// How the fact-extraction pass resolves surface forms to canonical entities
+/// (write-and-consolidation §2). Pass-level tuning, kept separate from the scheduler's
+/// [`ConsolidationConfig`]: it carries a float threshold (so it derives `PartialEq`, not
+/// `Eq`), and only the extraction pass reads it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolutionConfig {
+    /// How many candidate entities each lexical/vector probe pulls before filtering.
+    pub candidate_k: usize,
+    /// The cosine-distance ceiling under which an embedding neighbor is judged the same
+    /// entity (lower is nearer). Above it, the surface forms a new entity (conservative).
+    pub merge_threshold: f64,
+}
+
+impl Default for ResolutionConfig {
+    fn default() -> Self {
+        Self {
+            candidate_k: 8,
+            merge_threshold: 0.12,
+        }
+    }
+}

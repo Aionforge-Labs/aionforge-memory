@@ -35,6 +35,7 @@ use crate::convert::{
 };
 use crate::error::StoreError;
 use crate::gql::{BoundQuery, QueryResult};
+use crate::materialize::{ConsolidationArtifacts, materialize_into};
 use crate::store::Store;
 use crate::{audit, episode};
 
@@ -243,19 +244,24 @@ impl Store {
         }
     }
 
-    /// Mark `episode` consolidated and advance the cursor in one atomic commit
-    /// (write-and-consolidation §3 idempotency).
+    /// Materialize the pass artifacts, mark `episode` consolidated, and advance the
+    /// cursor in one atomic commit (write-and-consolidation §3 idempotency).
     ///
     /// The flip is guarded: the episode must still be in `expected` state under the
     /// write lock, or the commit is refused (a no-op), so a racing second consumer
-    /// cannot double-apply. Because the state change and the cursor advance land in
-    /// the *same* commit, a crash leaves them consistent — either the episode is
-    /// `new_state` and the cursor is advanced, or neither happened and the next pass
-    /// re-runs the still-`raw` episode from scratch. Returns the new graph generation.
+    /// cannot double-apply. The derived `artifacts` (facts, entities, and their
+    /// `ABOUT`/`MENTIONS`/`SUPPORTS`/`DERIVED_FROM` edges, plus the decision audit
+    /// trail) are written in the *same* commit as the flip and cursor advance, so a
+    /// crash leaves all three consistent — either the episode is `new_state`, the
+    /// derived memory exists, and the cursor is advanced, or none of it happened and the
+    /// next pass re-runs the still-`raw` episode from scratch. Materialization is itself
+    /// idempotent (content dedup), so a re-run never duplicates. Returns the new graph
+    /// generation.
     ///
     /// # Errors
-    /// Returns [`StoreError::Invariant`] if the episode is not in `expected` state, or
-    /// [`StoreError`] if the mutation or commit fails. Nothing is published on error.
+    /// Returns [`StoreError::Invariant`] if the episode is not in `expected` state or a
+    /// derived fact's window is out of order, or [`StoreError`] if a mutation or the
+    /// commit fails. Nothing is published on error.
     pub fn commit_consolidation_episode(
         &self,
         node_id: NodeId,
@@ -263,6 +269,7 @@ impl Store {
         new_state: ConsolidationState,
         cursor: &ConsolidationCursor,
         now: &Timestamp,
+        artifacts: &ConsolidationArtifacts,
     ) -> Result<u64, StoreError> {
         let mut txn = self.graph().begin_write();
         {
@@ -284,6 +291,10 @@ impl Store {
                     "episode is {current:?}, expected {expected:?} to consolidate"
                 )));
             }
+
+            // Materialize the derived facts/entities/edges before the flip, so they land
+            // in the same commit. Dedup makes a re-run a no-op.
+            materialize_into(&mut mutator, node_id, artifacts, now)?;
 
             // Resolve the cursor node id (Copy) before mutating, releasing the borrow.
             let cursor_node = cursor_node_id(mutator.read())?;

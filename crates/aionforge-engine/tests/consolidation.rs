@@ -1,0 +1,143 @@
+//! Facade smoke test for background consolidation (M2.T04): capturing an episode and
+//! then starting the consolidator turns it into a derived fact, exercising
+//! `Memory::start_consolidation` and `Memory::embedder` end to end over the real stack.
+//!
+//! Hermetic — a fake embedder stands in for the network client. The episode has a single
+//! subject and object, so resolution is unambiguous regardless of the fake's vectors.
+
+use std::future::Future;
+use std::time::Duration;
+
+use aionforge_domain::contracts::Embedder;
+use aionforge_domain::embedding::{EmbedderModel, Embedding};
+use aionforge_domain::ids::Id;
+use aionforge_domain::nodes::episodic::Role;
+use aionforge_domain::time::Timestamp;
+use aionforge_engine::{
+    CaptureRequest, CaptureVerdict, ConsolidationConfig, Memory, MemoryConfig, ResolutionConfig,
+    RuleExtractor, WriterContext,
+};
+use aionforge_store::{BoundQuery, QueryResult};
+
+/// A fake embedder mapping every input to one unit vector (dimension 4).
+#[derive(Clone)]
+struct FakeEmbedder {
+    model: EmbedderModel,
+}
+
+impl FakeEmbedder {
+    fn new() -> Self {
+        Self {
+            model: EmbedderModel {
+                family: "fake".to_string(),
+                version: "1".to_string(),
+                dimension: 4,
+            },
+        }
+    }
+}
+
+#[derive(Debug)]
+struct NeverFails;
+
+impl std::fmt::Display for NeverFails {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("unreachable")
+    }
+}
+
+impl std::error::Error for NeverFails {}
+
+impl Embedder for FakeEmbedder {
+    type Error = NeverFails;
+
+    fn embed(
+        &self,
+        inputs: &[String],
+    ) -> impl Future<Output = Result<Vec<Embedding>, Self::Error>> + Send {
+        let out = inputs
+            .iter()
+            .map(|_| Embedding::new(vec![1.0, 0.0, 0.0, 0.0]).expect("valid"))
+            .collect();
+        async move { Ok(out) }
+    }
+
+    fn model(&self) -> &EmbedderModel {
+        &self.model
+    }
+}
+
+fn now() -> Timestamp {
+    "2026-06-06T09:30:00-05:00[America/Chicago]"
+        .parse()
+        .expect("valid zoned datetime")
+}
+
+fn fact_count(memory: &Memory<FakeEmbedder>) -> usize {
+    let query = BoundQuery::new("MATCH (f:Fact) RETURN f.id AS id");
+    match memory.store().execute(&query).expect("fact count query") {
+        QueryResult::Rows(rows) => rows.row_count(),
+        _ => 0,
+    }
+}
+
+#[tokio::test]
+async fn capture_then_start_consolidation_derives_a_fact() {
+    let memory =
+        Memory::open_in_memory(FakeEmbedder::new(), &now(), MemoryConfig::default()).expect("open");
+
+    // The embedder accessor exposes the shared model the facade was built with.
+    assert_eq!(memory.embedder().model().dimension, 4);
+
+    let agent = Id::generate();
+    let receipt = memory
+        .capture(CaptureRequest {
+            content: "Alice works on Aionforge".to_string(),
+            role: Role::User,
+            agent_id: agent,
+            session_id: None,
+            captured_at: now(),
+            writer: WriterContext {
+                model_family: "host".to_string(),
+                model_version: None,
+                transport: None,
+                request_id: None,
+                trust: 0.9,
+            },
+            trusted: false,
+            namespace: None,
+        })
+        .await
+        .expect("capture");
+    assert_eq!(receipt.verdict, CaptureVerdict::New);
+    assert_eq!(
+        fact_count(&memory),
+        0,
+        "no fact exists until consolidation runs"
+    );
+
+    let handle = memory.start_consolidation(
+        RuleExtractor::with_default_rules(),
+        ConsolidationConfig {
+            tick_interval: Duration::from_millis(25),
+            ..ConsolidationConfig::default()
+        },
+        ResolutionConfig::default(),
+    );
+
+    // Poll until the background loop derives the fact, bounded so a regression fails fast.
+    let mut derived = false;
+    for _ in 0..200 {
+        if fact_count(&memory) >= 1 {
+            derived = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    handle.shutdown().await;
+
+    assert!(
+        derived,
+        "the background consolidator derived a fact from the captured episode"
+    );
+}

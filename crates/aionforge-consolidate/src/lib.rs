@@ -21,13 +21,22 @@
 mod clock;
 mod config;
 mod error;
+mod fact_extraction;
 mod lag;
 mod pass;
+mod resolve;
+mod rule_extractor;
 mod scheduler;
 
 pub use clock::{Clock, SystemClock};
-pub use config::ConsolidationConfig;
+pub use config::{ConsolidationConfig, ResolutionConfig};
 pub use error::ConsolidationError;
+pub use fact_extraction::FactExtractionPass;
 pub use lag::ConsolidationLag;
 pub use pass::{ConsolidationPass, NoopPass, PassContext, PassError, PassOutput};
+pub use rule_extractor::{ObjectRule, Rule, RuleExtractor};
 pub use scheduler::{ConsolidationHandle, Consolidator, TickReport};
+
+// Re-exported from the store so callers can build a pass payload / read derived facts
+// without naming the L0 crate directly.
+pub use aionforge_store::MaterializedFact;
