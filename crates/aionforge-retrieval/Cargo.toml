@@ -12,7 +12,13 @@ description = "Hybrid retrieval: lexical/dense/graph/recency/trust signals, RRF 
 [dependencies]
 aionforge-domain = { path = "../aionforge-domain", version = "0.1.0" }
 aionforge-store = { path = "../aionforge-store", version = "0.1.0" }
-aionforge-embed = { path = "../aionforge-embed", version = "0.1.0" }
+thiserror = { workspace = true }
+miette = { workspace = true }
+
+[dev-dependencies]
+aionforge-domain = { path = "../aionforge-domain", version = "0.1.0" }
+aionforge-store = { path = "../aionforge-store", version = "0.1.0" }
+tokio = { workspace = true }
 
 [lints]
 workspace = true

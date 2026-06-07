@@ -151,8 +151,10 @@ name = "aionforge-retrieval"
 version = "0.1.0"
 dependencies = [
  "aionforge-domain",
- "aionforge-embed",
  "aionforge-store",
+ "miette",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]
