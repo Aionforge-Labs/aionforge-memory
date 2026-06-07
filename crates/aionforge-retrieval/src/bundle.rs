@@ -324,6 +324,7 @@ fn signal_tag(signal: Signal) -> &'static str {
     match signal {
         Signal::Lexical => "lexical",
         Signal::Dense => "dense",
+        Signal::Support => "support",
         Signal::Graph => "graph",
         Signal::Recency => "recency",
         Signal::Trust => "trust",

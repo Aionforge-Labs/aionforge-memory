@@ -7,9 +7,9 @@
 //! signal drops out and retrieval degrades to the rest, flagged in the explanation
 //! (03 §6, §8.1).
 //!
-//! The lexical, dense, and associative-graph signals run; the graph signal is gated to
-//! the classes the router enables expansion for (03 §3). The recency and trust signals
-//! land with their tasks.
+//! The lexical, dense, support-expansion, and associative-graph signals run; the support
+//! and graph signals are gated to the classes the router enables expansion for (03 §3). The
+//! recency and trust signals land with their tasks.
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
@@ -56,9 +56,10 @@ pub struct RetrieverConfig {
     /// its own fan-out. A wider fan-out gives fusion and the diversity cap more to
     /// work with at the cost of more candidate reads.
     pub default_fanout: usize,
-    /// How many `SUPPORTS` hops the dense fact path expands the query-entity roots through
-    /// to recover their supporting evidence (03 §1, M3.T02). `0` disables support
-    /// expansion; the value is clamped to [`MAX_EXPANSION_DEPTH`]. v1 expands a single hop.
+    /// How many `SUPPORTS` hops the additive support signal expands the query-entity roots
+    /// through to recover their supporting evidence (03 §1, §4, M3.T02). `0` disables
+    /// support expansion (the dense pass alone stands); the value is clamped to
+    /// [`MAX_EXPANSION_DEPTH`]. v1 expands a single hop.
     pub support_expansion_depth: usize,
 }
 
@@ -176,23 +177,9 @@ impl<E: Embedder> HybridRetriever<E> {
             } else {
                 None
             };
-            // Support expansion (03 §1, M3.T02): for the graph-expansion classes in Current
-            // mode, expand the same query-entity fact roots one incoming `SUPPORTS` hop to
-            // recover the supporting evidence a plain ANN pass leaves behind, composed with
-            // the current-support set. Gated to a non-zero, capped depth knob; the factual
-            // class keeps the plain seed-intersection path above (its expansion is off).
-            let expand_roots = if profile.graph_expansion
-                && matches!(query.options.temporal, TemporalMode::Current)
-                && self.config.support_expansion_depth.min(MAX_EXPANSION_DEPTH) >= 1
-            {
-                derive_graph_seed(&self.store, Some(embedding))?
-            } else {
-                None
-            };
             let facts = self.fact_dense_ranking(
                 current_facts.as_deref(),
                 graph_seed.as_deref(),
-                expand_roots.as_deref(),
                 support_set,
                 embedding,
                 fanout,
@@ -202,6 +189,33 @@ impl<E: Embedder> HybridRetriever<E> {
             rankings.push(WeightedRanking::new(profile.weights.dense, episodes));
             rankings.push(WeightedRanking::new(profile.weights.dense, facts));
             signals_run.push(Signal::Dense);
+        }
+        bail_if_past(deadline)?;
+
+        // The support-expansion signal (03 §1, §4, M3.T02) — additive to dense, never a
+        // replacement. For the graph-expansion classes in Current mode, expand the
+        // query-entity fact roots one incoming `SUPPORTS` hop and vector-score the
+        // roots-plus-evidence set, composed with the current-support set. This recovers a
+        // relevant fact's far-embedded supporting evidence that the global dense ANN ranks
+        // out of its top-k, while the dense pass above keeps scoring every current fact —
+        // so a near, non-root current fact keeps its full dense contribution and current
+        // precision stays whole (the §4 precision floor). Gated to a non-zero, capped depth
+        // knob; the roots are the same query-entity facts the high-precision seed derives,
+        // and the gating classes are disjoint from the seed's, so a recall resolves them at
+        // most once. No resolvable entity (empty roots) skips the signal rather than
+        // running an unscoped expansion.
+        if profile.graph_expansion
+            && profile.weights.support > 0.0
+            && matches!(query.options.temporal, TemporalMode::Current)
+            && self.config.support_expansion_depth.min(MAX_EXPANSION_DEPTH) >= 1
+            && let Some(embedding) = &query_embedding
+            && let Some(roots) = derive_graph_seed(&self.store, Some(embedding))?
+            && !roots.is_empty()
+        {
+            let facts = self.fact_support_ranking(&roots, support_set, embedding, fanout)?;
+            fact_nodes.extend(facts.candidates.iter().map(|c| c.node));
+            rankings.push(WeightedRanking::new(profile.weights.support, facts));
+            signals_run.push(Signal::Support);
         }
         bail_if_past(deadline)?;
 
@@ -381,19 +395,10 @@ impl<E: Embedder> HybridRetriever<E> {
     /// The fact lexical signal always covers the whole support set, so a seed that
     /// resolves the wrong (or no) entity never drops a current fact from recall.
     ///
-    /// When `expand_roots` is present (the M3.T02 support-expansion path, taken in Current
-    /// mode for the graph-expansion classes), the roots are expanded one incoming `SUPPORTS`
-    /// hop and composed with `support` via native `Intersection` — the roots are preserved
-    /// and their supporting evidence is added, all current-scoped, so a plain ANN pass's
-    /// blind spot (a relevant fact's far-embedded evidence) is recovered without admitting a
-    /// non-current fact. Expansion takes precedence over the bare `seed` path; the two are
-    /// mutually exclusive by class in practice (factual seeds, multi-hop/entity expand).
-    #[allow(clippy::too_many_arguments)]
     fn fact_dense_ranking(
         &self,
         current: Option<&[NodeId]>,
         seed: Option<&[NodeId]>,
-        expand_roots: Option<&[NodeId]>,
         support: CandidateSet,
         embedding: &Embedding,
         k: usize,
@@ -402,20 +407,7 @@ impl<E: Embedder> HybridRetriever<E> {
         match current {
             Some([]) => Ok(ranking_from_hits(Signal::Dense, Vec::new())),
             Some(_) => {
-                let hits = if let Some(roots) = expand_roots
-                    && !roots.is_empty()
-                {
-                    self.store.vector_score_state_expanded(
-                        SearchKind::Fact,
-                        embedding,
-                        support,
-                        roots,
-                        ExpandEdge::Supports,
-                        ExpandDirection::Incoming,
-                        SetOp::Intersection,
-                        k,
-                    )?
-                } else if let Some(seed) = seed
+                let hits = if let Some(seed) = seed
                     && !seed.is_empty()
                 {
                     self.store.vector_score_state_nodes(
@@ -434,6 +426,39 @@ impl<E: Embedder> HybridRetriever<E> {
             }
             None => dense_ranking_for(&self.store, SearchKind::Fact, embedding, k, exact_rerank),
         }
+    }
+
+    /// The support-expansion fact ranking (03 §1, §4, M3.T02): the additive
+    /// associative-dense signal. The query-entity fact `roots` are expanded one incoming
+    /// `SUPPORTS` hop and the roots-plus-evidence set is composed with the `support`
+    /// candidate-state set via native `Intersection`, then exact-vector-reranked inside the
+    /// store primitive.
+    ///
+    /// Distinct from the dense signal, which scores every current fact: this scores only the
+    /// evidence around the query's entities, so a relevant fact's far-embedded supporting
+    /// evidence — which a global ANN pass ranks out of the dense top-k — surfaces with its
+    /// own rank, while the dense pass's precision over the rest of the current set is left
+    /// untouched. Current-scoped by the `Intersection`, so the reach can never admit a
+    /// non-current fact the support provider excludes. The roots are preserved by the
+    /// expansion, so a query-entity fact is re-affirmed (dense + support) rather than lost.
+    fn fact_support_ranking(
+        &self,
+        roots: &[NodeId],
+        support: CandidateSet,
+        embedding: &Embedding,
+        k: usize,
+    ) -> Result<SignalRanking, RetrievalError> {
+        let hits = self.store.vector_score_state_expanded(
+            SearchKind::Fact,
+            embedding,
+            support,
+            roots,
+            ExpandEdge::Supports,
+            ExpandDirection::Incoming,
+            SetOp::Intersection,
+            k,
+        )?;
+        Ok(ranking_from_hits(Signal::Support, hits))
     }
 
     /// The graph (PageRank) fact ranking, scoped by `current` (03 §1, §5).

@@ -43,6 +43,10 @@ pub struct SignalWeights {
     pub lexical: f64,
     /// Dense (vector) weight.
     pub dense: f64,
+    /// Support-expansion weight (03 §4, M3.T02): the graph-guided dense scoring over a
+    /// query entity's supporting evidence. Non-zero only for the graph-expansion classes;
+    /// additive to `dense`, so it lifts recovered evidence without diluting dense precision.
+    pub support: f64,
     /// Associative graph weight.
     pub graph: f64,
     /// Recency weight.
@@ -58,6 +62,7 @@ impl SignalWeights {
         match signal {
             Signal::Lexical => self.lexical,
             Signal::Dense => self.dense,
+            Signal::Support => self.support,
             Signal::Graph => self.graph,
             Signal::Recency => self.recency,
             Signal::Trust => self.trust,
@@ -103,6 +108,7 @@ pub fn profile_for(class: QueryClass) -> RetrievalProfile {
             weights: SignalWeights {
                 lexical: HEAVY,
                 dense: HEAVY,
+                support: OFF,
                 graph: LIGHT,
                 recency: LIGHT,
                 trust: HEAVY,
@@ -119,6 +125,7 @@ pub fn profile_for(class: QueryClass) -> RetrievalProfile {
             weights: SignalWeights {
                 lexical: LIGHT,
                 dense: HEAVY,
+                support: MODERATE,
                 graph: HEAVY,
                 recency: LIGHT,
                 trust: MODERATE,
@@ -135,6 +142,7 @@ pub fn profile_for(class: QueryClass) -> RetrievalProfile {
             weights: SignalWeights {
                 lexical: MODERATE,
                 dense: HEAVY,
+                support: OFF,
                 graph: OFF,
                 recency: HEAVY,
                 trust: MODERATE,
@@ -151,6 +159,7 @@ pub fn profile_for(class: QueryClass) -> RetrievalProfile {
             weights: SignalWeights {
                 lexical: MODERATE,
                 dense: MODERATE,
+                support: MODERATE,
                 graph: HEAVY,
                 recency: OFF,
                 trust: MODERATE,
@@ -167,6 +176,7 @@ pub fn profile_for(class: QueryClass) -> RetrievalProfile {
             weights: SignalWeights {
                 lexical: HEAVY,
                 dense: OFF,
+                support: OFF,
                 graph: OFF,
                 recency: OFF,
                 trust: OFF,

@@ -1,13 +1,21 @@
 //! Integration tests for graph-expanded support scoring in recall (M3.T02 PR-B, 03 §1, §4).
 //!
-//! Support expansion takes the query-entity fact roots (the §4 high-precision seed) and, for
-//! the graph-expansion classes in Current mode, expands them one incoming `SUPPORTS` hop to
-//! recover the supporting evidence a plain ANN pass leaves behind — composed natively with
-//! the current-support set so nothing non-current leaks in. These tests pin the three
-//! acceptance criteria: expansion recovers evidence the dense pass misses (proven by the
-//! evidence gaining a Dense fusion contribution only when the depth knob is on); current
-//! precision does not regress (the root fact still surfaces); and the depth/fan-out is a
+//! Support expansion is an *additive* signal, not a change to the dense pass. It takes the
+//! query-entity fact roots (the §4 high-precision seed) and, for the graph-expansion classes
+//! in Current mode, expands them one incoming `SUPPORTS` hop to recover the supporting
+//! evidence a plain ANN pass leaves behind — vector-scored and composed natively with the
+//! current-support set so nothing non-current leaks in, and emitted under [`Signal::Support`]
+//! alongside the untouched dense pass. These tests pin the three acceptance criteria:
+//! expansion recovers evidence the dense pass misses (the evidence gains a `Support`
+//! contribution only when the depth knob is on); current precision does not regress (a near,
+//! non-root fact keeps its `Dense` contribution whether or not expansion runs, and the
+//! recovered evidence never outranks the root it supports); and the depth/fan-out is a
 //! bounded, tunable knob (depth 0 disables it, an oversized depth clamps to the cap).
+//!
+//! Asserting on `Signal::Support` — not on the evidence merely being present — is
+//! load-bearing: the evidence also surfaces via the undirected PageRank graph signal at
+//! *both* depths (M3.T01), so a presence check could not tell expansion apart from PageRank.
+//! `Support` is the signal only expansion produces.
 //!
 //! Hermetic: a fake embedder maps queries and records to small fixed vectors. Filler
 //! entities at the query vector fill the entity resolution so only the real subject seeds
@@ -40,11 +48,18 @@ const ROOT_FACT: &str = "acme is the primary subject";
 /// The root's supporting evidence: far in vector space, no token overlap, reached only by
 /// expanding the root one incoming SUPPORTS hop.
 const EVIDENCE_FACT: &str = "far downstream supporting detail";
+/// A near, non-root, non-evidence fact: semantically close to the query but about a far
+/// (unresolved) entity and supporting nothing. The acceptance-#2 regression guard — its
+/// `Dense` contribution must survive whether or not support expansion runs.
+const NEIGHBOR_FACT: &str = "a nearby standalone claim";
 
 const NEAR: [f32; 4] = [1.0, 0.0, 0.0, 0.0];
 const FAR: [f32; 4] = [0.0, 1.0, 0.0, 0.0];
 /// Filler entities at the query vector, enough to fill the entity vector search so the far
-/// evidence/noise entities never become expansion roots — only `acme` does.
+/// evidence/noise entities never become expansion roots — only `acme` does. `acme` is
+/// created before the fillers, so among the equidistant NEAR entities it holds the lowest
+/// node id and is the one selene's `distance.then(node_id)`-ascending top-`ENTITY_ROOTS` cut
+/// deterministically keeps when the fillers tie it on distance.
 const FILLERS: usize = 5;
 /// A tight, equal fan-out and bundle limit. `effective_fanout` floors the fan-out at the
 /// limit, so both are kept small; the near noise facts then push the far evidence past the
@@ -257,6 +272,31 @@ fn support_corpus() -> Arc<Store> {
     store
 }
 
+/// A corpus for the acceptance-#2 regression: the `acme` root, its far evidence, and one
+/// near, non-root [`NEIGHBOR_FACT`] (about a far, unresolved entity, supporting nothing). No
+/// crowding noise, so a generous fan-out keeps every fact in the bundle and the neighbor's
+/// contributions are readable at both depths — the point is the dense pass, not which facts
+/// win a tight cut.
+fn precision_corpus() -> Arc<Store> {
+    let store = store();
+    let (acme, acme_node) = entity(&store, QUERY, NEAR);
+    let (root_id, _) = assert_fact(&store, &acme, acme_node, ROOT_FACT, NEAR);
+
+    let (ev_subject, ev_subject_node) = entity(&store, "source", FAR);
+    let (ev_id, _) = assert_fact(&store, &ev_subject, ev_subject_node, EVIDENCE_FACT, FAR);
+    support(&store, &ev_id, &root_id);
+
+    // Near fact, far (unresolved) subject entity, no SUPPORTS to the root — so it is neither
+    // a root nor evidence, but is dense-relevant to the query.
+    let (other, other_node) = entity(&store, "other", FAR);
+    assert_fact(&store, &other, other_node, NEIGHBOR_FACT, NEAR);
+
+    for n in 0..FILLERS {
+        entity(&store, &format!("filler{n}"), NEAR);
+    }
+    store
+}
+
 fn retriever(store: Arc<Store>, depth: usize) -> HybridRetriever<FakeEmbedder> {
     HybridRetriever::new(
         store,
@@ -269,13 +309,24 @@ fn retriever(store: Arc<Store>, depth: usize) -> HybridRetriever<FakeEmbedder> {
 }
 
 async fn recall(r: &HybridRetriever<FakeEmbedder>, class: QueryClass) -> RecallBundle {
+    recall_with_limit(r, class, WINDOW).await
+}
+
+/// Recall with an explicit bundle limit (and matching fan-out). A wide limit keeps every
+/// fact in the bundle, so a fact's contributions are readable even when it is out-competed
+/// for a tight top-k slot.
+async fn recall_with_limit(
+    r: &HybridRetriever<FakeEmbedder>,
+    class: QueryClass,
+    limit: usize,
+) -> RecallBundle {
     r.recall(RecallQuery {
         text: QUERY.to_string(),
         viewer: Namespace::Global,
-        limit: WINDOW,
+        limit,
         options: RecallOptions {
             mode_override: Some(class),
-            fanout: WINDOW,
+            fanout: limit,
             ..RecallOptions::default()
         },
     })
@@ -300,28 +351,76 @@ fn has_fact(bundle: &RecallBundle, statement: &str) -> bool {
         .any(|e| matches!(e, StructuredEntry::Fact(f) if f.statement == statement))
 }
 
+/// The 0-based position of the fact with `statement` in the fused-score-ordered bundle, or
+/// `None` if it is absent. Used to assert relative rank (a lower index ranks higher).
+fn fact_rank(bundle: &RecallBundle, statement: &str) -> Option<usize> {
+    bundle
+        .structured
+        .iter()
+        .position(|e| matches!(e, StructuredEntry::Fact(f) if f.statement == statement))
+}
+
 // --- Tests -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn support_expansion_recovers_evidence_the_dense_pass_misses() {
-    // Depth 1 (the default): the dense fact path expands the acme root one incoming SUPPORTS
-    // hop, so the far evidence is scored through the dense path and gains a Dense contribution.
+    // Depth 1 (the default): support expansion takes the acme root, expands it one incoming
+    // SUPPORTS hop, and vector-scores the evidence — so the far evidence gains a `Support`
+    // contribution. Asserting on `Support` (not mere presence) is load-bearing: the evidence
+    // also surfaces via the undirected PageRank graph signal at *both* depths, so a presence
+    // check could not separate expansion from PageRank. `Support` is expansion's alone.
     let expanded = recall(&retriever(support_corpus(), 1), QueryClass::MultiHop).await;
     let with_expansion = fact_signals(&expanded, EVIDENCE_FACT);
     assert!(
         with_expansion
             .as_ref()
-            .is_some_and(|s| s.contains(&Signal::Dense)),
-        "support expansion gives the evidence a Dense contribution: {with_expansion:?}",
+            .is_some_and(|s| s.contains(&Signal::Support)),
+        "support expansion gives the far evidence a Support contribution: {with_expansion:?}",
     );
 
-    // Depth 0 (knob off): the dense fact path is the plain current pass, which the near noise
-    // facts crowd, so the far evidence never gets a Dense contribution. (It may still surface
-    // via the PageRank graph signal — that is M3.T01, not the dense pass under test here.)
+    // Depth 0 (knob off): the support signal does not run, so the evidence carries no
+    // `Support` contribution. (It may still surface via the PageRank graph signal — that is
+    // M3.T01, not the support signal under test here.)
     let plain = recall(&retriever(support_corpus(), 0), QueryClass::MultiHop).await;
     assert!(
-        fact_signals(&plain, EVIDENCE_FACT).is_none_or(|s| !s.contains(&Signal::Dense)),
-        "without expansion the dense pass does not reach the far evidence",
+        fact_signals(&plain, EVIDENCE_FACT).is_none_or(|s| !s.contains(&Signal::Support)),
+        "with the knob off there is no Support contribution for the evidence",
+    );
+}
+
+#[tokio::test]
+async fn the_dense_pass_keeps_a_near_non_root_fact_under_expansion() {
+    // Acceptance #2 — current precision stays full. Support expansion is ADDITIVE: it emits a
+    // Support signal over a query entity's evidence; it must NOT narrow the dense pass. So a
+    // near, non-root, non-evidence fact keeps its Dense contribution whether the knob is off
+    // or on. A wide limit keeps every fact in the bundle so the neighbor's contributions are
+    // readable at both depths.
+    let off = recall_with_limit(&retriever(precision_corpus(), 0), QueryClass::MultiHop, 20).await;
+    assert!(
+        fact_signals(&off, NEIGHBOR_FACT).is_some_and(|s| s.contains(&Signal::Dense)),
+        "the near non-root fact has a Dense contribution with the knob off",
+    );
+
+    let on = recall_with_limit(&retriever(precision_corpus(), 1), QueryClass::MultiHop, 20).await;
+    assert!(
+        fact_signals(&on, NEIGHBOR_FACT).is_some_and(|s| s.contains(&Signal::Dense)),
+        "support expansion does not strip the near non-root fact's Dense contribution",
+    );
+
+    // And expansion still did its additive job: the evidence gains a Support contribution it
+    // lacks with the knob off — recovered without disturbing the neighbor's dense ranking.
+    assert!(
+        fact_signals(&on, EVIDENCE_FACT).is_some_and(|s| s.contains(&Signal::Support)),
+        "the evidence is recovered via the Support signal",
+    );
+
+    // Rank stability (finding #6): recovered evidence must not outrank the precision root it
+    // supports.
+    let root_rank = fact_rank(&on, ROOT_FACT).expect("root present");
+    let evidence_rank = fact_rank(&on, EVIDENCE_FACT).expect("evidence recovered");
+    assert!(
+        root_rank < evidence_rank,
+        "the root outranks its recovered evidence (root #{root_rank}, evidence #{evidence_rank})",
     );
 }
 
@@ -349,14 +448,18 @@ async fn current_precision_does_not_regress_under_expansion() {
 
 #[tokio::test]
 async fn single_hop_class_runs_no_support_expansion() {
-    // The single-hop factual class turns graph expansion off, so the evidence — reachable
-    // only by expanding the root — never surfaces (neither the dense expansion nor the
-    // PageRank signal runs for this class).
+    // The single-hop factual class turns graph expansion off, so neither the support signal
+    // nor the PageRank signal runs — the evidence, reachable only by expanding the root, gets
+    // no `Support` contribution and never surfaces.
     let bundle = recall(
         &retriever(support_corpus(), 1),
         QueryClass::SingleHopFactual,
     )
     .await;
+    assert!(
+        fact_signals(&bundle, EVIDENCE_FACT).is_none_or(|s| !s.contains(&Signal::Support)),
+        "the support signal does not run for the single-hop class",
+    );
     assert!(
         !has_fact(&bundle, EVIDENCE_FACT),
         "no support expansion for the single-hop class, so the evidence stays hidden",
@@ -366,10 +469,10 @@ async fn single_hop_class_runs_no_support_expansion() {
 #[tokio::test]
 async fn an_oversized_depth_is_clamped_to_the_cap() {
     // The depth knob is bounded: a depth far above the cap behaves exactly like the single
-    // hop v1 supports — the evidence still gains its Dense contribution, no runaway.
+    // hop v1 supports — the evidence still gains its `Support` contribution, no runaway.
     let bundle = recall(&retriever(support_corpus(), 99), QueryClass::MultiHop).await;
     assert!(
-        fact_signals(&bundle, EVIDENCE_FACT).is_some_and(|s| s.contains(&Signal::Dense)),
+        fact_signals(&bundle, EVIDENCE_FACT).is_some_and(|s| s.contains(&Signal::Support)),
         "an oversized depth clamps to the cap and still expands one hop",
     );
 }
@@ -393,7 +496,7 @@ async fn support_expansion_skips_gracefully_on_an_embedder_outage() {
         "the embedder is reported down",
     );
     assert!(
-        fact_signals(&bundle, EVIDENCE_FACT).is_none_or(|s| !s.contains(&Signal::Dense)),
+        fact_signals(&bundle, EVIDENCE_FACT).is_none_or(|s| !s.contains(&Signal::Support)),
         "support expansion is skipped without a query vector to resolve roots",
     );
 }

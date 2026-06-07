@@ -30,6 +30,11 @@ pub enum Signal {
     Lexical,
     /// Native vector search, optionally exact-reranked.
     Dense,
+    /// Graph-guided dense scoring over a query entity's supporting evidence (03 §1, §4,
+    /// M3.T02): the query-entity fact roots expanded one incoming `SUPPORTS` hop,
+    /// vector-scored and current-scoped. Additive to [`Signal::Dense`] — it recovers a
+    /// relevant fact's far-embedded evidence without narrowing the dense pass.
+    Support,
     /// Associative graph expansion.
     Graph,
     /// Recency ranking over event/ingestion time.

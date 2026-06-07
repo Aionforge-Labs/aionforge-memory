@@ -181,6 +181,7 @@ fn signal_weights_accessor_maps_each_signal() {
     let p = profile_for(QueryClass::MultiHop);
     assert_eq!(p.weights.weight(Signal::Lexical), p.weights.lexical);
     assert_eq!(p.weights.weight(Signal::Dense), p.weights.dense);
+    assert_eq!(p.weights.weight(Signal::Support), p.weights.support);
     assert_eq!(p.weights.weight(Signal::Graph), p.weights.graph);
     assert_eq!(p.weights.weight(Signal::Recency), p.weights.recency);
     assert_eq!(p.weights.weight(Signal::Trust), p.weights.trust);
