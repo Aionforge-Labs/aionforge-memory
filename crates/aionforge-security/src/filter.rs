@@ -16,8 +16,10 @@
 //! `Redaction.span` contract), and the matched text is replaced with a typed
 //! `[redacted:<kind>]` placeholder; injection markers are stripped from the cleaned
 //! content and their ids collected into `injection_flags`. Matches are applied as a
-//! single deterministic, non-overlapping edit pass: the earliest start wins, the
-//! longer match breaks a tie, and a later overlapping match is dropped.
+//! single deterministic, non-overlapping edit pass: the earliest start wins and the
+//! longer match breaks a tie. A later match fully covered by an applied one is
+//! dropped; one that only partially overlaps still has its uncovered tail replaced,
+//! so the pass is fail-closed — no matched (sensitive) byte is ever copied out.
 
 use aionforge_domain::nodes::episodic::Redaction;
 use aionforge_domain::{FilterOutcome, PrivacyFilter};
@@ -225,8 +227,10 @@ impl PrivacyFilter for CaptureFilter {
         }
 
         // Deterministic, non-overlapping edit order: earliest start first, longer
-        // match first on a tie. The walk below drops any later edit that overlaps an
-        // applied one.
+        // match first on a tie. The walk below is fail-closed: a later edit fully
+        // covered by an applied one is dropped, but one that only partially overlaps
+        // still has its uncovered tail replaced — a redaction silently dropped here
+        // would leak the raw sensitive bytes its match started inside.
         edits.sort_by(|a, b| a.start.cmp(&b.start).then(b.end.cmp(&a.end)));
 
         let mut cleaned = String::with_capacity(content.len());
@@ -235,10 +239,15 @@ impl PrivacyFilter for CaptureFilter {
         let mut cursor = 0usize;
 
         for edit in edits {
-            if edit.start < cursor {
-                continue; // overlaps an already-applied edit
+            if edit.end <= cursor {
+                continue; // fully covered by an already-applied edit
             }
-            cleaned.push_str(&content[cursor..edit.start]);
+            if edit.start >= cursor {
+                // Copy the run of unmatched (non-sensitive) text before this edit.
+                cleaned.push_str(&content[cursor..edit.start]);
+            }
+            // Emit the placeholder, never the raw tail, and advance past the whole
+            // match so a partially overlapped sensitive span cannot survive.
             cleaned.push_str(&edit.replacement);
             cursor = edit.end;
             if let Some(redaction) = edit.redaction {
