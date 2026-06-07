@@ -126,13 +126,15 @@ async fn capture_then_start_consolidation_derives_a_fact() {
     );
 
     // Poll until the background loop derives the fact, bounded so a regression fails fast.
+    // Sleep before the first check so the spawned consolidator has yielded and ticked at
+    // least once — the count is never read before the loop can possibly have run.
     let mut derived = false;
     for _ in 0..200 {
+        tokio::time::sleep(Duration::from_millis(25)).await;
         if fact_count(&memory) >= 1 {
             derived = true;
             break;
         }
-        tokio::time::sleep(Duration::from_millis(25)).await;
     }
     handle.shutdown().await;
 

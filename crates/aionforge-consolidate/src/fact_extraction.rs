@@ -99,15 +99,23 @@ where
             return Ok(PassOutput::default());
         }
 
-        // Embed every distinct surface once, in appearance order, so resolution and new
-        // entities share one embedding per surface.
+        // Embed each distinct surface TEXT once. The embedder is a pure function of the
+        // input string — an entity's type never reaches it — so two surfaces with the
+        // same text but different types share one embedding, and keying by text is exact.
+        // The resolution-time type filter (resolve.rs) is what keeps those two apart.
         let surfaces = distinct_surfaces(&extracted);
-        let surface_strings: Vec<String> = surfaces.iter().map(|s| s.surface.clone()).collect();
-        let surface_embeddings = self.embed(surface_strings.clone()).await?;
-        let embedding_of: HashMap<&str, &Embedding> = surface_strings
+        let mut distinct_texts: Vec<String> = Vec::new();
+        let mut seen_text: HashSet<&str> = HashSet::new();
+        for surface in &surfaces {
+            if seen_text.insert(surface.surface.as_str()) {
+                distinct_texts.push(surface.surface.clone());
+            }
+        }
+        let text_embeddings = self.embed(distinct_texts.clone()).await?;
+        let embedding_of: HashMap<&str, &Embedding> = distinct_texts
             .iter()
             .map(String::as_str)
-            .zip(surface_embeddings.iter())
+            .zip(text_embeddings.iter())
             .collect();
 
         // Resolve each surface (read-only) within the episode's namespace.

@@ -274,14 +274,19 @@ async fn extraction_resolves_surfaces_records_provenance_and_is_idempotent() {
             .any(|(name, _)| name == "Robert" || name == "Alice Smith"),
         "a folded surface is never its own entity: {persons:?}"
     );
-    assert!(
-        count(
-            &store,
-            BoundQuery::new("MATCH (a:AuditEvent) WHERE a.kind = $k RETURN a.id AS id")
-                .bind_str("k", "canonicalize")
-                .expect("bind kind"),
-        ) >= persons.len(),
-        "every resolution decision is audited"
+    // One canonicalize decision is audited per distinct surface per episode: ep1 audits
+    // Alice/Aionforge/Alice Smith (3), ep2 Alice/Rust (2), ep3 Bob/Helios (2), ep4
+    // Robert/Helios (2) = 9. An exact count catches a regression that drops auditing for
+    // whole episodes as well as one that over-audits.
+    let canonicalize_audits = count(
+        &store,
+        BoundQuery::new("MATCH (a:AuditEvent) WHERE a.kind = $k RETURN a.id AS id")
+            .bind_str("k", "canonicalize")
+            .expect("bind kind"),
+    );
+    assert_eq!(
+        canonicalize_audits, 9,
+        "every resolution decision is audited, once per surface per episode"
     );
 
     let facts_before = count(&store, BoundQuery::new("MATCH (f:Fact) RETURN f.id AS id"));
