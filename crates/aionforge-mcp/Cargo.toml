@@ -12,6 +12,17 @@ description = "Optional Model Context Protocol server surface (Tools, Resources,
 [dependencies]
 aionforge-engine = { path = "../aionforge-engine", version = "0.1.0" }
 aionforge-domain = { path = "../aionforge-domain", version = "0.1.0" }
+rmcp = { version = "1.6", features = ["server", "macros", "transport-io"] }
+schemars = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+jiff = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+aionforge-domain = { path = "../aionforge-domain", version = "0.1.0" }
+aionforge-engine = { path = "../aionforge-engine", version = "0.1.0" }
+tokio = { workspace = true }
 
 [lints]
 workspace = true
