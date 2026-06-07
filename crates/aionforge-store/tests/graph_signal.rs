@@ -14,9 +14,9 @@ use aionforge_domain::ids::{ContentHash, Id};
 use aionforge_domain::nodes::episodic::{ConsolidationState, Episode, Role};
 use aionforge_domain::value::ObjectValue;
 
-use aionforge_store::{BoundQuery, NodeId, SearchHit, SearchKind, Store};
+use aionforge_store::{BoundQuery, NodeId, QueryResult, SearchHit, SearchKind, Store, Value};
 
-use common::{entity, fact, identity, open_window, stats, store, ts, zdt};
+use common::{entity, fact, identity, insert_scope, open_window, stats, store, ts, zdt};
 
 /// A minimal raw episode (no embedding — PageRank ignores vectors entirely).
 fn episode(content: &str) -> Episode {
@@ -77,6 +77,23 @@ fn nodes_of(hits: &[SearchHit]) -> Vec<NodeId> {
 fn sorted(mut nodes: Vec<NodeId>) -> Vec<NodeId> {
     nodes.sort();
     nodes
+}
+
+/// The engine node id of the `Scope` with domain id `id`. `Scope` sits outside the
+/// associative projection (which spans only `Entity`/`Fact`/`Episode`), so its node id is
+/// what the seed-not-in-projection error path needs.
+fn scope_node(store: &Store, id: &str) -> NodeId {
+    let query = BoundQuery::new("MATCH (s:Scope {id: $id}) RETURN s AS node_id")
+        .bind_str("id", id)
+        .unwrap();
+    let QueryResult::Rows(rows) = store.execute(&query).expect("match scope") else {
+        panic!("a MATCH ... RETURN yields rows");
+    };
+    let idx = rows.column_index("node_id").expect("node_id column");
+    match rows.value(0, idx).expect("one scope row") {
+        Value::NodeRef(node) => *node,
+        other => panic!("expected a node ref, got {other:?}"),
+    }
 }
 
 #[test]
@@ -243,6 +260,17 @@ fn mass_spreads_across_support_chains_and_skips_disconnected_facts() {
         "the directly-attached fact outranks the support-chained one: {fact_hits:?}",
     );
 
+    // Truncation respects that ranking: k=1 keeps the top-ranked F1, not the lower
+    // support-chained F2 — the cap drops the tail of the order, not an arbitrary hit.
+    let top_fact = store
+        .personalized_pagerank(SearchKind::Fact, &[e1_node], 1)
+        .expect("pagerank top fact");
+    assert_eq!(
+        nodes_of(&top_fact),
+        vec![f1_node],
+        "k=1 keeps the highest-ranked fact, the directly-attached F1",
+    );
+
     // The chain also carries mass to E2; E3 stays out.
     let entity_hits = store
         .personalized_pagerank(SearchKind::Entity, &[e1_node], 10)
@@ -288,19 +316,22 @@ fn k_bounds_the_ranking() {
     let store = store();
     let ent = entity("aionforge");
     let e_node = store.insert_entity(&ent).expect("insert entity");
+    let mut fact_nodes = Vec::new();
     for n in 0..4 {
-        store
-            .assert_fact(
-                &fact(
-                    ent.identity.id.clone(),
-                    "rel",
-                    ObjectValue::Text(format!("object {n}")),
-                    &format!("statement {n}"),
-                ),
-                e_node,
-                &open_window("2026-06-06T09:30:00-05:00[America/Chicago]"),
-            )
-            .expect("assert fact");
+        fact_nodes.push(
+            store
+                .assert_fact(
+                    &fact(
+                        ent.identity.id.clone(),
+                        "rel",
+                        ObjectValue::Text(format!("object {n}")),
+                        &format!("statement {n}"),
+                    ),
+                    e_node,
+                    &open_window("2026-06-06T09:30:00-05:00[America/Chicago]"),
+                )
+                .expect("assert fact"),
+        );
     }
 
     let hits = store
@@ -310,5 +341,155 @@ fn k_bounds_the_ranking() {
         hits.len(),
         2,
         "k caps the returned hits at 2 of the 4 facts"
+    );
+    assert!(
+        hits.iter().all(|hit| fact_nodes.contains(&hit.node)),
+        "the capped hits are drawn from the four facts: {hits:?}",
+    );
+
+    // The four facts are structurally symmetric, so PageRank scores them alike and the
+    // node-id tiebreak decides the order. That order is deterministic: a repeated call
+    // returns the same hits in the same sequence, so the cap is stable, not arbitrary.
+    let order = |hits: &[SearchHit]| hits.iter().map(|hit| hit.node).collect::<Vec<_>>();
+    let again = store
+        .personalized_pagerank(SearchKind::Fact, &[e_node], 2)
+        .expect("pagerank facts again");
+    assert_eq!(
+        order(&hits),
+        order(&again),
+        "repeated calls return the same hits in the same order",
+    );
+}
+
+#[test]
+fn zero_k_yields_an_empty_ranking() {
+    let store = store();
+    let ent = entity("aionforge");
+    let e_node = store.insert_entity(&ent).expect("insert entity");
+    store
+        .assert_fact(
+            &fact(
+                ent.identity.id.clone(),
+                "is",
+                ObjectValue::Text("a memory substrate".to_string()),
+                "aionforge is a memory substrate",
+            ),
+            e_node,
+            &open_window("2026-06-06T09:30:00-05:00[America/Chicago]"),
+        )
+        .expect("assert fact");
+
+    // k = 0 asks for no hits; the guard short-circuits to empty without touching the
+    // graph (the twin of the empty-seeds guard), so it is never a degenerate query.
+    assert!(
+        store
+            .personalized_pagerank(SearchKind::Fact, &[e_node], 0)
+            .expect("k=0 is not an error")
+            .is_empty(),
+        "k=0 yields an empty ranking",
+    );
+}
+
+#[test]
+fn a_kind_with_no_nodes_yields_an_empty_ranking() {
+    let store = store();
+    let ent = entity("aionforge");
+    let e_node = store.insert_entity(&ent).expect("insert entity");
+    store
+        .assert_fact(
+            &fact(
+                ent.identity.id.clone(),
+                "is",
+                ObjectValue::Text("a memory substrate".to_string()),
+                "aionforge is a memory substrate",
+            ),
+            e_node,
+            &open_window("2026-06-06T09:30:00-05:00[America/Chicago]"),
+        )
+        .expect("assert fact");
+
+    // The graph holds an entity and a fact but no notes. Asking for the Note kind
+    // intersects the PageRank scores with an empty node set, so the ranking is empty —
+    // a kind the graph has no instances of is not an error, just no hits.
+    assert!(
+        store
+            .personalized_pagerank(SearchKind::Note, &[e_node], 10)
+            .expect("an unrepresented kind is not an error")
+            .is_empty(),
+        "a kind with no nodes in the graph yields an empty ranking",
+    );
+}
+
+#[test]
+fn multiple_seeds_reach_each_seed_component() {
+    let store = store();
+
+    // Two unconnected entities, each with one fact ABOUT it — no edge bridges them.
+    let e1 = entity("aionforge");
+    let e1_node = store.insert_entity(&e1).expect("insert e1");
+    let e2 = entity("selene");
+    let e2_node = store.insert_entity(&e2).expect("insert e2");
+
+    let f1_node = store
+        .assert_fact(
+            &fact(
+                e1.identity.id.clone(),
+                "is",
+                ObjectValue::Text("a memory substrate".to_string()),
+                "aionforge is a memory substrate",
+            ),
+            e1_node,
+            &open_window("2026-06-06T09:30:00-05:00[America/Chicago]"),
+        )
+        .expect("assert f1");
+    let f2_node = store
+        .assert_fact(
+            &fact(
+                e2.identity.id.clone(),
+                "is",
+                ObjectValue::Text("a graph engine".to_string()),
+                "selene is a graph engine",
+            ),
+            e2_node,
+            &open_window("2026-06-06T09:31:00-05:00[America/Chicago]"),
+        )
+        .expect("assert f2");
+
+    // Seeding both entities spreads restart mass into both otherwise-disconnected
+    // components, so each seed's fact comes back — a single seed would reach only its
+    // own. The personalization list carries both roots at equal weight.
+    let fact_hits = store
+        .personalized_pagerank(SearchKind::Fact, &[e1_node, e2_node], 10)
+        .expect("pagerank facts");
+    assert_eq!(
+        nodes_of(&fact_hits),
+        sorted(vec![f1_node, f2_node]),
+        "both seeds' facts are reached when both entities seed the walk",
+    );
+    assert!(
+        fact_hits.iter().all(|hit| hit.score > 0.0),
+        "each seeded component's fact carries positive mass: {fact_hits:?}",
+    );
+}
+
+#[test]
+fn a_seed_outside_the_projection_is_an_error() {
+    let store = store();
+
+    // An entity that is in the projection, plus a Scope node that is not (the projection
+    // spans only Entity/Fact/Episode).
+    let ent = entity("aionforge");
+    store.insert_entity(&ent).expect("insert entity");
+    insert_scope(&store, "scope-1");
+    let scope = scope_node(&store, "scope-1");
+
+    // selene validates that every personalization seed is a projected node and rejects
+    // one that is not; the store surfaces that as an error rather than a silent empty —
+    // a seed the projection can't place is a caller bug, not a no-op.
+    assert!(
+        store
+            .personalized_pagerank(SearchKind::Fact, &[scope], 10)
+            .is_err(),
+        "seeding on a node outside the associative projection is an error",
     );
 }

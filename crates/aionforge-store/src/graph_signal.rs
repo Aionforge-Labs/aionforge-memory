@@ -66,7 +66,8 @@ impl Store {
     /// Personalized-PageRank a kind by associative proximity to `seeds` (M3.T01).
     ///
     /// `seeds` are the entity nodes a query mentions; the returned [`SearchHit`]s are the
-    /// `kind` nodes (facts or episodes) ranked best-first by PageRank score — higher is
+    /// nodes carrying `kind`'s label — any [`SearchKind`] is accepted here, and retrieval
+    /// (L1) gates which kinds it asks for — ranked best-first by PageRank score: higher is
     /// nearer, the opposite of the cosine signals, but rank fusion reads only position so
     /// the two never have to be made comparable. An empty `seeds` yields an empty ranking:
     /// a graph signal needs a personalization root, and a uniform PageRank is not the
