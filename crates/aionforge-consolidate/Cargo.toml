@@ -7,13 +7,17 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Asynchronous consolidation: fact extraction, entity resolution, supersession/contradiction, and summarization."
+description = "Asynchronous consolidation: a durable cursor and a bounded background scheduler over the commit stream."
 
 [dependencies]
 aionforge-domain = { path = "../aionforge-domain", version = "0.1.0" }
 aionforge-store = { path = "../aionforge-store", version = "0.1.0" }
-aionforge-embed = { path = "../aionforge-embed", version = "0.1.0" }
-aionforge-security = { path = "../aionforge-security", version = "0.1.0" }
+async-trait = { workspace = true }
+metrics = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "sync"] }
+tracing = { workspace = true }
 
 [lints]
 workspace = true

@@ -1,0 +1,100 @@
+//! The pluggable consolidation pass seam (write-and-consolidation §2).
+//!
+//! A pass is one rule the consolidator applies to an episode — extract facts, resolve
+//! entities, detect supersession, summarize (M2.T04–T06). M2.T03 ships only the seam
+//! and a [`NoopPass`] to prove the machinery; the real rules slot in here without
+//! touching the scheduler.
+//!
+//! The contract is deliberately read-only: a pass reads a snapshot and returns derived
+//! output; it must **not** open a write transaction. The scheduler commits the result
+//! atomically with the episode's state-flip, which is what lets a crash mid-pass resume
+//! without double-applying — and structurally honors the rule that consolidation never
+//! re-enters the write path from inside a callback.
+
+use std::sync::Arc;
+
+use aionforge_domain::nodes::episodic::Episode;
+use aionforge_domain::time::Timestamp;
+use aionforge_store::{NodeId, Store};
+
+/// One consolidation rule over a single episode.
+#[async_trait::async_trait]
+pub trait ConsolidationPass: Send + Sync + 'static {
+    /// A stable, unique name (e.g. `"extract_facts"`). Keys the cursor's `rule_versions`.
+    fn name(&self) -> &'static str;
+
+    /// A monotonic version. A bump signals "reprocess" to later milestones; M2.T03
+    /// records it only.
+    fn version(&self) -> u32;
+
+    /// Whether this pass is enabled (a config/feature gate). Disabled passes are skipped
+    /// and excluded from `rule_versions`.
+    fn enabled(&self) -> bool {
+        true
+    }
+
+    /// Derive output for one episode from a read-only snapshot. Side-effect-free: the
+    /// scheduler, not the pass, performs every write.
+    ///
+    /// # Errors
+    /// Returns [`PassError::Transient`] for a recoverable failure (retry next tick) or
+    /// [`PassError::Fatal`] for a permanent one (the episode is marked failed).
+    async fn apply(&self, cx: &PassContext<'_>) -> Result<PassOutput, PassError>;
+}
+
+/// The read-only context handed to a pass for one episode.
+pub struct PassContext<'a> {
+    /// The store, for snapshot reads only. A pass must not open a write transaction.
+    pub store: &'a Arc<Store>,
+    /// The episode's engine node id (for the scheduler's flip; passes rarely need it).
+    pub episode_node_id: NodeId,
+    /// The episode under consolidation.
+    pub episode: &'a Episode,
+    /// The injected action time (`now`) for any time-stamped derivation.
+    pub now: Timestamp,
+    /// The `{pass_name: version}` set in force at this cursor position.
+    pub rule_versions: &'a serde_json::Value,
+}
+
+/// What a pass derived for the scheduler to commit.
+///
+/// In M2.T03 a successful pass commits nothing beyond the episode's state-flip, so this
+/// is empty. M2.T04–T06 grow it with the derived facts/entities/edges they extract; the
+/// scheduler will materialize those in the same atomic flip. The trait signature does
+/// not change as that happens — only this payload.
+#[derive(Debug, Default, Clone)]
+#[non_exhaustive]
+pub struct PassOutput {}
+
+/// A pass-level failure, classified for the scheduler's retry/halt decision.
+#[derive(Debug, thiserror::Error)]
+pub enum PassError {
+    /// Recoverable (inference unavailable, rate limit, timeout): retry next tick.
+    #[error("transient: {0}")]
+    Transient(String),
+    /// Permanent (bad input, invariant violation): mark the episode failed.
+    #[error("fatal: {0}")]
+    Fatal(String),
+}
+
+/// The no-op pass: it derives nothing and always succeeds.
+///
+/// It exists so M2.T03 can prove the scheduler end to end — discover, apply, flip,
+/// advance the cursor — before any real rule exists. It is not registered in production.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NoopPass;
+
+#[async_trait::async_trait]
+impl ConsolidationPass for NoopPass {
+    fn name(&self) -> &'static str {
+        "noop"
+    }
+
+    fn version(&self) -> u32 {
+        1
+    }
+
+    async fn apply(&self, _cx: &PassContext<'_>) -> Result<PassOutput, PassError> {
+        Ok(PassOutput::default())
+    }
+}
