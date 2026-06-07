@@ -101,6 +101,18 @@ impl Store {
             .map(|type_ddl| type_ddl.name.to_owned())
             .collect();
 
+        // Indexes (§7–§8) are part of the schema the migration applies; providers (§9)
+        // are attached at construction, not here. Run before the version is recorded so
+        // a crash mid-migration re-runs idempotently.
+        self.register_indexes(self.config().embedding_dimension)?;
+
+        // §13.5: every vector index's dimension must equal the configured embedder
+        // dimension. Assert it here, after the indexes exist and before the version is
+        // recorded, so a mismatch is a loud migration failure and a crash re-validates on
+        // re-run. The recovery path (a recovered graph skips this guard via the version
+        // check above) re-runs the same check at open time.
+        self.dimension_consistency_check(self.config().embedding_dimension)?;
+
         self.write_schema_version(SCHEMA_VERSION, now)?;
         Ok(MigrationReport {
             from_version,

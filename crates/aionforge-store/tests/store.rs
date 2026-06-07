@@ -15,7 +15,7 @@ use aionforge_domain::namespace::Namespace;
 use aionforge_domain::nodes::episodic::{ConsolidationState, Episode, Origin, Redaction, Role};
 use aionforge_domain::time::Timestamp;
 
-use aionforge_store::{BoundQuery, QueryResult, Store, Value};
+use aionforge_store::{BoundQuery, QueryResult, Store, StoreConfig, Value};
 
 use proptest::prelude::*;
 
@@ -26,9 +26,22 @@ fn ts(text: &str) -> Timestamp {
 
 /// A store with the schema applied — the shape every typed write needs, since the
 /// graph is closed and rejects a node whose kind has not been declared.
+///
+/// The embedding dimension is set to 4 to match [`rich_episode`]'s toy embedding: the
+/// `Episode.embedding_v1` vector index is pinned at this dimension, so an embedding of a
+/// different length would (correctly) be rejected at insert. This toy dimension keeps the
+/// round-trip test simple; the realistic dimension-pinning and the §13.5 consistency check
+/// are exercised separately in `tests/indexes.rs`, and the round-trip here covers Episode
+/// (the only kind with a typed insert/read path at this layer).
 fn store() -> Store {
-    Store::open_in_memory_migrated(&ts("2026-01-01T00:00:00-06:00[America/Chicago]"))
-        .expect("open and migrate store")
+    let store = Store::open_with_config(StoreConfig {
+        embedding_dimension: 4,
+    })
+    .expect("open store");
+    store
+        .migrate(&ts("2026-01-01T00:00:00-06:00[America/Chicago]"))
+        .expect("migrate store");
+    store
 }
 
 fn stats() -> Stats {

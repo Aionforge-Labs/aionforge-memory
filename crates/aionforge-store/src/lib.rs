@@ -9,18 +9,24 @@
 //! id types are re-exported here.
 
 mod catalog;
+mod config;
 mod convert;
 mod episode;
 mod error;
 mod gql;
+mod indexes;
 mod migrate;
+mod providers;
 mod schema;
 mod store;
 
 pub use catalog::SCHEMA_VERSION;
+pub use config::{DEFAULT_EMBEDDING_DIMENSION, StoreConfig};
 pub use error::StoreError;
 pub use gql::{BoundQuery, QueryResult, Rows};
+pub use indexes::VectorIndexInfo;
 pub use migrate::{MigrationPlan, MigrationReport, PendingChange};
+pub use providers::CandidateStateInfo;
 pub use schema::{EdgeTypeShape, NodeTypeShape, PropertyKind, PropertyShape, SchemaSnapshot};
 pub use store::Store;
 

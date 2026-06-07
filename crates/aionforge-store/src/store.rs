@@ -9,9 +9,11 @@ use selene_core::{GraphId, NodeId, db_string};
 use selene_gql::{BindingTable, EmptyProcedureRegistry, Session, StatementOutput};
 use selene_graph::{GraphTypeDef, SeleneGraph, SharedGraph};
 
+use crate::config::StoreConfig;
 use crate::episode;
 use crate::error::StoreError;
 use crate::gql::{BoundQuery, QueryResult, Rows};
+use crate::providers::candidate_state_provider;
 
 /// The storage layer over a selene-db `SharedGraph`.
 ///
@@ -29,6 +31,7 @@ use crate::gql::{BoundQuery, QueryResult, Rows};
 /// before its kind is declared fails fast against the closed-graph validator.
 pub struct Store {
     graph: SharedGraph,
+    config: StoreConfig,
 }
 
 impl std::fmt::Debug for Store {
@@ -51,14 +54,27 @@ impl Store {
     /// self-consistency check (it does not for an empty type, but the binding path is
     /// fallible).
     pub fn open_in_memory() -> Result<Self, StoreError> {
+        Self::open_with_config(StoreConfig::default())
+    }
+
+    /// Open an in-memory store with explicit configuration (no schema applied yet).
+    ///
+    /// The candidate-state providers (data-model §9) are attached here at construction,
+    /// because they are not migration objects — a provider that is not attached at build
+    /// time does not exist for the process.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] if the empty graph type or the provider registration fails.
+    pub fn open_with_config(config: StoreConfig) -> Result<Self, StoreError> {
         let graph = SharedGraph::builder(GraphId::new(1))
             .bound_to(GraphTypeDef {
                 name: db_string("aionforge.memory")?,
                 node_types: Vec::new(),
                 edge_types: Vec::new(),
             })?
+            .with_provider(candidate_state_provider()?)
             .build()?;
-        Ok(Self { graph })
+        Ok(Self { graph, config })
     }
 
     /// Open an in-memory store with the full schema already applied.
@@ -78,6 +94,12 @@ impl Store {
     /// The owned shared graph, for the schema and migration machinery in this crate.
     pub(crate) fn graph(&self) -> &SharedGraph {
         &self.graph
+    }
+
+    /// This store's binding configuration.
+    #[must_use]
+    pub fn config(&self) -> StoreConfig {
+        self.config
     }
 
     /// Take a lock-free read snapshot of the current graph state.
