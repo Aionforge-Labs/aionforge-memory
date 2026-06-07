@@ -360,6 +360,10 @@ mod tests {
         assert_eq!(normalize("new\tyork"), "new york");
         assert_eq!(normalize("  Alice  "), "alice");
         assert_eq!(normalize("ALICE"), "alice");
+        // Non-ASCII case folding goes through `to_lowercase` (Unicode), not ASCII-only.
+        assert_eq!(normalize("José"), normalize("JOSÉ"));
+        assert_eq!(normalize("São   Paulo"), "são paulo");
+        assert_eq!(normalize("MÜNCHEN"), "münchen");
     }
 
     #[test]
@@ -370,6 +374,10 @@ mod tests {
         assert_eq!(base, new_entity_id(&ns(), "Person", "new york"));
         assert_eq!(base, new_entity_id(&ns(), "Person", "New   York"));
         assert_eq!(base, new_entity_id(&ns(), "Person", "  NEW YORK  "));
+        // The guarantee holds for multi-byte names and tab separators too.
+        let sp = new_entity_id(&ns(), "City", "São Paulo");
+        assert_eq!(sp, new_entity_id(&ns(), "City", "são  paulo"));
+        assert_eq!(sp, new_entity_id(&ns(), "City", "SÃO\tPAULO"));
     }
 
     #[test]
@@ -381,5 +389,26 @@ mod tests {
             a,
             new_entity_id(&Namespace::Agent("other".to_string()), "Person", "Alice")
         );
+    }
+
+    #[test]
+    fn fold_alias_dedups_case_and_spacing_variants() {
+        let mut entry = CorefEntry {
+            id: new_entity_id(&ns(), "City", "New York"),
+            canonical_name: "New York".to_string(),
+            entity_type: "City".to_string(),
+            aliases: Vec::new(),
+            is_new: true,
+        };
+        // A whitespace/case variant of the canonical name is not stored as an alias.
+        fold_alias(&mut entry, "new   york");
+        assert!(
+            entry.aliases.is_empty(),
+            "variant of the canonical is no alias"
+        );
+        // A genuinely different surface is added once, and its variants fold into it.
+        fold_alias(&mut entry, "NYC");
+        fold_alias(&mut entry, "nyc");
+        assert_eq!(entry.aliases, vec!["NYC".to_string()], "one alias, deduped");
     }
 }

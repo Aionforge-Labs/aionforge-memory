@@ -29,12 +29,12 @@ use aionforge_domain::nodes::semantic::{Entity, Fact, FactStatus};
 use aionforge_domain::time::{BiTemporal, Timestamp};
 use aionforge_domain::value::ObjectValue;
 use selene_core::{EdgeId, LabelDiff, NodeId, PropertyDiff, PropertyMap, Value, db_string};
-use selene_graph::{Mutator, RowIndex, SeleneGraph};
+use selene_graph::{Mutator, SeleneGraph};
 
-use crate::convert::{enum_value, id_value, string_value, timestamp_value};
+use crate::convert::{enum_value, timestamp_value};
 use crate::error::StoreError;
 use crate::note::MaterializedNote;
-use crate::{audit, entity, fact, note};
+use crate::{audit, dedup, entity, fact, note};
 
 /// A fact to materialize, with the bi-temporal window for its `ABOUT` edge.
 ///
@@ -169,12 +169,14 @@ pub(crate) fn materialize_into(
         return Ok(());
     }
 
-    // 1. Entities. Dedup against the committed graph; build the fresh-id -> canonical-id
-    //    remap and the canonical-id -> NodeId map for entities created in this txn.
+    // 1. Entities: dedup against the committed graph; build the fresh-id -> canonical-id and
+    //    canonical-id -> NodeId maps for entities created in this txn.
     let mut canonical_id: HashMap<Id, Id> = HashMap::new();
     let mut node_of: HashMap<Id, NodeId> = HashMap::new();
     for entity in &artifacts.new_entities {
-        if let Some((existing_id, existing_node)) = find_existing_entity(mutator.read(), entity)? {
+        if let Some((existing_id, existing_node)) =
+            dedup::find_existing_entity(mutator.read(), entity)?
+        {
             canonical_id.insert(entity.identity.id.clone(), existing_id.clone());
             node_of.insert(existing_id, existing_node);
         } else {
@@ -189,8 +191,7 @@ pub(crate) fn materialize_into(
 
     // 2. Facts (+ ABOUT), content-deduped within the batch and against the committed graph.
     // `fact_nodes` records each fact's NodeId by its dedup key so step 2.5 can resolve a
-    // supersession/contradiction target created in this same txn (the index sees only
-    // committed nodes).
+    // supersession/contradiction target created in this same txn (the index sees only committed).
     let mut seen_facts: HashSet<String> = HashSet::new();
     let mut fact_nodes: HashMap<String, NodeId> = HashMap::new();
     for materialized in &artifacts.facts {
@@ -209,7 +210,7 @@ pub(crate) fn materialize_into(
                 ))
             })?;
 
-        let fact_node = match find_existing_fact(
+        let fact_node = match dedup::find_existing_fact(
             mutator.read(),
             &subject_id,
             &materialized.fact.predicate,
@@ -523,7 +524,7 @@ pub(crate) fn resolve_instruction_fact(
     if let Some(node) = fact_nodes.get(&dedup_key) {
         return Ok(Some(*node));
     }
-    find_existing_fact(snapshot, &subject, &key.predicate, &object)
+    dedup::find_existing_fact(snapshot, &subject, &key.predicate, &object)
 }
 
 /// The bi-temporal window for a supersession/contradiction edge: event time opens at the
@@ -573,74 +574,7 @@ fn resolve_entity_node(
     if let Some(node) = node_of.get(id) {
         return Ok(Some(*node));
     }
-    let label = db_string(Entity::LABEL)?;
-    let prop = db_string("id")?;
-    let value = id_value(id)?;
-    let Some(rows) = snapshot.nodes_with_property_eq(&label, &prop, &value) else {
-        return Ok(None);
-    };
-    Ok(rows
-        .iter()
-        .find_map(|row| snapshot.node_id_for_row(RowIndex::new(row))))
-}
-
-/// Find an entity already in the committed graph with the same canonical name, type, and
-/// namespace, returning its id and node. `canonical_name` is indexed, so this is a probe.
-fn find_existing_entity(
-    snapshot: &SeleneGraph,
-    entity: &Entity,
-) -> Result<Option<(Id, NodeId)>, StoreError> {
-    let label = db_string(Entity::LABEL)?;
-    let name_prop = db_string("canonical_name")?;
-    let value = string_value(&entity.canonical_name)?;
-    let Some(rows) = snapshot.nodes_with_property_eq(&label, &name_prop, &value) else {
-        return Ok(None);
-    };
-    for row in rows.iter() {
-        let Some(node) = snapshot.node_id_for_row(RowIndex::new(row)) else {
-            continue;
-        };
-        let Some(props) = snapshot.node_properties(node) else {
-            continue;
-        };
-        let candidate = entity::from_properties(props)?;
-        if candidate.entity_type == entity.entity_type
-            && candidate.identity.namespace == entity.identity.namespace
-        {
-            return Ok(Some((candidate.identity.id, node)));
-        }
-    }
-    Ok(None)
-}
-
-/// Find a fact already asserted with this `(subject_id, predicate)` and object value.
-/// `subject_id` is indexed, so this probes the bounded subject set and compares in Rust
-/// (`Fact.id` is unique but not indexed, so dedup is by value, not by an id scan).
-fn find_existing_fact(
-    snapshot: &SeleneGraph,
-    subject_id: &Id,
-    predicate: &str,
-    object: &ObjectValue,
-) -> Result<Option<NodeId>, StoreError> {
-    let label = db_string(Fact::LABEL)?;
-    let subject_prop = db_string("subject_id")?;
-    let value = id_value(subject_id)?;
-    let Some(rows) = snapshot.nodes_with_property_eq(&label, &subject_prop, &value) else {
-        return Ok(None);
-    };
-    for row in rows.iter() {
-        let Some(node) = snapshot.node_id_for_row(RowIndex::new(row)) else {
-            continue;
-        };
-        let Some(props) = snapshot.node_properties(node) else {
-            continue;
-        };
-        let candidate = fact::from_properties(props)?;
-        if candidate.predicate == predicate && candidate.object == *object {
-            return Ok(Some(node));
-        }
-    }
-    Ok(None)
+    dedup::entity_node_by_id(snapshot, id)
 }
 
 /// Remap an entity-typed object to its canonical entity id; literals pass through.
