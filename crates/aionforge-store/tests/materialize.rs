@@ -275,6 +275,70 @@ fn materialize_dedups_a_re_minted_entity_id_without_violating_the_unique_constra
 }
 
 #[test]
+fn materialize_falls_back_to_canonical_name_across_id_schemes_but_respects_type() {
+    // The fallback probe bridges a prior id scheme: an entity minted under a different id (a
+    // pre-content-hash migration, say) is still found by exact canonical_name + type + namespace,
+    // so a re-presented "new" entity dedups onto it instead of duplicating. The type/namespace
+    // filters keep a same-name entity of a different type distinct (no false merge).
+    let store = store();
+    let (existing_id, _node) = insert_entity(&store, "Paris"); // type "Person"
+    let (ep_node, episode) = insert_episode(&store);
+
+    let typed = |name: &str, entity_type: &str| Entity {
+        identity: identity(Id::generate()), // a fresh id, distinct from `existing_id`
+        stats: stats(),
+        canonical_name: name.to_string(),
+        entity_type: entity_type.to_string(),
+        aliases: Vec::new(),
+        description: None,
+        embedding: None,
+        embedder_model: None,
+        attributes: None,
+    };
+    // (a) Same name + type + namespace under a different id: id-probe misses, name fallback hits.
+    let bridged = typed("Paris", "Person");
+    // (b) Same name, different type: the type filter must keep it distinct.
+    let other_type = typed("Paris", "City");
+
+    let mut artifacts = ConsolidationArtifacts::default();
+    artifacts.new_entities.push(bridged.clone());
+    artifacts.new_entities.push(other_type.clone());
+    artifacts
+        .mentioned_entities
+        .push(bridged.identity.id.clone());
+    artifacts
+        .mentioned_entities
+        .push(other_type.identity.id.clone());
+
+    store
+        .commit_consolidation_episode(
+            ep_node,
+            ConsolidationState::Raw,
+            ConsolidationState::Consolidated,
+            &cursor_at(&episode),
+            &now(),
+            &artifacts,
+        )
+        .expect("commit");
+
+    assert_eq!(
+        entity_count_by_id(&store, &bridged.identity.id),
+        0,
+        "the bridged id deduped onto the existing node via the name fallback — it minted no node"
+    );
+    assert_eq!(
+        entity_count_by_id(&store, &existing_id),
+        1,
+        "the existing Person:Paris remains the single canonical node"
+    );
+    assert_eq!(
+        entity_count_by_id(&store, &other_type.identity.id),
+        1,
+        "a same-name entity of a different type stays distinct (type filter blocks a false merge)"
+    );
+}
+
+#[test]
 fn materialize_supersession_closes_window_and_is_idempotent() {
     let store = store();
     let (subject_id, subject_node) = insert_entity(&store, "Eve");
