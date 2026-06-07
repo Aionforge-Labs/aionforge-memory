@@ -8,6 +8,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::ConfigError;
 
+/// The largest sane per-request embedder timeout (ten minutes). A larger value is almost
+/// certainly a units mistake (seconds typed as milliseconds), so it is rejected rather than
+/// hanging a capture or recall on a wedged endpoint.
+const MAX_EMBEDDER_TIMEOUT_MS: u64 = 600_000;
+
 /// The whole Aionforge configuration, assembled from defaults, a TOML file, the
 /// environment, and caller flags (see [`crate`] for precedence).
 ///
@@ -197,6 +202,18 @@ impl Config {
                 return Err(ConfigError::invalid(
                     "embedder.endpoint",
                     "must use https:// unless the host is localhost",
+                ));
+            }
+            if self.embedder.timeout_ms == 0 {
+                return Err(ConfigError::invalid(
+                    "embedder.timeout_ms",
+                    "must be greater than zero",
+                ));
+            }
+            if self.embedder.timeout_ms > MAX_EMBEDDER_TIMEOUT_MS {
+                return Err(ConfigError::invalid(
+                    "embedder.timeout_ms",
+                    "must be at most 600000 (ten minutes)",
                 ));
             }
         }

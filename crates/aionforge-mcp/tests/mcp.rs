@@ -81,6 +81,7 @@ fn capture_params(content: &str, agent_id: &str) -> CaptureToolParams {
         session_id: None,
         trust: None,
         model_family: None,
+        captured_at: None,
     }
 }
 
@@ -290,6 +291,32 @@ async fn capture_tool_rejects_a_bad_agent_id() {
         .await
         .expect_err("should reject");
     assert!(err.starts_with("ERR_INVALID_AGENT_ID"), "{err}");
+}
+
+#[tokio::test]
+async fn capture_tool_accepts_a_caller_supplied_event_time() {
+    let memory = memory();
+    let agent = Id::generate();
+    let mut params = capture_params("a thing that happened earlier", agent.as_str());
+    params.captured_at = Some("2026-01-02T03:04:05Z".to_string());
+    // The handler still injects `now`; the caller's RFC3339 event time overrides it.
+    let line = capture_tool(&memory, params, &now())
+        .await
+        .expect("capture with a backfilled event time");
+    assert!(line.starts_with("[capture] "), "compact receipt: {line}");
+    assert!(line.contains("verdict=new"));
+}
+
+#[tokio::test]
+async fn capture_tool_rejects_a_bad_captured_at() {
+    let memory = memory();
+    let agent = Id::generate();
+    let mut params = capture_params("x", agent.as_str());
+    params.captured_at = Some("not-a-timestamp".to_string());
+    let err = capture_tool(&memory, params, &now())
+        .await
+        .expect_err("should reject");
+    assert!(err.starts_with("ERR_INVALID_CAPTURED_AT"), "{err}");
 }
 
 #[tokio::test]

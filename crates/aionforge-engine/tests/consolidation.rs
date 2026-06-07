@@ -14,8 +14,8 @@ use aionforge_domain::ids::Id;
 use aionforge_domain::nodes::episodic::Role;
 use aionforge_domain::time::Timestamp;
 use aionforge_engine::{
-    CaptureRequest, CaptureVerdict, ConsolidationConfig, Memory, MemoryConfig, PassConfig,
-    RuleExtractor, RuleSummarizer, WriterContext,
+    CaptureRequest, CaptureVerdict, ConsolidationConfig, EngineError, Memory, MemoryConfig,
+    PassConfig, RuleExtractor, RuleSummarizer, WriterContext,
 };
 use aionforge_store::{BoundQuery, QueryResult};
 
@@ -142,5 +142,61 @@ async fn capture_then_start_consolidation_derives_a_fact() {
     assert!(
         derived,
         "the background consolidator derived a fact from the captured episode"
+    );
+}
+
+/// One minute after [`now`], for measuring lag against a fresh capture.
+fn a_minute_later() -> Timestamp {
+    "2026-06-06T09:31:00-05:00[America/Chicago]"
+        .parse()
+        .expect("valid zoned datetime")
+}
+
+#[tokio::test]
+async fn consolidation_lag_reports_a_pending_capture_without_reaching_into_the_store() {
+    let memory =
+        Memory::open_in_memory(FakeEmbedder::new(), &now(), MemoryConfig::default()).expect("open");
+    memory
+        .capture(CaptureRequest {
+            content: "Alice works on Aionforge".to_string(),
+            role: Role::User,
+            agent_id: Id::generate(),
+            session_id: None,
+            captured_at: now(),
+            writer: WriterContext {
+                model_family: "host".to_string(),
+                model_version: None,
+                transport: None,
+                request_id: None,
+                trust: 0.9,
+            },
+            trusted: false,
+            namespace: None,
+        })
+        .await
+        .expect("capture");
+
+    // The facade resolves the backlog against an injected clock — no L0 access from the host.
+    let lag = memory
+        .consolidation_lag(&a_minute_later())
+        .expect("lag query");
+    assert_eq!(lag.episodes_pending, 1, "the raw capture is pending");
+    assert_eq!(lag.episodes_failed, 0);
+    assert!(
+        lag.oldest_pending_lag >= Duration::from_secs(1),
+        "a minute elapsed since capture: {:?}",
+        lag.oldest_pending_lag
+    );
+}
+
+#[test]
+fn new_rejects_an_out_of_range_capture_config() {
+    let mut config = MemoryConfig::default();
+    config.capture.near_duplicate_threshold = 2.0; // outside [0, 1]
+    // `Memory` is not `Debug`, so match the result rather than unwrapping the Ok side.
+    let result = Memory::open_in_memory(FakeEmbedder::new(), &now(), config);
+    assert!(
+        matches!(result, Err(EngineError::Config(_))),
+        "an out-of-range threshold is rejected with a config error"
     );
 }

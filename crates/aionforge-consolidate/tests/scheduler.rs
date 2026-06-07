@@ -617,3 +617,47 @@ async fn the_background_loop_consolidates_until_shutdown() {
         "the spawned loop consolidated the episode on its own"
     );
 }
+
+#[test]
+fn rule_versions_are_independent_of_pass_registration_order() {
+    // The cursor's rule_versions map and the scheduler's content-derived actor id hash the
+    // Display of this object, so it must serialize identically no matter what order passes
+    // were registered in. That holds only while serde_json keeps object keys canonically
+    // ordered — i.e. while the `preserve_order` feature stays OFF (see the canary below).
+    let counter = Arc::new(AtomicUsize::new(0));
+    let mut forward = Consolidator::with_clock(in_memory(), config(), fixed_clock());
+    forward.register(Box::new(CountingPass {
+        applied: Arc::clone(&counter),
+    }));
+    forward.register(Box::new(FlakyPass {
+        applied: Arc::clone(&counter),
+        fail_times: 0,
+    }));
+
+    let mut reversed = Consolidator::with_clock(in_memory(), config(), fixed_clock());
+    reversed.register(Box::new(FlakyPass {
+        applied: Arc::clone(&counter),
+        fail_times: 0,
+    }));
+    reversed.register(Box::new(CountingPass {
+        applied: Arc::clone(&counter),
+    }));
+
+    assert_eq!(forward.rule_versions(), reversed.rule_versions());
+    assert_eq!(
+        forward.rule_versions().to_string(),
+        reversed.rule_versions().to_string()
+    );
+}
+
+#[test]
+fn serde_json_object_keys_serialize_in_canonical_order() {
+    // Insurance for every content-derived id that hashes a serde_json object's Display
+    // (audit payloads in the store, rule_versions / actor id here). serde_json sorts object
+    // keys while the `preserve_order` feature is OFF; this canary fails loudly if a
+    // dependency turns it on, which would silently break id stability across runs.
+    let forward = serde_json::json!({ "alpha": 1, "beta": 2, "gamma": 3 });
+    let shuffled = serde_json::json!({ "gamma": 3, "alpha": 1, "beta": 2 });
+    assert_eq!(forward.to_string(), shuffled.to_string());
+    assert_eq!(forward.to_string(), r#"{"alpha":1,"beta":2,"gamma":3}"#);
+}

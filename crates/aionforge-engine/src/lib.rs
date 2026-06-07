@@ -25,8 +25,9 @@ pub use aionforge_capture::{
     CaptureConfig, CaptureReceipt, CaptureRequest, CaptureVerdict, EmbeddingOutcome, WriterContext,
 };
 pub use aionforge_consolidate::{
-    ConsolidationConfig, ConsolidationHandle, DetectionConfig, ObjectRule, PassConfig,
-    PredicateRule, ResolutionConfig, Rule, RuleExtractor, RuleSummarizer, SummarizationConfig,
+    ConsolidationConfig, ConsolidationHandle, ConsolidationLag, DetectionConfig, ObjectRule,
+    PassConfig, PredicateRule, ResolutionConfig, Rule, RuleExtractor, RuleSummarizer,
+    SummarizationConfig,
 };
 pub use aionforge_retrieval::{
     EpisodeEntry, FactEntry, QueryClass, RecallBundle, RecallExplanation, RecallOptions,
@@ -59,9 +60,11 @@ impl<E: Embedder> Memory<E> {
     /// the security crate's conservative default patterns.
     ///
     /// # Errors
-    /// Returns [`EngineError::Filter`] if the default privacy filter fails to compile,
-    /// which the security crate's tests guard against.
+    /// Returns [`EngineError::Config`] if the capture tuning is out of range, or
+    /// [`EngineError::Filter`] if the default privacy filter fails to compile, which the
+    /// security crate's tests guard against.
     pub fn new(store: Arc<Store>, embedder: E, config: MemoryConfig) -> Result<Self, EngineError> {
+        config.capture.validate().map_err(EngineError::Config)?;
         let embedder = Arc::new(embedder);
         let filter = CaptureFilter::with_defaults().map_err(EngineError::filter)?;
         let capturer = Capturer::new(
@@ -126,6 +129,20 @@ impl<E: Embedder> Memory<E> {
     pub fn embedder(&self) -> &Arc<E> {
         &self.embedder
     }
+
+    /// The current consolidation backlog, resolved against `now`.
+    ///
+    /// Lets a host observe "capture-to-derived" lag and the pending/failed episode counts
+    /// for health and SLA checks without reaching into the store (L0). `now` is injected —
+    /// the facade keeps no ambient clock — so the lag is deterministic and matches whatever
+    /// instant the caller is reasoning about. Works whether or not a consolidator is running.
+    ///
+    /// # Errors
+    /// Returns [`EngineError::Store`] if the backlog query fails.
+    pub fn consolidation_lag(&self, now: &Timestamp) -> Result<ConsolidationLag, EngineError> {
+        let snapshot = self.store.consolidation_lag()?;
+        Ok(ConsolidationLag::from_snapshot(&snapshot, now))
+    }
 }
 
 impl<E: Embedder + 'static> Memory<E> {
@@ -134,7 +151,16 @@ impl<E: Embedder + 'static> Memory<E> {
     /// This is opt-in and explicit so `Memory::new` stays synchronous and runtime-free:
     /// a host that wants slow consolidation calls this from inside a Tokio runtime and
     /// holds the returned [`ConsolidationHandle`] for the process lifetime, shutting it
-    /// down on exit. The pass shares this memory's embedder, so derived entities, facts,
+    /// down on exit.
+    ///
+    /// Exactly one consolidator may run against a given store. The single consolidation
+    /// cursor and the atomic state flips assume one writer of derived memory; starting a
+    /// second loop on the same store — in this process or another that shares it — can
+    /// double-process episodes or stall the cursor, and is unsupported. The loop is not
+    /// re-entrant: ticks run one at a time and a tick that overruns its interval is skipped,
+    /// never overlapped, so a slow pass throttles throughput rather than racing itself.
+    ///
+    /// The pass shares this memory's embedder, so derived entities, facts,
     /// and notes are embedded with the same model as capture and retrieval. The injected
     /// [`FactExtractor`] and [`Summarizer`] are the deterministic [`RuleExtractor`] /
     /// [`RuleSummarizer`] in tests and the model-backed clients in production (M4).
@@ -180,6 +206,10 @@ pub enum EngineError {
     /// The default capture privacy filter could not be built.
     #[error("could not initialize the capture filter: {0}")]
     Filter(String),
+
+    /// The facade configuration is out of range.
+    #[error("invalid memory configuration: {0}")]
+    Config(String),
 }
 
 impl EngineError {
