@@ -56,7 +56,7 @@ mod tests {
 
     #[test]
     fn an_out_of_range_or_nan_threshold_is_rejected() {
-        for bad in [-0.1, 1.1, f64::NAN, f64::INFINITY] {
+        for bad in [-0.1, 1.1, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             let config = CaptureConfig {
                 near_duplicate_threshold: bad,
                 ..CaptureConfig::default()
