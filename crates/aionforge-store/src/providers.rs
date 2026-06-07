@@ -115,8 +115,8 @@ impl Store {
     /// The lookup is generation-checked end to end: the engine binds the set to the
     /// same immutable snapshot whose generation it validates the provider against, so
     /// the returned membership can never lag the committed graph — a stale provider
-    /// surfaces as an error rather than an out-of-date set. This is the typed read the
-    /// high-precision retrieval path (M2.T07/T08) composes; the `status = 'active'`
+    /// surfaces as an error rather than an out-of-date set. This is the typed read that
+    /// the high-precision retrieval path (M2.T07/T08) composes; the `status = 'active'`
     /// half of `current_support_facts` (§9) remains a query-time scalar filter the
     /// caller layers on top, since a provider rule cannot express a scalar predicate.
     ///

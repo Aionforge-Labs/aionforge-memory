@@ -6,171 +6,20 @@
 //! [`Store::candidate_state_members`] surface and driven by the M2.T01 typed write
 //! operations (`assert_fact` / `supersede_fact` / `contradict_fact`), which are how
 //! real callers move facts in and out of the current set. The membership rules are
-//! pure edge presence, so these tests deliberately read membership independently of the
-//! scalar `status` mirror to prove the two agree without one standing in for the other.
+//! pure edge presence, so these tests read membership independently of the scalar
+//! `status` mirror to prove the two agree without one standing in for the other. The
+//! grounded/scope/recency sets, which need edges no typed writer exists for yet, are in
+//! `provider_grounding.rs`; the shared fixtures live in `common/mod.rs`.
+
+mod common;
+use common::*;
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
 
-use aionforge_domain::blocks::{Identity, Stats};
-use aionforge_domain::edges::{About, Contradicts, SupersededBy};
 use aionforge_domain::ids::Id;
-use aionforge_domain::namespace::Namespace;
-use aionforge_domain::nodes::semantic::{Entity, Fact, FactStatus};
-use aionforge_domain::time::{BiTemporal, Timestamp};
+use aionforge_domain::nodes::semantic::FactStatus;
 use aionforge_domain::value::ObjectValue;
 use aionforge_store::{CandidateSet, NodeId, Store, StoreConfig};
-
-fn ts(text: &str) -> Timestamp {
-    text.parse().expect("valid zoned datetime literal")
-}
-
-fn store() -> Store {
-    let store = Store::open_with_config(StoreConfig {
-        embedding_dimension: 4,
-    })
-    .expect("open store");
-    store
-        .migrate(&ts("2026-01-01T00:00:00-06:00[America/Chicago]"))
-        .expect("migrate store");
-    store
-}
-
-/// A fresh, empty temp directory unique to `label`, removed first so re-runs start
-/// clean. Mirrors the no-temp-crate convention in `persistence.rs`.
-fn temp_dir(label: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "aionforge-providers-{label}-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    dir
-}
-
-fn stats() -> Stats {
-    Stats {
-        importance: 0.5,
-        trust: 0.8,
-        last_access: ts("2026-06-06T10:00:00-05:00[America/Chicago]"),
-        access_count_recent: 0,
-        referenced_count: 0,
-        surprise: 0.1,
-        is_pinned: false,
-    }
-}
-
-fn identity(id: Id) -> Identity {
-    Identity {
-        id,
-        ingested_at: ts("2026-06-06T09:30:00-05:00[America/Chicago]"),
-        namespace: Namespace::Agent("alice".to_string()),
-        expired_at: None,
-    }
-}
-
-fn entity(name: &str) -> Entity {
-    Entity {
-        identity: identity(Id::generate()),
-        stats: stats(),
-        canonical_name: name.to_string(),
-        entity_type: "Concept".to_string(),
-        aliases: vec![],
-        description: None,
-        embedding: None,
-        embedder_model: None,
-        attributes: None,
-    }
-}
-
-fn fact(subject: Id, predicate: &str, object: ObjectValue, statement: &str) -> Fact {
-    Fact {
-        identity: identity(Id::generate()),
-        stats: stats(),
-        subject_id: subject,
-        predicate: predicate.to_string(),
-        object,
-        confidence: 0.9,
-        status: FactStatus::Active,
-        statement: statement.to_string(),
-        embedding: None,
-        embedder_model: None,
-        extraction: None,
-    }
-}
-
-/// An open (current, live) validity window starting at `from`.
-fn open_window(from: &str) -> About {
-    About {
-        temporal: BiTemporal {
-            valid_from: ts(from),
-            valid_to: None,
-            ingested_at: ts(from),
-            expired_at: None,
-        },
-    }
-}
-
-fn superseded_by(reason: &str, from: &str) -> SupersededBy {
-    SupersededBy {
-        reason: reason.to_string(),
-        temporal: BiTemporal {
-            valid_from: ts(from),
-            valid_to: None,
-            ingested_at: ts(from),
-            expired_at: None,
-        },
-    }
-}
-
-fn contradicts(by: &str, from: &str) -> Contradicts {
-    Contradicts {
-        detected_by: by.to_string(),
-        temporal: BiTemporal {
-            valid_from: ts(from),
-            valid_to: None,
-            ingested_at: ts(from),
-            expired_at: None,
-        },
-    }
-}
-
-/// The current membership of `set` as a node-id set, via the typed accessor.
-fn members(store: &Store, set: CandidateSet) -> BTreeSet<NodeId> {
-    store
-        .candidate_state_members(set)
-        .expect("candidate-state members")
-        .into_iter()
-        .collect()
-}
-
-/// The current `current_support_facts` membership mapped to domain id strings. Domain
-/// ids are stable across recovery (node ids are an engine-internal currency), so this
-/// is the right key for asserting set identity survives a restart.
-fn current_fact_ids(store: &Store) -> BTreeSet<String> {
-    store
-        .candidate_state_members(CandidateSet::CurrentSupportFacts)
-        .expect("members")
-        .into_iter()
-        .map(|node| {
-            store
-                .fact_by_node_id(node)
-                .expect("read fact")
-                .expect("member is a live Fact")
-                .identity
-                .id
-                .as_str()
-                .to_owned()
-        })
-        .collect()
-}
-
-/// Assert a fact about a freshly inserted subject entity, returning its node id.
-fn assert_about(store: &Store, subject: &Entity, f: &Fact, window: &About) -> NodeId {
-    let subject_node = store.insert_entity(subject).expect("insert subject entity");
-    store
-        .assert_fact(f, subject_node, window)
-        .expect("assert fact")
-}
 
 #[test]
 fn an_asserted_fact_joins_current_support_and_unresolved() {
@@ -390,6 +239,39 @@ fn quarantining_a_source_drops_it_from_current_support() {
 }
 
 #[test]
+fn current_support_membership_is_edge_driven_not_status_driven() {
+    // The provider rule keys on edge presence alone; it cannot read the scalar `status`
+    // mirror (§9). So a fact whose status is already `quarantined` but which carries no
+    // SUPERSEDED_BY / CONTRADICTS edge is still in current_support_facts — the
+    // `status = 'active'` exclusion is the caller's query-time filter, layered on top,
+    // not part of the provider. This isolates the two conditions the other tests
+    // exercise together.
+    let store = store();
+    let mut quarantined = fact(
+        Id::generate(),
+        "is",
+        ObjectValue::Text("contested".to_string()),
+        "a contested claim with no edges",
+    );
+    quarantined.status = FactStatus::Quarantined;
+    let node = store.insert_fact(&quarantined).expect("insert");
+
+    assert!(
+        members(&store, CandidateSet::CurrentSupportFacts).contains(&node),
+        "an edge-free fact is in the edge-presence set regardless of its scalar status"
+    );
+    assert_eq!(
+        store
+            .fact_by_node_id(node)
+            .expect("read")
+            .expect("present")
+            .status,
+        FactStatus::Quarantined,
+        "its stored scalar status really is quarantined — the provider just does not read it",
+    );
+}
+
+#[test]
 fn membership_and_counts_track_the_latest_generation() {
     // Every successful read is generation-checked: the engine binds the set to the same
     // snapshot whose generation it validates the provider against, so a read can never
@@ -515,6 +397,24 @@ fn current_support_membership_rebuilds_at_node_identity_after_recovery() {
         );
         drop(store);
     }
+
+    // No parallel index is persisted: a candidate-state snapshot only ever lives inside
+    // a `snapshot.{seq}.snap` file, and this store never snapshots, so the WAL directory
+    // holds none. The membership below therefore has nothing to load from — it can only
+    // be rebuilt by replaying the primary edges from the WAL.
+    let snap_files: Vec<String> = std::fs::read_dir(&dir)
+        .expect("read wal dir")
+        .filter_map(|entry| {
+            entry
+                .ok()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+        })
+        .filter(|name| name.ends_with(".snap"))
+        .collect();
+    assert!(
+        snap_files.is_empty(),
+        "no candidate-state snapshot is persisted; found {snap_files:?}"
+    );
 
     let recovered = Store::recover(&dir, config).expect("recover");
     assert_eq!(
