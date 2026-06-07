@@ -52,6 +52,11 @@ pub struct CaptureToolParams {
     /// The writer model family, recorded for provenance.
     #[schemars(description = "The writer model family, recorded for provenance.")]
     pub model_family: Option<String>,
+    /// The event time as RFC3339, for backfilling a past event; defaults to capture time.
+    #[schemars(
+        description = "Event time as RFC3339 (e.g. 2026-06-07T12:00:00Z); defaults to capture time."
+    )]
+    pub captured_at: Option<String>,
 }
 
 /// Parameters for the `search` tool.
@@ -93,13 +98,17 @@ pub async fn capture_tool<E: Embedder>(
         .map(Id::parse)
         .transpose()
         .map_err(|_| "ERR_INVALID_SESSION_ID: session_id must be a ULID".to_string())?;
+    let captured_at = match params.captured_at.as_deref() {
+        Some(raw) => parse_captured_at(raw)?,
+        None => now.clone(),
+    };
 
     let request = CaptureRequest {
         content: params.content,
         role,
         agent_id,
         session_id,
-        captured_at: now.clone(),
+        captured_at,
         writer: WriterContext {
             model_family: params
                 .model_family
@@ -161,6 +170,17 @@ fn parse_role(role: Option<&str>) -> Result<Role, String> {
     }
 }
 
+/// Parse a caller-supplied RFC3339 event time into the canonical timestamp, normalized to
+/// UTC. The host boundary owns the wall clock (the handler injects `now`); a caller may
+/// override only the *event* time here — to backfill a past event — never read an ambient
+/// clock. An unparseable value is a typed `ERR_*` rather than a silent fall-back to now.
+fn parse_captured_at(raw: &str) -> Result<Timestamp, String> {
+    let instant: jiff::Timestamp = raw.parse().map_err(|_| {
+        "ERR_INVALID_CAPTURED_AT: captured_at must be an RFC3339 timestamp".to_string()
+    })?;
+    Ok(instant.to_zoned(jiff::tz::TimeZone::UTC))
+}
+
 /// A one-line capture receipt.
 fn format_receipt(receipt: &CaptureReceipt) -> String {
     let verdict = match &receipt.verdict {
@@ -180,4 +200,30 @@ fn format_receipt(receipt: &CaptureReceipt) -> String {
         flags = receipt.injection_flags.len(),
         ns = receipt.namespace,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_captured_at;
+
+    #[test]
+    fn parses_rfc3339_with_zulu_and_offset_to_the_same_instant() {
+        // "Z" and an explicit offset for the same instant must normalize identically.
+        let zulu = parse_captured_at("2026-06-07T12:00:00Z").expect("zulu parses");
+        let offset = parse_captured_at("2026-06-07T07:00:00-05:00").expect("offset parses");
+        assert_eq!(zulu.timestamp(), offset.timestamp());
+        // Normalized to UTC regardless of the input offset.
+        assert_eq!(zulu.time_zone(), &jiff::tz::TimeZone::UTC);
+    }
+
+    #[test]
+    fn rejects_a_non_timestamp_with_a_typed_error() {
+        let err = parse_captured_at("yesterday").expect_err("must reject");
+        assert!(
+            err.starts_with("ERR_INVALID_CAPTURED_AT"),
+            "typed error: {err}"
+        );
+        // A bare date is not a full RFC3339 instant.
+        assert!(parse_captured_at("2026-06-07").is_err());
+    }
 }

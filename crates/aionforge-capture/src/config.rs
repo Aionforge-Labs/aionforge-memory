@@ -22,3 +22,49 @@ impl Default for CaptureConfig {
         }
     }
 }
+
+impl CaptureConfig {
+    /// Check the tuning knobs are in range.
+    ///
+    /// # Errors
+    /// Returns a message naming the offending knob when `near_duplicate_threshold` is not a
+    /// finite value in `[0, 1]` (it is a cosine similarity, so anything outside that range —
+    /// or `NaN` — would silently disable or mis-fire near-duplicate flagging).
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.near_duplicate_threshold.is_finite()
+            || !(0.0..=1.0).contains(&self.near_duplicate_threshold)
+        {
+            return Err(format!(
+                "capture.near_duplicate_threshold must be a finite value in [0, 1], got {}",
+                self.near_duplicate_threshold
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CaptureConfig;
+
+    #[test]
+    fn the_default_config_validates() {
+        CaptureConfig::default()
+            .validate()
+            .expect("default is in range");
+    }
+
+    #[test]
+    fn an_out_of_range_or_nan_threshold_is_rejected() {
+        for bad in [-0.1, 1.1, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let config = CaptureConfig {
+                near_duplicate_threshold: bad,
+                ..CaptureConfig::default()
+            };
+            assert!(
+                config.validate().is_err(),
+                "threshold {bad} should be rejected"
+            );
+        }
+    }
+}

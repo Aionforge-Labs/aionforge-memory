@@ -116,6 +116,27 @@ fn a_zero_dimension_fails_clearly() {
 }
 
 #[test]
+fn an_embedder_timeout_must_be_within_bounds() {
+    let mut config = Config::default();
+    config.embedder.timeout_ms = 0;
+    assert!(
+        matches!(config.validate(), Err(ConfigError::Invalid { key, .. }) if key == "embedder.timeout_ms"),
+        "a zero timeout is rejected"
+    );
+
+    let mut config = Config::default();
+    config.embedder.timeout_ms = 600_001;
+    assert!(
+        matches!(config.validate(), Err(ConfigError::Invalid { key, .. }) if key == "embedder.timeout_ms"),
+        "an absurdly large timeout is rejected"
+    );
+
+    let mut config = Config::default();
+    config.embedder.timeout_ms = 600_000;
+    config.validate().expect("the ceiling itself is allowed");
+}
+
+#[test]
 fn an_enabled_embedder_requires_an_endpoint_and_model() {
     let mut config = Config::default();
     config.embedder.enabled = true;

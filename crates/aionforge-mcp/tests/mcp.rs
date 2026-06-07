@@ -5,6 +5,7 @@
 
 use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
 use aionforge_domain::contracts::Embedder;
 use aionforge_domain::embedding::{EmbedderModel, Embedding};
@@ -81,6 +82,7 @@ fn capture_params(content: &str, agent_id: &str) -> CaptureToolParams {
         session_id: None,
         trust: None,
         model_family: None,
+        captured_at: None,
     }
 }
 
@@ -290,6 +292,43 @@ async fn capture_tool_rejects_a_bad_agent_id() {
         .await
         .expect_err("should reject");
     assert!(err.starts_with("ERR_INVALID_AGENT_ID"), "{err}");
+}
+
+#[tokio::test]
+async fn capture_tool_persists_a_caller_supplied_event_time() {
+    let memory = memory();
+    let agent = Id::generate();
+    let mut params = capture_params("a thing that happened months ago", agent.as_str());
+    // A distinctly past event time, far from the handler's injected `now()`.
+    params.captured_at = Some("2026-01-02T03:04:05Z".to_string());
+    let line = capture_tool(&memory, params, &now())
+        .await
+        .expect("capture with a backfilled event time");
+    assert!(line.starts_with("[capture] "), "compact receipt: {line}");
+    assert!(line.contains("verdict=new"));
+
+    // Prove the backfilled time was actually stored, not the injected `now()`: the
+    // capture-to-now lag is measured from the episode's stored `captured_at`. Had the
+    // override been ignored, the lag would be ~0; the event is months behind `now`.
+    let lag = memory.consolidation_lag(&now()).expect("lag query");
+    assert_eq!(lag.episodes_pending, 1, "the backfilled capture is pending");
+    assert!(
+        lag.oldest_pending_lag >= Duration::from_secs(30 * 86_400),
+        "the caller's past event time was persisted, not the injected now: {:?}",
+        lag.oldest_pending_lag
+    );
+}
+
+#[tokio::test]
+async fn capture_tool_rejects_a_bad_captured_at() {
+    let memory = memory();
+    let agent = Id::generate();
+    let mut params = capture_params("x", agent.as_str());
+    params.captured_at = Some("not-a-timestamp".to_string());
+    let err = capture_tool(&memory, params, &now())
+        .await
+        .expect_err("should reject");
+    assert!(err.starts_with("ERR_INVALID_CAPTURED_AT"), "{err}");
 }
 
 #[tokio::test]
