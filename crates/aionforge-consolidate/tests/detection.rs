@@ -219,6 +219,73 @@ fn superseded_valid_to(store: &Store) -> Option<Timestamp> {
     }
 }
 
+/// The `valid_from` of the single active fact's `ABOUT` window for a predicate — which event
+/// (by its captured time) is the live one, independent of the resolved entity object.
+fn active_valid_from(store: &Store, predicate: &str) -> Option<Timestamp> {
+    let query = BoundQuery::new(
+        "MATCH (f:Fact)-[r:ABOUT]->() WHERE f.predicate = $p AND f.status = $s \
+         RETURN r.valid_from AS valid_from LIMIT 1",
+    )
+    .bind_str("p", predicate)
+    .expect("bind predicate")
+    .bind_str("s", "active")
+    .expect("bind status");
+    match store.execute(&query).expect("about query") {
+        QueryResult::Rows(rows) => match rows.value(0, 0) {
+            Some(Value::ZonedDateTime(z)) => Some((**z).clone()),
+            _ => None,
+        },
+        other => panic!("expected rows, got {other:?}"),
+    }
+}
+
+/// Insert a `raw` episode with independently set arrival (`ingested`) and event (`captured`)
+/// minutes, so a backfilled past event can be made to arrive *after* a newer one — the case
+/// that exercises arrival order contradicting event order. Trust 0.9 (high), like the
+/// default helper.
+fn insert_raw_episode_backdated(
+    store: &Store,
+    content: &str,
+    namespace: &Namespace,
+    ingested_minute: u32,
+    captured_minute: u32,
+) {
+    let ingested = ts(&format!(
+        "2026-06-06T09:{ingested_minute:02}:00-05:00[America/Chicago]"
+    ));
+    let captured = ts(&format!(
+        "2026-06-06T09:{captured_minute:02}:00-05:00[America/Chicago]"
+    ));
+    let episode = Episode {
+        identity: Identity {
+            id: Id::generate(),
+            ingested_at: ingested.clone(),
+            namespace: namespace.clone(),
+            expired_at: None,
+        },
+        stats: Stats {
+            importance: 0.5,
+            trust: 0.9,
+            last_access: ingested,
+            access_count_recent: 0,
+            referenced_count: 0,
+            surprise: 0.0,
+            is_pinned: false,
+        },
+        content: content.to_string(),
+        role: Role::User,
+        captured_at: captured,
+        agent_id: Id::generate(),
+        session_id: None,
+        content_hash: ContentHash::of(content.as_bytes()),
+        embedding: None,
+        embedder_model: None,
+        consolidation_state: ConsolidationState::Raw,
+        origin: None,
+    };
+    store.insert_episode(&episode).expect("insert episode");
+}
+
 /// The statuses of the current-support facts (no live `SUPERSEDED_BY`) carrying a given
 /// predicate — the §9 set the retrieval path treats as "current".
 fn current_support_with_predicate(store: &Store, predicate: &str) -> Vec<FactStatus> {
@@ -342,6 +409,70 @@ async fn a_functional_predicate_supersedes_across_episodes() {
         current,
         vec![FactStatus::Active],
         "current support is exactly the one active SF fact: {current:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_backfilled_stale_episode_still_converges_to_the_newer_value() {
+    let store = store();
+    let namespace = Namespace::Agent("alice".to_string());
+
+    // SF is the NEWER event (captured 09:05) but is ingested FIRST (arrival 09:00), so it is
+    // consolidated first and becomes the incumbent. NYC is an OLDER event (captured 09:00)
+    // backfilled LATER (arrival 09:05), consolidated second — a stale assertion arriving
+    // after a newer incumbent, with arrival order deliberately contradicting event order.
+    // The mirror image of `a_functional_predicate_supersedes_across_episodes`, and it must
+    // reach the SAME current state (SF live, NYC retired): convergence under reordering.
+    insert_raw_episode_backdated(&store, "Alice is based in SF.", &namespace, 0, 5);
+    insert_raw_episode_backdated(&store, "Alice is based in NYC.", &namespace, 5, 0);
+
+    let mut consolidator = Consolidator::new(Arc::clone(&store), ConsolidationConfig::default());
+    consolidator.register(Box::new(FactExtractionPass::new(
+        Arc::new(RuleExtractor::with_default_rules()),
+        Arc::new(AxisEmbedder::new()),
+        Arc::new(RuleSummarizer::with_default_rules()),
+        PassConfig::default(),
+    )));
+
+    drain(&consolidator).await;
+
+    // Exactly one current value — not two. The old forward-only guard left the stale NYC
+    // fact additive (a second active value) when it arrived after the newer incumbent.
+    assert_eq!(
+        facts_with_status(&store, "based_in", "active"),
+        1,
+        "one current value even when the stale event is consolidated last"
+    );
+    assert_eq!(
+        facts_with_status(&store, "based_in", "superseded"),
+        1,
+        "the stale NYC assertion is retired into history, not left additive"
+    );
+    assert_eq!(
+        total_fact_edges(&store, "SUPERSEDED_BY"),
+        1,
+        "the stale fact points at the surviving incumbent"
+    );
+
+    // The survivor is SF — the newer event — identified by its event-time window opening at
+    // 09:05, regardless of the reversed arrival order.
+    assert_eq!(
+        active_valid_from(&store, "based_in"),
+        Some(ts("2026-06-06T09:05:00-05:00[America/Chicago]")),
+        "the live value is the newer (SF) event, not the stale NYC one"
+    );
+    // The stale fact's window closes at the incumbent's valid_from (09:05), so NYC is held as
+    // the past value [09:00, 09:05) — recoverable, never lost.
+    assert_eq!(
+        superseded_valid_to(&store),
+        Some(ts("2026-06-06T09:05:00-05:00[America/Chicago]")),
+        "the stale NYC window closes at the newer event's valid_from"
+    );
+    let current = current_support_with_predicate(&store, "based_in");
+    assert_eq!(
+        current,
+        vec![FactStatus::Active],
+        "current support converges to the single newer value: {current:?}"
     );
 }
 

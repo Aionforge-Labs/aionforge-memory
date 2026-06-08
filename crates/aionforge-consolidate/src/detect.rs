@@ -6,6 +6,18 @@
 //! (mutually-exclusive object), and whether a contradiction should quarantine the new
 //! fact (a high-trust incumbent). It produces only INSTRUCTIONS — the store materializes
 //! them in the flip transaction. Being store-free, every branch is unit-testable.
+//!
+//! **Convergence (06 §2).** A functional `(subject, predicate)` holds exactly one current
+//! object, and which object wins is the **K1 order**: the assertion with the greater
+//! event time (`valid_from`) wins, and a simultaneous tie — equal `valid_from`, which for a
+//! functional predicate always means two distinct objects — is settled by
+//! [`object_order_key`], the canonical object order. Both components are a pure function of
+//! the assertion itself (never the substrate's arrival clock, and deliberately **not** the
+//! content-hash `Fact.id` or the originating agent, both of which are fixed by whichever
+//! episode wins the dedup race and so are arrival-fragile), so the winner is identical under
+//! any consolidation order. The comparison is symmetric: the loser is superseded by the
+//! winner whichever side it is on, so a stale assertion arriving after a newer incumbent is
+//! retired into history rather than lingering as a second current value.
 
 use std::collections::BTreeMap;
 
@@ -61,13 +73,14 @@ pub(crate) fn detect(
     }
 
     // For each functional (subject, predicate) the episode touches, pick the one new fact
-    // that wins — the lowest content-hash id (see `detect_intra_episode_ties`, which uses
-    // the same rule to retire the losers). An incumbent is then superseded only by that
-    // winner, never by a losing peer. This matters when an episode asserts two new values
-    // for one functional predicate (e.g. both SF and Boston for `based_in`) against an NYC
-    // incumbent: routing every retirement to the single survivor means NYC and the loser
-    // each get exactly one `SUPERSEDED_BY` edge to the winner, so correctness does not rest
-    // on the store absorbing redundant, differently-targeted supersessions of one incumbent.
+    // that wins — the object that sorts first under `object_order_key` (see
+    // `detect_intra_episode_ties`, which uses the same rule to retire the losers). An
+    // incumbent is then superseded only by that winner, never by a losing peer. This matters
+    // when an episode asserts two new values for one functional predicate (e.g. both SF and
+    // Boston for `based_in`) against an NYC incumbent: routing every retirement to the single
+    // survivor means NYC and the loser each get exactly one `SUPERSEDED_BY` edge to the
+    // winner, so correctness does not rest on the store absorbing redundant,
+    // differently-targeted supersessions of one incumbent.
     let survivors = functional_survivors(new_facts, cfg);
 
     // New facts vs the committed current set, scoped to the same (subject, predicate).
@@ -83,13 +96,36 @@ pub(crate) fn detect(
             if incumbent.key.object == new_key.object {
                 continue; // the same triple — T04a dedup handles it, not a conflict
             }
-            if rule.functional && is_survivor && *captured_at >= incumbent.valid_from {
-                out.supersessions.push(Supersession {
-                    old_fact: incumbent.key.clone(),
-                    new_fact: new_key.clone(),
-                    reason: "functional predicate superseded by a newer assertion".to_string(),
-                    valid_from: captured_at.clone(),
-                });
+            if rule.functional && is_survivor {
+                // The single functional slot is settled by the K1 order (see the module
+                // doc): the winner is a pure function of the two assertions, so the same
+                // object ends up current under any consolidation order. The loser is
+                // superseded by the winner — retained in history, never dropped.
+                if new_wins_functional_slot(&new_key, captured_at, incumbent) {
+                    // The new assertion wins (strictly later, or the tie-winning object):
+                    // it retires the incumbent. Its window closes at the new event time,
+                    // which is >= the incumbent's here, so the closed window stays ordered.
+                    out.supersessions.push(Supersession {
+                        old_fact: incumbent.key.clone(),
+                        new_fact: new_key.clone(),
+                        reason: "functional predicate superseded by a newer assertion".to_string(),
+                        valid_from: captured_at.clone(),
+                    });
+                } else {
+                    // The incumbent wins: a stale assertion (older event time) arriving
+                    // after a newer incumbent, or the losing side of a simultaneous tie.
+                    // The new fact is born superseded — closing it at the incumbent's
+                    // `valid_from` keeps its window [new.valid_from, incumbent.valid_from)
+                    // ordered (the new event time is <= the incumbent's on this branch).
+                    // The old forward-only guard never produced this direction, which is
+                    // what let a stale fact linger as a second current value — a divergence.
+                    out.supersessions.push(Supersession {
+                        old_fact: new_key.clone(),
+                        new_fact: incumbent.key.clone(),
+                        reason: "stale assertion superseded by a newer incumbent".to_string(),
+                        valid_from: incumbent.valid_from.clone(),
+                    });
+                }
             } else if mutually_exclusive(&rule, &incumbent.key.object, &new_key.object) {
                 let quarantine = incumbent.trust >= cfg.high_trust_threshold;
                 out.contradictions.push(Contradiction {
@@ -118,37 +154,46 @@ pub(crate) fn detect(
 }
 
 /// The winning new fact id for each functional `(subject, predicate)` the episode asserts:
-/// the lowest content-hash id. This is the single survivor every functional retirement —
-/// of an incumbent or of a losing peer — points at, so the rule lives in exactly one place
-/// and `detect` and `detect_intra_episode_ties` cannot disagree about who won.
+/// the one whose object sorts first under [`object_order_key`]. Every fact in an episode
+/// shares the episode's `captured_at`, so the K1 order reduces here to the object order —
+/// the same rule the cross-episode comparison uses, so intra- and cross-episode survivors
+/// agree by construction. This is the single survivor every functional retirement — of an
+/// incumbent or of a losing peer — points at, so the rule lives in exactly one place and
+/// `detect` and `detect_intra_episode_ties` cannot disagree about who won.
 fn functional_survivors(
     new_facts: &[MaterializedFact],
     cfg: &DetectionConfig,
 ) -> BTreeMap<(String, String), String> {
-    let mut survivors: BTreeMap<(String, String), String> = BTreeMap::new();
+    // group -> (winning object order key, winning fact id)
+    let mut survivors: BTreeMap<(String, String), (String, String)> = BTreeMap::new();
     for materialized in new_facts {
         let key = fact_key(&materialized.fact);
         if !cfg.rule(&key.predicate).functional {
             continue;
         }
         let group = (key.subject_id.to_string(), key.predicate);
+        let object_key = object_order_key(&key.object);
         let id = materialized.fact.identity.id.to_string();
         survivors
             .entry(group)
-            .and_modify(|winner| {
-                if id < *winner {
-                    *winner = id.clone();
+            .and_modify(|(winning_object, winning_id)| {
+                if object_key < *winning_object {
+                    *winning_object = object_key.clone();
+                    *winning_id = id.clone();
                 }
             })
-            .or_insert(id);
+            .or_insert_with(|| (object_key.clone(), id.clone()));
     }
     survivors
+        .into_iter()
+        .map(|(group, (_object, id))| (group, id))
+        .collect()
 }
 
-/// Among new facts that share a functional `(subject, predicate)`, keep the one with the
-/// lowest content-hash fact id (the `functional_survivors` winner) and supersede the rest
-/// by it — a deterministic, clock-free tiebreak for the within-episode case (both facts
-/// share `captured_at`).
+/// Among new facts that share a functional `(subject, predicate)`, keep the one whose
+/// object sorts first under [`object_order_key`] (the `functional_survivors` winner) and
+/// supersede the rest by it — a deterministic, clock-free tiebreak for the within-episode
+/// case (every fact shares `captured_at`, so the K1 order reduces to the object order).
 fn detect_intra_episode_ties(
     new_facts: &[MaterializedFact],
     cfg: &DetectionConfig,
@@ -169,7 +214,7 @@ fn detect_intra_episode_ties(
         if group.len() < 2 {
             continue;
         }
-        group.sort_by_key(|a| a.fact.identity.id);
+        group.sort_by_key(|a| object_order_key(&a.fact.object));
         let survivor = fact_key(&group[0].fact);
         for loser in &group[1..] {
             let loser_key = fact_key(&loser.fact);
@@ -209,6 +254,49 @@ fn fact_key(fact: &Fact) -> FactKey {
         subject_id: fact.subject_id,
         predicate: fact.predicate.clone(),
         object: fact.object.clone(),
+    }
+}
+
+/// Whether the new assertion wins the single functional slot over `incumbent` under the K1
+/// order: the later event time wins, and an exact `valid_from` tie is settled by the smaller
+/// [`object_order_key`]. Pure and total over the two (always distinct) functional objects,
+/// so exactly one side wins regardless of which was committed first.
+fn new_wins_functional_slot(
+    new_key: &FactKey,
+    new_valid_from: &Timestamp,
+    incumbent: &CurrentFact,
+) -> bool {
+    if *new_valid_from > incumbent.valid_from {
+        true
+    } else if *new_valid_from < incumbent.valid_from {
+        false
+    } else {
+        object_order_key(&new_key.object) < object_order_key(&incumbent.key.object)
+    }
+}
+
+/// A deterministic, injective ordering key over an object value, for the K1 simultaneous-tie
+/// settle. It deliberately avoids the content-hash `Fact.id` (which folds in the source
+/// episode and so is fixed by whichever episode wins the `(subject, predicate, object)`
+/// dedup race — arrival-fragile) and the originating agent (arrival-fragile for the same
+/// reason): the key is a pure function of the value alone, so two distinct objects always
+/// get distinct keys and the functional winner is identical under any consolidation order.
+/// The order is DETERMINISTIC, not semantic — numbers and datetimes sort by their canonical
+/// text, not their magnitude — which is all a tiebreak between two already-distinct objects
+/// needs. Exhaustive and infallible by construction: it never collapses two values to one
+/// key, so the total order cannot silently degenerate (the kind prefix keeps the variants
+/// disjoint; entity ids and the JSON `Debug` fallback stay injective).
+fn object_order_key(object: &ObjectValue) -> String {
+    match object {
+        ObjectValue::Entity(id) => format!("entity:{id}"),
+        ObjectValue::Text(text) => format!("string:{text}"),
+        ObjectValue::Number(number) => format!("number:{:016x}", number.to_bits()),
+        ObjectValue::Bool(value) => format!("bool:{value}"),
+        ObjectValue::DateTime(timestamp) => format!("datetime:{timestamp}"),
+        ObjectValue::Json(value) => format!(
+            "json:{}",
+            serde_json::to_string(value).unwrap_or_else(|_| format!("{value:?}"))
+        ),
     }
 }
 
@@ -294,13 +382,24 @@ mod tests {
 
     /// A committed current fact opened at `t1`, with the given trust.
     fn current(subject: &Id, predicate: &str, object: ObjectValue, trust: f64) -> CurrentFact {
+        current_at(subject, predicate, object, t1(), trust)
+    }
+
+    /// A committed current fact opened at an explicit `valid_from`, with the given trust.
+    fn current_at(
+        subject: &Id,
+        predicate: &str,
+        object: ObjectValue,
+        valid_from: Timestamp,
+        trust: f64,
+    ) -> CurrentFact {
         CurrentFact {
             key: FactKey {
                 subject_id: *subject,
                 predicate: predicate.to_string(),
                 object,
             },
-            valid_from: t1(),
+            valid_from,
             trust,
         }
     }
@@ -498,29 +597,17 @@ mod tests {
     }
 
     #[test]
-    fn an_intra_episode_functional_tie_keeps_the_lowest_id() {
+    fn an_intra_episode_functional_tie_keeps_the_lexicographically_smallest_object() {
         let cfg = DetectionConfig::with_default_rules();
         let subject = Id::generate();
         // Two new facts for the same functional (subject, predicate) with different objects.
-        let a = mfact_with_id(
-            Id::from_content_hash(b"a"),
-            &subject,
-            "based_in",
-            text("NYC"),
-        );
-        let b = mfact_with_id(
-            Id::from_content_hash(b"b"),
-            &subject,
-            "based_in",
-            text("SF"),
-        );
-        let (survivor, loser) = if a.fact.identity.id < b.fact.identity.id {
-            (&a, &b)
-        } else {
-            (&b, &a)
-        };
+        // They share the episode's captured_at, so the K1 order reduces to the object order:
+        // the survivor is the one whose object sorts first, decoupled from the (arrival-
+        // fragile) content-hash fact id the rule used to key on.
+        let nyc = mfact(&subject, "based_in", text("NYC"));
+        let sf = mfact(&subject, "based_in", text("SF"));
 
-        let out = run(&[], &[a.clone(), b.clone()], &cfg);
+        let out = run(&[], &[nyc.clone(), sf.clone()], &cfg);
 
         assert_eq!(
             out.supersessions.len(),
@@ -529,12 +616,20 @@ mod tests {
         );
         let s = &out.supersessions[0];
         assert_eq!(
-            s.new_fact.object, survivor.fact.object,
-            "lowest id survives"
+            s.new_fact.object,
+            text("NYC"),
+            "the smallest object order ('NYC' < 'SF') survives"
         );
+        assert_eq!(s.old_fact.object, text("SF"), "the rest are retired by it");
+
+        // Swapping the input order keeps the same survivor — the tiebreak is on the object,
+        // not on input/arrival order.
+        let swapped = run(&[], &[sf, nyc], &cfg);
+        assert_eq!(swapped.supersessions.len(), 1);
         assert_eq!(
-            s.old_fact.object, loser.fact.object,
-            "the rest are retired by it"
+            swapped.supersessions[0].new_fact.object,
+            text("NYC"),
+            "survivor is independent of input order"
         );
     }
 
@@ -554,9 +649,11 @@ mod tests {
     }
 
     #[test]
-    fn a_stale_assertion_does_not_supersede_a_newer_incumbent() {
+    fn a_stale_assertion_is_superseded_by_a_newer_incumbent() {
         // The incumbent opens at 11:00; the "new" fact's event time is 09:00 — older. A
-        // functional predicate only supersedes forward in event time, so this is additive.
+        // functional slot holds exactly one current object, so the stale assertion does not
+        // become a second current value (the old forward-only guard's divergence): it is born
+        // superseded by the newer incumbent, retained in history with a closed window.
         let cfg = DetectionConfig::with_default_rules();
         let subject = Id::generate();
         let cur = vec![CurrentFact {
@@ -572,37 +669,98 @@ mod tests {
 
         let out = detect(&cur, &new, &cfg, &ns(), &t1(), &t1(), &Id::generate());
 
-        assert!(
-            out.supersessions.is_empty(),
-            "a stale assertion cannot retire a newer incumbent"
+        assert_eq!(
+            out.supersessions.len(),
+            1,
+            "the stale assertion is retired by the incumbent, not left additive"
         );
+        let s = &out.supersessions[0];
+        assert_eq!(
+            s.old_fact.object,
+            text("NYC"),
+            "the stale new fact is the side that is superseded"
+        );
+        assert_eq!(
+            s.new_fact.object,
+            text("SF"),
+            "the newer incumbent is the survivor"
+        );
+        assert_eq!(
+            s.valid_from,
+            t2(),
+            "the stale fact's window closes at the incumbent's valid_from"
+        );
+        assert!(
+            out.contradictions.is_empty(),
+            "a functional supersession, not a contradiction"
+        );
+    }
+
+    #[test]
+    fn equal_valid_from_functional_assertions_converge_regardless_of_incumbent() {
+        // Two functional assertions with the SAME event time but different objects. Whichever
+        // one is the committed incumbent, the winner of the single slot is the same — the
+        // smaller object order — so the outcome cannot depend on which arrived first. The
+        // simultaneous-tie convergence guard at the detect level.
+        let cfg = DetectionConfig::with_default_rules();
+        let subject = Id::generate();
+
+        // SF incumbent, NYC new, both at t2. 'NYC' < 'SF', so NYC wins the slot.
+        let sf_incumbent = vec![current_at(&subject, "based_in", text("SF"), t2(), 0.9)];
+        let nyc_new = vec![mfact(&subject, "based_in", text("NYC"))];
+        let a = detect(
+            &sf_incumbent,
+            &nyc_new,
+            &cfg,
+            &ns(),
+            &t2(),
+            &t2(),
+            &Id::generate(),
+        );
+
+        // The mirror arrival order: NYC incumbent, SF new, both at t2.
+        let nyc_incumbent = vec![current_at(&subject, "based_in", text("NYC"), t2(), 0.9)];
+        let sf_new = vec![mfact(&subject, "based_in", text("SF"))];
+        let b = detect(
+            &nyc_incumbent,
+            &sf_new,
+            &cfg,
+            &ns(),
+            &t2(),
+            &t2(),
+            &Id::generate(),
+        );
+
+        // In both orders the survivor is NYC and SF is the retired side — identical current
+        // state regardless of which assertion happened to be committed first.
+        assert_eq!(a.supersessions.len(), 1, "one supersession either way");
+        assert_eq!(b.supersessions.len(), 1, "one supersession either way");
+        assert_eq!(
+            a.supersessions[0].new_fact.object,
+            text("NYC"),
+            "NYC wins when SF is the incumbent"
+        );
+        assert_eq!(
+            b.supersessions[0].new_fact.object,
+            text("NYC"),
+            "NYC still wins when NYC is the incumbent (it retires the new SF)"
+        );
+        assert_eq!(a.supersessions[0].old_fact.object, text("SF"));
+        assert_eq!(b.supersessions[0].old_fact.object, text("SF"));
     }
 
     #[test]
     fn one_incumbent_is_superseded_only_by_the_surviving_new_fact() {
         // An episode asserts two new values (SF, Boston) for one functional predicate while
-        // an NYC incumbent stands. Every retirement must route to the single survivor: the
-        // incumbent is retired once (not once per new fact), and the losing peer is retired
-        // by that same survivor — so no retired fact points at anything but the winner.
+        // an NYC incumbent stands. Every retirement must route to the single survivor — the
+        // object that sorts first, 'Boston' < 'SF' — so the incumbent is retired once (not
+        // once per new fact), and the losing peer is retired by that same survivor: no retired
+        // fact points at anything but the winner.
         let cfg = DetectionConfig::with_default_rules();
         let subject = Id::generate();
-        let sf = mfact_with_id(
-            Id::from_content_hash(b"sf"),
-            &subject,
-            "based_in",
-            text("SF"),
-        );
-        let boston = mfact_with_id(
-            Id::from_content_hash(b"boston"),
-            &subject,
-            "based_in",
-            text("Boston"),
-        );
-        let (survivor, loser) = if sf.fact.identity.id < boston.fact.identity.id {
-            (&sf, &boston)
-        } else {
-            (&boston, &sf)
-        };
+        let sf = mfact(&subject, "based_in", text("SF"));
+        let boston = mfact(&subject, "based_in", text("Boston"));
+        // 'Boston' sorts before 'SF', so Boston is the survivor regardless of fact ids.
         let cur = vec![current(&subject, "based_in", text("NYC"), 0.9)];
 
         let out = run(&cur, &[sf.clone(), boston.clone()], &cfg);
@@ -615,8 +773,8 @@ mod tests {
         assert!(
             out.supersessions
                 .iter()
-                .all(|s| s.new_fact.object == survivor.fact.object),
-            "every retirement points at the single survivor, not a losing peer: {:?}",
+                .all(|s| s.new_fact.object == text("Boston")),
+            "every retirement points at the single survivor (Boston), not a losing peer: {:?}",
             out.supersessions
         );
         let retired: Vec<ObjectValue> = out
@@ -625,10 +783,7 @@ mod tests {
             .map(|s| s.old_fact.object.clone())
             .collect();
         assert!(retired.contains(&text("NYC")), "the incumbent is retired");
-        assert!(
-            retired.contains(&loser.fact.object),
-            "the losing peer is retired"
-        );
+        assert!(retired.contains(&text("SF")), "the losing peer is retired");
         assert!(
             out.contradictions.is_empty(),
             "supersession, not contradiction"
