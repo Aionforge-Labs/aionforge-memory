@@ -83,6 +83,12 @@ rustls = { version = "0.23", default-features = false, features = ["ring"] }
 # Capture-side privacy/injection filter patterns (M1.T02). Already in the tree
 # transitively via selene-db, so this direct pin reuses that exact locked version.
 regex = "1"
+# Ed25519 provenance signing (M4.T03, 06 §3). The trust layer VERIFIES only — private
+# keys never enter the substrate. Default features (std, fast, zeroize); the `rand_core`
+# feature is deliberately NOT enabled, so no rand_core 0.6 line joins the tree (keys are
+# loaded from bytes, never generated in-process). base64 decodes the stored key/signature.
+ed25519-dalek = { version = "2.1" }
+base64 = "0.22"
 
 # --- Test / dev dependencies (versions match selene-db). ---
 proptest = { version = "1.11", default-features = false, features = ["std"] }
