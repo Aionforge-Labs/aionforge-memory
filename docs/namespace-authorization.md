@@ -86,6 +86,13 @@ candidate. Because one `Authorizer` answers both questions, a custom policy inje
 `Memory::with_authorizer` governs reads and writes together: there is no way to widen what an
 agent can read without also changing the authority that gates what it can write.
 
+A surface that drives a recall supplies the reader's teams the same way it supplies the reader.
+The MCP `search` tool, for instance, takes the viewer agent plus an optional `teams` list the
+host asserts for that reader, and builds the `Principal` from both; an omitted list leaves the
+reader scoped to the global space and its own private namespace. A capture over that same
+surface is untrusted, so it is confined to the writer's private namespace regardless of any team
+the caller might name — team-shared writes are a trusted-host path, not a remote-client one.
+
 ## Injecting a policy
 
 `Memory::new` installs the default policy. A host that needs a different one — say, signature
