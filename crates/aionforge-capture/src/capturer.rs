@@ -348,12 +348,15 @@ where
             }
         }
 
-        // Collision guard: the host owns subject-id allocation on the signed path, and the
-        // store does not enforce episode-id uniqueness (content-hash dedup keys on content,
-        // not id — store.rs), so a host-chosen id that already names a live or soft-forgotten
-        // episode is rejected. A narrow window remains under two genuinely concurrent signed
-        // writes that reuse one id before either commits; the skew window and first-writer-wins
-        // bound it, and the id stays in the writer's own private namespace either way.
+        // Collision pre-check: the host owns subject-id allocation on the signed path, so a
+        // host-chosen id that already names a live or soft-forgotten episode is rejected here
+        // with a clean audited collision (the content-hash dedup misses it — it keys on content,
+        // not id). Episode-id uniqueness is ultimately guaranteed by the commit-time
+        // `Episode.id UNIQUE` constraint, so a duplicate can never land even if two genuinely
+        // concurrent signed writes both clear this pre-check before either commits: the loser's
+        // `commit_capture` fails on the constraint (surfaced as a store error rather than this
+        // clean collision audit). This pre-check turns the common, sequential reuse into a clean
+        // rejection and skips the embedder round-trip for a known-duplicate id.
         if self.store.episode_exists(&signed.subject_id)? {
             self.store.commit_audit(&provenance_rejected_audit(
                 request,

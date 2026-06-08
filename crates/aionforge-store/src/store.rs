@@ -244,14 +244,19 @@ impl Store {
 
     /// Whether any episode — live or soft-forgotten — already carries this domain id.
     ///
-    /// The signed-write collision guard (06 §3, M4.T03): a signed write adopts a
-    /// host-supplied subject id as its episode id, and the store does not otherwise enforce
-    /// episode-id uniqueness (`create_node` mints a fresh node id and stores the domain id as
-    /// an ordinary property; the capture path's exact-duplicate probe keys on `content_hash`,
-    /// not `id`). `Episode.id` is scalar-indexed, so this is a probe, not a scan — and the
-    /// index must exist for the probe to be sound, since `nodes_with_property_eq` returns
-    /// `None` (read here as "absent") when no index is registered. Soft-forgotten episodes
-    /// (`expired_at` set) still hold their id, so they count: the id stays taken.
+    /// The signed-write collision pre-check (06 §3, M4.T03): a signed write adopts a
+    /// host-supplied subject id as its episode id. `Episode.id` is `UNIQUE` in the DDL
+    /// (`catalog`), enforced at commit, so a duplicate id can never actually land — a second
+    /// `commit_capture` with the same id fails the write. This probe sits in front of that
+    /// constraint: on the common path it lets the capture path reject a reused id with a clean,
+    /// audited collision *before* spending an embedder round-trip and before the commit fails
+    /// with an opaque store error. (The exact-duplicate probe is no help here — it keys on
+    /// `content_hash`, not `id`, so it misses a reused id over different content.) `Episode.id`
+    /// is scalar-indexed, so this is a probe, not a scan, and the index must exist for the
+    /// probe to mean anything: `nodes_with_property_eq` returns `None` (read here as "absent")
+    /// when no index is registered, so without it the pre-check silently no-ops and the
+    /// commit-time `UNIQUE` is the only line left. Soft-forgotten episodes (`expired_at` set)
+    /// still hold their id, so they count: the id stays taken.
     ///
     /// # Errors
     /// Returns [`StoreError`] if the id cannot be encoded for the lookup.

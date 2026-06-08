@@ -60,7 +60,7 @@ fn migration_registers_all_native_indexes() {
     // INDEXED entries in SCALAR_INDEXES (which include Entity.id, Note.id, AuditEvent.id for
     // consolidation resolution and audit dedup, Skill.id for the by-domain-id procedural
     // lookups, Agent.id for provenance key resolution, and Episode.id for the signed-write
-    // collision guard, M4.T03) = 46.
+    // collision pre-check, M4.T03) = 46.
     assert_eq!(
         store.property_indexes().len(),
         46,

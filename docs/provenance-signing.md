@@ -34,6 +34,12 @@ produce the same bytes, and it carries a version byte so a signature made under 
 never validate under another. The writer signs these bytes; the substrate recomputes them from
 the request and checks the signature — it never trusts payload bytes sent by the client.
 
+The signature binds *who* wrote, *which* episode, and *when* — not *what*. The episode content
+isn't part of the signed payload, so a verified signature proves the writer, the id, and the
+time, not that the agent authored this exact text. Content integrity rests on a trusted transport
+between the host and the substrate; if that ever has to change, a content hash would fold into
+the canonical payload behind a version bump.
+
 ### The host supplies the episode id on the signed path
 
 `subject_id` is the episode's id, and a writer can't sign over an id it doesn't know. On the

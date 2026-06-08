@@ -65,11 +65,13 @@ const SCALAR_INDEXES: &[(&str, &str, TypedIndexKind)] = &[
     // indexed (M3.T04). `Agent` is addressed by domain id when provenance verification resolves a
     // writer's public key (`agent_by_id`, M4.T03) — the DDL `UNIQUE` constraint does not back the
     // scalar-equality probe, so the index is declared here. `Episode` is addressed by domain id by
-    // the signed-write collision guard (`episode_exists`, M4.T03): a signed write adopts a
+    // the signed-write collision pre-check (`episode_exists`, M4.T03): a signed write adopts a
     // host-supplied subject id as its episode id, and `nodes_with_property_eq` returns `None`
-    // (read as "absent") without an index, so the guard would silently never fire — the index is
-    // load-bearing, not just an optimization. Other kinds are reached by node id directly, so they
-    // need no id index.
+    // (read as "absent") without an index, so the pre-check would silently no-op without it.
+    // (Episode-id uniqueness itself is guaranteed by the `Episode.id UNIQUE` DDL at commit; the
+    // index is what lets the pre-check reject a reused id cleanly, with an audit and without a
+    // wasted embed, before the commit would fail.) Other kinds are reached by node id directly,
+    // so they need no id index.
     ("Entity", "id", TypedIndexKind::Uuid),
     ("Entity", "canonical_name", TypedIndexKind::String),
     ("Entity", "type", TypedIndexKind::String),

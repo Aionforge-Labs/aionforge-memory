@@ -71,6 +71,10 @@ pub struct MemoryConfig {
 /// The host maps `aionforge-config`'s `SecurityConfig` into this struct, so the engine stays
 /// free of a config dependency. Default is off, so an unconfigured `Memory` composes its
 /// capture path exactly as before — no gate, no crypto, the unsigned fast path.
+///
+/// `SecurityConfig.redaction` has no counterpart here on purpose: redaction is enforced by the
+/// capture privacy filter, not the provenance gate, so the host's `SecurityConfig` ->
+/// `SecurityGate` mapping carries only `signed_writes` and `clock_skew_tolerance_ms`.
 #[derive(Debug, Clone)]
 pub struct SecurityGate {
     /// Whether every capture write must carry a verified Ed25519 provenance signature.
