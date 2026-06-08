@@ -28,6 +28,7 @@ mod provenance;
 mod providers;
 mod schema;
 mod search;
+mod skill;
 mod store;
 
 pub use catalog::SCHEMA_VERSION;

@@ -53,16 +53,19 @@ const SCALAR_INDEXES: &[(&str, &str)] = &[
     ("Fact", "predicate"),
     ("Fact", "status"),
     ("Fact", "object_entity_id"),
-    // `id` is indexed on `Entity`, `Note`, and `AuditEvent` (not on every kind). Consolidation
-    // resolves an already-canonical subject entity's `NodeId` by its domain id inside the flip
-    // txn when it wires the `ABOUT`/`MENTIONS` edges (M2.T04); it dedups a content-addressed
-    // summary `Note` by id so replaying an episode never writes a second copy (M2.T06); and it
-    // dedups a content-addressed `AuditEvent` by id for the same replay reason (M2.T04 audit
-    // determinism). Other kinds are reached by node id directly, so they need no id index.
+    // `id` is indexed on `Entity`, `Note`, `AuditEvent`, and `Skill` (not on every kind).
+    // Consolidation resolves an already-canonical subject entity's `NodeId` by its domain id
+    // inside the flip txn when it wires the `ABOUT`/`MENTIONS` edges (M2.T04); it dedups a
+    // content-addressed summary `Note` by id so replaying an episode never writes a second copy
+    // (M2.T06); and it dedups a content-addressed `AuditEvent` by id for the same replay reason
+    // (M2.T04 audit determinism). `Skill` is addressed by domain id through the procedural
+    // contract — `record_outcome(skill_id)` and the by-id reads resolve a version's `NodeId` by
+    // id (M3.T04). Other kinds are reached by node id directly, so they need no id index.
     ("Entity", "id"),
     ("Entity", "canonical_name"),
     ("Entity", "type"),
     ("Note", "id"),
+    ("Skill", "id"),
     ("Skill", "name"),
     ("Skill", "source_hash"),
     ("Note", "derived_from_episode"),
