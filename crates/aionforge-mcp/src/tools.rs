@@ -67,7 +67,8 @@ pub struct SearchToolParams {
     #[schemars(description = "The natural-language query.")]
     pub query: String,
     /// The reading agent's namespace, `agent:<id>`. The recall is scoped to this agent's
-    /// visible set: the global space, its own private namespace, and any teams it declares.
+    /// visible set: the global space, its own private namespace, and any teams the host
+    /// asserts for it (see `teams`).
     #[schemars(
         description = "The reading agent's namespace, agent:<id>. Recall is scoped to its visible set."
     )]
