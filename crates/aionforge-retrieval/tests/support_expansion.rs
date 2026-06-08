@@ -26,6 +26,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use aionforge_domain::Retriever;
+use aionforge_domain::authz::Principal;
 use aionforge_domain::blocks::{Identity, Stats};
 use aionforge_domain::contracts::Embedder;
 use aionforge_domain::edges::About;
@@ -322,7 +323,7 @@ async fn recall_with_limit(
 ) -> RecallBundle {
     r.recall(RecallQuery {
         text: QUERY.to_string(),
-        viewer: Namespace::Global,
+        principal: Principal::agent(Id::generate()),
         limit,
         options: RecallOptions {
             mode_override: Some(class),

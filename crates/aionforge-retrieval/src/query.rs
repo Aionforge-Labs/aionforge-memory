@@ -2,23 +2,24 @@
 
 use std::time::Duration;
 
-use aionforge_domain::namespace::Namespace;
+use aionforge_domain::authz::Principal;
 use aionforge_domain::time::Timestamp;
 
 use crate::router::QueryClass;
 
-/// A retrieval request: the query text, the namespace asking, and the bundle shape.
+/// A retrieval request: the query text, the principal asking, and the bundle shape.
 ///
-/// `viewer` is the namespace authorization is applied against — private content from
-/// another agent never surfaces to it (03 §8, 06 §1). The text is always bound as a
-/// GQL parameter downstream, never interpolated, so hostile query text cannot alter a
-/// statement.
+/// `principal` is the caller-asserted reader identity authorization is applied against
+/// (06 §1): a recall surfaces only the global space, the reader's own private namespace,
+/// and the teams it belongs to — another agent's private content never surfaces. The
+/// text is always bound as a GQL parameter downstream, never interpolated, so hostile
+/// query text cannot alter a statement.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RecallQuery {
     /// The natural-language query.
     pub text: String,
-    /// The namespace the recall is performed for; gates what may surface.
-    pub viewer: Namespace,
+    /// The reader the recall is performed for; gates what may surface via its visible set.
+    pub principal: Principal,
     /// The target number of memories in the bundle.
     pub limit: usize,
     /// Tuning knobs; [`RecallOptions::default`] is the usual choice.
@@ -26,13 +27,13 @@ pub struct RecallQuery {
 }
 
 impl RecallQuery {
-    /// A query for `text` on behalf of `viewer`, returning up to `limit` memories with
+    /// A query for `text` on behalf of `principal`, returning up to `limit` memories with
     /// default options.
     #[must_use]
-    pub fn new(text: impl Into<String>, viewer: Namespace, limit: usize) -> Self {
+    pub fn new(text: impl Into<String>, principal: Principal, limit: usize) -> Self {
         Self {
             text: text.into(),
-            viewer,
+            principal,
             limit,
             options: RecallOptions::default(),
         }

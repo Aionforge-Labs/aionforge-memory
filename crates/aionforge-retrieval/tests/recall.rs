@@ -16,7 +16,9 @@ use aionforge_domain::ids::{ContentHash, Id};
 use aionforge_domain::namespace::Namespace;
 use aionforge_domain::nodes::episodic::{ConsolidationState, Episode, Role};
 use aionforge_domain::time::Timestamp;
-use aionforge_retrieval::{HybridRetriever, RecallOptions, RecallQuery, RetrieverConfig, Signal};
+use aionforge_retrieval::{
+    HybridRetriever, Principal, RecallOptions, RecallQuery, RetrieverConfig, Signal,
+};
 use aionforge_store::{BoundQuery, QueryResult, Store, StoreConfig};
 
 // --- Fake embedder ---------------------------------------------------------------
@@ -150,12 +152,12 @@ fn seed(
     store.insert_episode(&episode).expect("seed episode");
 }
 
-/// A simpler seed for the common case: agent:alice, no session, user role, active.
+/// A simpler seed for the common case: alice's own namespace, no session, user role, active.
 fn seed_basic(store: &Store, content: &str, embedding: [f32; 4]) {
     seed(
         store,
         content,
-        Namespace::Agent("alice".to_string()),
+        alice_ns(),
         None,
         Role::User,
         embedding,
@@ -163,8 +165,20 @@ fn seed_basic(store: &Store, content: &str, embedding: [f32; 4]) {
     );
 }
 
-fn alice() -> Namespace {
-    Namespace::Agent("alice".to_string())
+/// A fixed, deterministic agent id for the test reader "alice". Agent ids are ULIDs, so the
+/// reader and the data she owns share this one identity (her namespace is `agent:<this ulid>`).
+fn alice_id() -> Id {
+    Id::from_content_hash(b"alice-the-test-reader")
+}
+
+/// Alice as a reader: a principal whose visible set is the global space and her own namespace.
+fn alice() -> Principal {
+    Principal::agent(alice_id())
+}
+
+/// Alice's own private namespace — where `seed`ed data must land to be visible to `alice()`.
+fn alice_ns() -> Namespace {
+    Namespace::Agent(alice_id().as_str().to_string())
 }
 
 fn retriever(store: Arc<Store>, embedder: FakeEmbedder) -> HybridRetriever<FakeEmbedder> {
@@ -299,7 +313,7 @@ async fn namespace_authorization_hides_other_agents_private_content() {
     seed(
         &store,
         "alice private note",
-        alice(),
+        alice_ns(),
         None,
         Role::User,
         [1.0, 0.0, 0.0, 0.0],
@@ -346,12 +360,54 @@ async fn namespace_authorization_hides_other_agents_private_content() {
 }
 
 #[tokio::test]
+async fn a_reader_sees_its_member_teams_but_not_others() {
+    let store = store();
+    seed(
+        &store,
+        "squad team note",
+        Namespace::Team("squad".to_string()),
+        None,
+        Role::User,
+        [1.0, 0.0, 0.0, 0.0],
+        false,
+    );
+    seed(
+        &store,
+        "rival team note",
+        Namespace::Team("rival".to_string()),
+        None,
+        Role::User,
+        [1.0, 0.0, 0.0, 0.0],
+        false,
+    );
+    let r = retriever(store, embedder_to("note", [1.0, 0.0, 0.0, 0.0]));
+
+    // The reader belongs to "squad" but not "rival": team membership widens her visible set
+    // beyond her own private space, but only to the teams she is actually in (06 §1).
+    let viewer = Principal::new(alice_id(), vec!["squad".to_string()]);
+    let bundle = r
+        .recall(RecallQuery::new("note", viewer, 10))
+        .await
+        .expect("recall");
+
+    let contents: Vec<&str> = bundle.structured.iter().map(|e| e.content()).collect();
+    assert!(
+        contents.contains(&"squad team note"),
+        "a member sees its team's memory"
+    );
+    assert!(
+        !contents.contains(&"rival team note"),
+        "a non-member never sees another team's memory"
+    );
+}
+
+#[tokio::test]
 async fn system_role_episodes_are_excluded() {
     let store = store();
     seed(
         &store,
         "a normal user turn",
-        alice(),
+        alice_ns(),
         None,
         Role::User,
         [1.0, 0.0, 0.0, 0.0],
@@ -360,7 +416,7 @@ async fn system_role_episodes_are_excluded() {
     seed(
         &store,
         "a system directive turn",
-        alice(),
+        alice_ns(),
         None,
         Role::System,
         [1.0, 0.0, 0.0, 0.0],
@@ -387,7 +443,7 @@ async fn expired_memories_are_excluded_by_default_and_included_on_history() {
     seed(
         &store,
         "an active memory",
-        alice(),
+        alice_ns(),
         None,
         Role::User,
         [1.0, 0.0, 0.0, 0.0],
@@ -396,7 +452,7 @@ async fn expired_memories_are_excluded_by_default_and_included_on_history() {
     seed(
         &store,
         "a forgotten memory",
-        alice(),
+        alice_ns(),
         None,
         Role::User,
         [1.0, 0.0, 0.0, 0.0],
@@ -418,7 +474,7 @@ async fn expired_memories_are_excluded_by_default_and_included_on_history() {
     let history = r
         .recall(RecallQuery {
             text: "memory".to_string(),
-            viewer: alice(),
+            principal: alice(),
             limit: 10,
             options: RecallOptions {
                 include_expired: true,
@@ -442,7 +498,7 @@ async fn the_session_diversity_cap_demotes_a_dominant_session() {
         seed(
             &store,
             &format!("topic from session aaa number {n}"),
-            alice(),
+            alice_ns(),
             Some("session-aaa"),
             Role::User,
             [1.0, 0.0, 0.0, 0.0],
@@ -452,7 +508,7 @@ async fn the_session_diversity_cap_demotes_a_dominant_session() {
     seed(
         &store,
         "topic from session bee",
-        alice(),
+        alice_ns(),
         Some("session-bee"),
         Role::User,
         [1.0, 0.0, 0.0, 0.0],
@@ -463,7 +519,7 @@ async fn the_session_diversity_cap_demotes_a_dominant_session() {
     let bundle = r
         .recall(RecallQuery {
             text: "topic".to_string(),
-            viewer: alice(),
+            principal: alice(),
             limit: 3,
             options: RecallOptions {
                 session_diversity_cap: 2,
@@ -545,7 +601,7 @@ async fn an_exceeded_deadline_is_a_typed_error() {
     let result = r
         .recall(RecallQuery {
             text: "memory".to_string(),
-            viewer: alice(),
+            principal: alice(),
             limit: 10,
             options: RecallOptions {
                 deadline: Some(Duration::ZERO),
@@ -657,7 +713,7 @@ async fn compact_view_is_score_ordered_with_verbose_detail() {
     );
     // Verbose surfaces provenance as attributes on each memory line.
     assert!(
-        compact.contains("ns=\"agent:alice\""),
+        compact.contains(&format!("ns=\"agent:{}\"", alice_id().as_str())),
         "verbose ns: {compact}"
     );
     assert!(compact.contains("trust=\""), "verbose trust: {compact}");
@@ -670,14 +726,15 @@ async fn compact_view_is_score_ordered_with_verbose_detail() {
 #[tokio::test]
 async fn compact_verbose_escapes_a_hostile_namespace() {
     let store = store();
-    // An agent id is a plain string with no character constraints, so a hostile one could
-    // carry an attribute-breaking quote. The verbose compact view renders the namespace as
-    // an attribute, so it must be escaped just like the fact predicate (07 §4).
-    let hostile = Namespace::Agent("x\" onload=\"evil".to_string());
+    // A team name is a host-supplied string with no character constraints, so a hostile one
+    // could carry an attribute-breaking quote. The verbose compact view renders the namespace
+    // as an attribute, so it must be escaped just like the fact predicate (07 §4). Agent ids are
+    // ULIDs and cannot be hostile, so a team name is the realistic vector now.
+    let hostile_team = "x\" onload=\"evil";
     seed(
         &store,
         "ordinary content",
-        hostile.clone(),
+        Namespace::Team(hostile_team.to_string()),
         None,
         Role::User,
         [1.0, 0.0, 0.0, 0.0],
@@ -685,15 +742,17 @@ async fn compact_verbose_escapes_a_hostile_namespace() {
     );
     let r = retriever(store, embedder_to("content", [1.0, 0.0, 0.0, 0.0]));
 
+    // A reader who belongs to the hostile team, so its content is within her visible set.
+    let viewer = Principal::new(alice_id(), vec![hostile_team.to_string()]);
     let bundle = r
-        .recall(RecallQuery::new("content", hostile, 10))
+        .recall(RecallQuery::new("content", viewer, 10))
         .await
         .expect("recall");
     let compact = bundle.render_compact(true);
 
-    // The quote inside the agent id is escaped, so it cannot open a forged attribute.
+    // The quote inside the team name is escaped, so it cannot open a forged attribute.
     assert!(
-        compact.contains("ns=\"agent:x&quot; onload=&quot;evil\""),
+        compact.contains("ns=\"team:x&quot; onload=&quot;evil\""),
         "the namespace attribute must be escaped: {compact}"
     );
     assert!(

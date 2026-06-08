@@ -101,8 +101,12 @@ impl<E: Embedder> Memory<E> {
             config.capture,
             Arc::clone(&authorizer),
         );
-        let retriever =
-            HybridRetriever::new(Arc::clone(&store), Arc::clone(&embedder), config.retriever);
+        let retriever = HybridRetriever::with_authorizer(
+            Arc::clone(&store),
+            Arc::clone(&embedder),
+            config.retriever,
+            Arc::clone(&authorizer),
+        );
         Ok(Self {
             store,
             embedder,
@@ -112,9 +116,10 @@ impl<E: Embedder> Memory<E> {
         })
     }
 
-    /// The namespace authority every capture write is checked against — the single seam a host
-    /// overrides through [`Memory::with_authorizer`]. Recall scopes its own reads by namespace
-    /// today; folding that read filter onto this authority is a later step.
+    /// The namespace authority this memory is governed by — the single seam a host overrides
+    /// through [`Memory::with_authorizer`]. It gates writes (a capture must be authorized for
+    /// its target namespace) and reads alike (a recall surfaces only the principal's visible
+    /// set), so one injected policy bounds the whole memory (06 §1).
     #[must_use]
     pub fn authorizer(&self) -> &Arc<dyn Authorizer> {
         &self.authorizer

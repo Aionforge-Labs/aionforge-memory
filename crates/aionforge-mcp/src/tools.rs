@@ -16,8 +16,8 @@ use aionforge_domain::namespace::Namespace;
 use aionforge_domain::nodes::episodic::Role;
 use aionforge_domain::time::Timestamp;
 use aionforge_engine::{
-    CaptureReceipt, CaptureRequest, CaptureVerdict, EmbeddingOutcome, Memory, RecallQuery,
-    WriterContext,
+    CaptureReceipt, CaptureRequest, CaptureVerdict, EmbeddingOutcome, Memory, Principal,
+    RecallQuery, WriterContext,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -65,10 +65,10 @@ pub struct SearchToolParams {
     /// The natural-language query.
     #[schemars(description = "The natural-language query.")]
     pub query: String,
-    /// The viewer namespace authorization is applied against: `agent:<id>`,
-    /// `team:<id>`, `global`, or `system`.
+    /// The reading agent's namespace, `agent:<id>`. The recall is scoped to this agent's
+    /// visible set: the global space and its own private namespace.
     #[schemars(
-        description = "Viewer namespace for authorization: agent:<id>, team:<id>, global, or system."
+        description = "The reading agent's namespace, agent:<id>. Recall is scoped to its visible set."
     )]
     pub viewer: String,
     /// The maximum number of hits to return (default 10, max 100).
@@ -143,14 +143,26 @@ pub async fn search_tool<E: Embedder>(
     memory: &Memory<E>,
     params: SearchToolParams,
 ) -> Result<String, String> {
-    let viewer: Namespace = params.viewer.parse().map_err(|_| {
-        "ERR_INVALID_VIEWER: viewer must be agent:<id>, team:<id>, global, or system".to_string()
-    })?;
+    // A reader is an agent: recall scopes to the global space, the reader's own private
+    // namespace, and (M4.T01 PR-E, from the request context) its teams. A non-agent viewer
+    // has no reader identity, so it is rejected rather than silently widened.
+    let viewer: Namespace = params
+        .viewer
+        .parse()
+        .map_err(|_| "ERR_INVALID_VIEWER: viewer must be agent:<id>".to_string())?;
+    let Namespace::Agent(agent_id) = viewer else {
+        return Err("ERR_INVALID_VIEWER: a reader must be an agent (agent:<id>)".to_string());
+    };
+    let agent = Id::parse(&agent_id)
+        .map_err(|_| "ERR_INVALID_VIEWER: viewer agent id must be a ULID".to_string())?;
+    // Team membership from the MCP request context is wired in M4.T01 PR-E; for now a reader
+    // sees only the global space and its own private namespace.
+    let principal = Principal::agent(agent);
     let limit = params.limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT);
     let verbose = params.verbose.unwrap_or(false);
 
     let bundle = memory
-        .search(RecallQuery::new(params.query, viewer, limit))
+        .search(RecallQuery::new(params.query, principal, limit))
         .await
         .map_err(|error| format!("ERR_SEARCH: {error}"))?;
     // The compact rendering lives next to the full rendered view in the retrieval crate

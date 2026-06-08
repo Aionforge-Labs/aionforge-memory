@@ -16,11 +16,11 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Instant;
 
+use aionforge_domain::authz::{Authorizer, DefaultAuthorizer, VisibleSet};
 use aionforge_domain::contracts::{Embedder, Retriever};
 use aionforge_domain::edges::About;
 use aionforge_domain::embedding::Embedding;
 use aionforge_domain::ids::SerializationId;
-use aionforge_domain::namespace::Namespace;
 use aionforge_domain::nodes::episodic::{Episode, Role};
 use aionforge_domain::nodes::semantic::Fact;
 use aionforge_store::{
@@ -77,16 +77,32 @@ pub struct HybridRetriever<E> {
     store: Arc<Store>,
     embedder: E,
     config: RetrieverConfig,
+    authorizer: Arc<dyn Authorizer>,
 }
 
 impl<E: Embedder> HybridRetriever<E> {
-    /// Build a retriever over a shared store, an embedder, and its config.
+    /// Build a retriever over a shared store, an embedder, and its config, with the
+    /// default namespace read policy ([`DefaultAuthorizer`]).
     #[must_use]
     pub fn new(store: Arc<Store>, embedder: E, config: RetrieverConfig) -> Self {
+        Self::with_authorizer(store, embedder, config, Arc::new(DefaultAuthorizer))
+    }
+
+    /// Build a retriever with an explicit [`Authorizer`], so a host's read policy governs
+    /// what a recall may surface. The engine injects the same authority it checks writes
+    /// against, so reads and writes share one namespace boundary (06 §1).
+    #[must_use]
+    pub fn with_authorizer(
+        store: Arc<Store>,
+        embedder: E,
+        config: RetrieverConfig,
+        authorizer: Arc<dyn Authorizer>,
+    ) -> Self {
         Self {
             store,
             embedder,
             config,
+            authorizer,
         }
     }
 
@@ -243,10 +259,13 @@ impl<E: Embedder> HybridRetriever<E> {
         let signals_ms = signals_started.elapsed().as_millis();
         bail_if_past(deadline)?;
 
-        // 3. Fuse, then resolve, authorize, temporally filter, and diversity-cap.
+        // 3. Fuse, then resolve, authorize, temporally filter, and diversity-cap. The
+        //    reader's visible set is computed once here, through the injected authority,
+        //    so every candidate is gated by the same O(1) membership check (06 §1).
         let assemble_started = Instant::now();
         let fused = fuse(&rankings, DEFAULT_RRF_K);
-        let selection = self.select(&query, fused, &fact_nodes)?;
+        let visible = self.authorizer.visible_namespaces(&query.principal);
+        let selection = self.select(&query, &visible, fused, &fact_nodes)?;
 
         // 4. Structured view stays in score order; the rendered view re-sorts by
         //    serialization id so the same set renders byte-identically (03 §6).
@@ -294,6 +313,7 @@ impl<E: Embedder> HybridRetriever<E> {
     fn select(
         &self,
         query: &RecallQuery,
+        visible: &VisibleSet,
         fused: Vec<FusedCandidate>,
         fact_nodes: &HashSet<NodeId>,
     ) -> Result<Selection, RetrievalError> {
@@ -308,7 +328,7 @@ impl<E: Embedder> HybridRetriever<E> {
                 break;
             }
             if fact_nodes.contains(&candidate.node) {
-                let Some(entry) = self.resolve_fact(query, &candidate)? else {
+                let Some(entry) = self.resolve_fact(query, visible, &candidate)? else {
                     continue;
                 };
                 considered += 1;
@@ -318,7 +338,7 @@ impl<E: Embedder> HybridRetriever<E> {
             let Some(episode) = self.store.episode_by_node_id(candidate.node)? else {
                 continue;
             };
-            if !admit_episode(query, &episode) {
+            if !admit_episode(query, visible, &episode) {
                 continue;
             }
             considered += 1;
@@ -502,12 +522,13 @@ impl<E: Embedder> HybridRetriever<E> {
     fn resolve_fact(
         &self,
         query: &RecallQuery,
+        visible: &VisibleSet,
         candidate: &FusedCandidate,
     ) -> Result<Option<StructuredEntry>, RetrievalError> {
         let Some(fact) = self.store.fact_by_node_id(candidate.node)? else {
             return Ok(None);
         };
-        if !visible_to(&query.viewer, &fact.identity.namespace) {
+        if !visible.contains(&fact.identity.namespace) {
             return Ok(None);
         }
         // The validity window lives on the ABOUT edge, not the node; a fact without one
@@ -564,23 +585,16 @@ fn effective_fanout(query: &RecallQuery, config: &RetrieverConfig) -> usize {
 }
 
 /// Whether an episode may surface for this query: not a system-role message (07 §4),
-/// active unless history was asked for (03 §5), and visible to the viewer's namespace
+/// active unless history was asked for (03 §5), and within the reader's visible set
 /// (03 §8, 06 §1).
-fn admit_episode(query: &RecallQuery, episode: &Episode) -> bool {
+fn admit_episode(query: &RecallQuery, visible: &VisibleSet, episode: &Episode) -> bool {
     if episode.role == Role::System {
         return false;
     }
     if !query.options.include_expired && episode.identity.expired_at.is_some() {
         return false;
     }
-    visible_to(&query.viewer, &episode.identity.namespace)
-}
-
-/// Namespace authorization: a viewer sees the global namespace and its own; private
-/// content from any other namespace never surfaces (06 §1). Team membership is not
-/// modeled yet, so a team namespace is visible only to that exact namespace.
-fn visible_to(viewer: &Namespace, candidate: &Namespace) -> bool {
-    matches!(candidate, Namespace::Global) || candidate == viewer
+    visible.contains(&episode.identity.namespace)
 }
 
 /// Build an episode entry from an episode and its fused candidate.
