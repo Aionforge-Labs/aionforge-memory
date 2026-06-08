@@ -10,18 +10,21 @@
 //! One fixture carries both halves of the claim. A graph-only "bridge" fact is *signal* for
 //! an associative/multi-hop query (it is the kind of far, structurally-linked evidence the
 //! user wants) and *noise* for a single-hop factual query (an off-target associative fact
-//! that dilutes a precise answer). The test scores three conditions over that fixture:
+//! that dilutes a precise answer). Because graph expansion is a per-class on/off decision, the
+//! fixture needs only two physical recalls — graph-off (the single-hop profile = the M1
+//! capability: lexical + dense + RRF, no associative spread) and graph-on (the multi-hop
+//! profile, which adds Personalized PageRank) — scored two ways:
 //!
-//! - **baseline** — graph expansion off for every query (the M1 capability: lexical + dense
-//!   + RRF, no associative spread), obtained by routing through the single-hop profile;
-//! - **conditioned** — the router's actual per-class profile (graph on for multi-hop, off
-//!   for single-hop);
-//! - **mis-conditioned** — graph forced on for the single-hop query (the anti-pattern the
-//!   router exists to avoid).
+//! - **multi-hop gain:** the router selects graph-on for a multi-hop query, and bridge recall
+//!   rises from none (the graph-off baseline) to full recovery (graph-on).
+//! - **single-hop no-regression:** the router selects graph-off for a single-hop query; that
+//!   path carries no associative contamination, so single-hop precision matches the M1
+//!   baseline and cannot regress.
+//! - **suppression is load-bearing:** forcing graph-on onto the single-hop query (the
+//!   anti-pattern the router avoids) regresses precision, so the suppression is no no-op.
 //!
-//! and asserts: multi-hop recall rises from baseline to conditioned (gain); single-hop
-//! precision is unchanged from baseline to conditioned (no regression); and single-hop
-//! precision falls under mis-conditioning (so the suppression is load-bearing, not vacuous).
+//! The test pins the router's actual per-class decision (via `profile_for`), so the comparison
+//! reflects the router's real behavior rather than an assumption about it.
 //!
 //! Hermetic: a fake embedder maps the query and the near records to one fixed vector and the
 //! bridges to an orthogonal one; near, graph-unreachable filler facts fill the dense fan-out
@@ -43,7 +46,7 @@ use aionforge_domain::time::{BiTemporal, Timestamp};
 use aionforge_domain::value::ObjectValue;
 use aionforge_retrieval::{
     HybridRetriever, QueryClass, RecallBundle, RecallOptions, RecallQuery, RetrieverConfig,
-    StructuredEntry, TemporalMode,
+    StructuredEntry, TemporalMode, profile_for,
 };
 use aionforge_store::{BoundQuery, NodeId, Store, StoreConfig, Value};
 
@@ -266,8 +269,9 @@ fn fixture() -> Fixture {
         bridges.push(statement);
     }
 
-    // Near, graph-unreachable filler facts about a disconnected entity crowd the dense fact
-    // ranking so the far bridges fall outside the dense fan-out.
+    // Near filler facts about a disconnected, far entity: their NEAR vectors crowd the dense
+    // fact ranking while the FAR subject keeps them off any PageRank reach from `acme`, so they
+    // pad dense recall without ever surfacing as graph hits.
     let (filler_subject, filler_node) = entity(&store, "filler-subject", FAR);
     for n in 0..FILLER_FACTS {
         assert_fact(
@@ -294,9 +298,8 @@ fn retriever(store: Arc<Store>) -> HybridRetriever<FakeEmbedder> {
 }
 
 /// Recall the shared query under an explicit class, in Current mode, with the window and
-/// fan-out the metric needs. The class override is how the three conditions are expressed:
-/// `SingleHopFactual` suppresses graph expansion (baseline / conditioned-single-hop) and
-/// `MultiHop` enables it (conditioned-multi-hop / mis-conditioned-single-hop).
+/// fan-out the metric needs. The class override selects the profile: `SingleHopFactual`
+/// suppresses graph expansion (the M1-capability, graph-off path) while `MultiHop` enables it.
 async fn recall(r: &HybridRetriever<FakeEmbedder>, class: QueryClass) -> RecallBundle {
     r.recall(RecallQuery {
         text: QUERY.to_string(),
@@ -331,9 +334,9 @@ fn multi_hop_recall(bundle: &RecallBundle, bridges: &[String]) -> f64 {
     bridge_fraction(bundle, bridges)
 }
 
-/// Single-hop precision: a precise factual recall should carry no associative-only records,
-/// so precision is one minus the fraction of bridge (off-target, graph-only) facts that
-/// leaked into the result.
+/// Single-hop precision over this fixture: a precise factual recall should carry no
+/// associative-only records, so precision is one minus the fraction of graph-only bridge facts
+/// (the only off-target records the fixture contains) that leaked into the result.
 fn single_hop_precision(bundle: &RecallBundle, bridges: &[String]) -> f64 {
     1.0 - bridge_fraction(bundle, bridges)
 }
@@ -350,68 +353,72 @@ async fn conditioning_helps_multi_hop_without_regressing_single_hop() {
     let r = retriever(fx.store);
     let bridges = &fx.bridges;
 
-    // Baseline (graph off everywhere = the M1 capability) is the single-hop profile applied
-    // to the multi-hop intent; conditioned multi-hop is the router's multi-hop profile.
-    let baseline_mh = recall(&r, QueryClass::SingleHopFactual).await;
-    let conditioned_mh = recall(&r, QueryClass::MultiHop).await;
-    // For the single-hop intent, conditioned == the suppressed single-hop profile (which is
-    // the baseline), and mis-conditioned forces graph expansion on where the router suppresses it.
-    let baseline_sh = recall(&r, QueryClass::SingleHopFactual).await;
-    let conditioned_sh = recall(&r, QueryClass::SingleHopFactual).await;
-    let misconditioned_sh = recall(&r, QueryClass::MultiHop).await;
+    // The router decision under test: graph expansion is enabled for the multi-hop class and
+    // suppressed for the single-hop factual class. The suppression is a `graph_expansion` gate
+    // (the PageRank signal does not run), not a zero weight. Pinning it here makes the
+    // comparison below a check of the router's real choice, not an assumption about it.
+    assert!(
+        profile_for(QueryClass::MultiHop).graph_expansion,
+        "the router enables graph expansion for the multi-hop class",
+    );
+    assert!(
+        !profile_for(QueryClass::SingleHopFactual).graph_expansion,
+        "the router suppresses graph expansion for the single-hop factual class",
+    );
 
-    let mh_recall_baseline = multi_hop_recall(&baseline_mh, bridges);
-    let mh_recall_conditioned = multi_hop_recall(&conditioned_mh, bridges);
-    let sh_precision_baseline = single_hop_precision(&baseline_sh, bridges);
-    let sh_precision_conditioned = single_hop_precision(&conditioned_sh, bridges);
-    let sh_precision_misconditioned = single_hop_precision(&misconditioned_sh, bridges);
+    // Two physical recalls over one fixture, read two ways. The graph-off recall is the M1
+    // capability (lexical + dense + RRF, no associative spread); the graph-on recall adds
+    // Personalized PageRank. A graph-only bridge fact is *signal* for a multi-hop query and
+    // *noise* for a single-hop factual query, so each recall scores both metrics.
+    let graph_off = recall(&r, QueryClass::SingleHopFactual).await;
+    let graph_on = recall(&r, QueryClass::MultiHop).await;
+
+    let mh_recall_off = multi_hop_recall(&graph_off, bridges);
+    let mh_recall_on = multi_hop_recall(&graph_on, bridges);
+    let sh_precision_off = single_hop_precision(&graph_off, bridges);
+    let sh_precision_on = single_hop_precision(&graph_on, bridges);
 
     // The tracked metric — recorded in the build log so a regression is visible, not silent.
+    // Read down the column the router actually selects: multi-hop -> graph-on, single-hop ->
+    // graph-off.
     println!("--- M3.T03 conditioning validation ({BRIDGES} graph-only bridge facts) ---");
-    println!(
-        "multi-hop  recall    baseline={mh_recall_baseline:.2}  conditioned={mh_recall_conditioned:.2}"
-    );
-    println!(
-        "single-hop precision baseline={sh_precision_baseline:.2}  conditioned={sh_precision_conditioned:.2}  mis-conditioned={sh_precision_misconditioned:.2}"
-    );
+    println!("                     graph-off (M1)   graph-on");
+    println!("multi-hop  recall         {mh_recall_off:.2}           {mh_recall_on:.2}");
+    println!("single-hop precision      {sh_precision_off:.2}           {sh_precision_on:.2}");
 
-    // Sanity: the single-hop answer is recalled in every condition — the comparison is about
-    // associative spread, not whether the precise answer is found at all.
+    // Sanity: the precise single-hop answer is recalled either way — the comparison is about
+    // associative spread, not whether the answer is found at all.
     assert!(
-        has_fact(&baseline_sh, ANSWER_FACT) && has_fact(&misconditioned_sh, ANSWER_FACT),
-        "the single-hop answer is recalled regardless of graph conditioning",
+        has_fact(&graph_off, ANSWER_FACT) && has_fact(&graph_on, ANSWER_FACT),
+        "the single-hop answer is recalled regardless of graph expansion",
     );
 
-    // Multi-hop gain: with graph expansion off, none of the graph-only bridges surface;
-    // conditioning (graph on for the multi-hop class) recovers them.
+    // Multi-hop gain — the router selects graph-on here: graph expansion recovers every
+    // graph-only bridge the M1 baseline misses entirely.
     assert_eq!(
-        mh_recall_baseline, 0.0,
-        "the M1 baseline reaches no graph-only bridge fact",
-    );
-    assert!(
-        mh_recall_conditioned > mh_recall_baseline,
-        "multi-hop conditioning surfaces graph-only evidence the baseline misses \
-         (conditioned={mh_recall_conditioned:.2} > baseline={mh_recall_baseline:.2})",
-    );
-
-    // No single-hop regression: the conditioned single-hop path matches the baseline exactly —
-    // a precise factual recall with no associative contamination.
-    assert_eq!(
-        sh_precision_conditioned, 1.0,
-        "the conditioned single-hop recall carries no associative-only contamination",
+        mh_recall_off, 0.0,
+        "the M1 baseline (graph off) reaches no graph-only bridge fact",
     );
     assert_eq!(
-        sh_precision_conditioned, sh_precision_baseline,
-        "single-hop precision is unchanged from the M1 baseline under conditioning",
+        mh_recall_on, 1.0,
+        "graph expansion recovers all graph-only bridges for the multi-hop class",
     );
 
-    // The suppression is load-bearing: forcing graph expansion on for the single-hop query
-    // (the anti-pattern conditioning avoids) pulls off-target associative facts into the
-    // result and lowers precision below the baseline.
+    // No single-hop regression — the router selects graph-off here: that path carries no
+    // associative-only contamination, so it is already maximally precise and conditioning
+    // cannot make single-hop worse than the M1 baseline.
+    assert_eq!(
+        sh_precision_off, 1.0,
+        "the single-hop path the router selects carries no associative-only contamination",
+    );
+
+    // The suppression is load-bearing, not vacuous: applying graph expansion to a single-hop
+    // query (the anti-pattern the router avoids) pulls off-target associative facts into the
+    // result and regresses precision below the baseline. Conditioning is what prevents this.
     assert!(
-        sh_precision_misconditioned < sh_precision_baseline,
-        "mis-conditioned single-hop recall regresses precision the router protects \
-         (mis-conditioned={sh_precision_misconditioned:.2} < baseline={sh_precision_baseline:.2})",
+        sh_precision_on < sh_precision_off,
+        "forcing graph expansion on a single-hop query regresses the precision conditioning \
+         protects (graph-on={sh_precision_on:.2} < graph-off={sh_precision_off:.2})",
     );
 }
 
