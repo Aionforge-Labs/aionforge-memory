@@ -29,9 +29,10 @@ pub enum ConfigError {
         reason: String,
     },
 
-    /// An API key was requested through `api_key_env`, but that environment variable is
-    /// not set. Only the variable's name appears here, never a value.
-    #[error("the environment variable {0} named by `embedder.api_key_env` is not set")]
+    /// An API key was requested through an `api_key_env` setting, but that environment variable
+    /// is not set. Only the variable's name appears here, never a value. The same variant covers
+    /// the embedder and the completer, so it names the variable rather than a fixed config key.
+    #[error("the environment variable {0} named by an `api_key_env` setting is not set")]
     SecretEnvMissing(String),
 }
 
