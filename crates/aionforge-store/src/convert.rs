@@ -117,6 +117,17 @@ pub(crate) fn as_u64(value: &Value) -> Result<u64, StoreError> {
     }
 }
 
+pub(crate) fn as_i64(value: &Value) -> Result<i64, StoreError> {
+    match value {
+        Value::Int(i) => Ok(*i),
+        Value::Uint(u) => i64::try_from(*u)
+            .map_err(|_| StoreError::decode("unsigned integer too large for a signed field")),
+        other => Err(StoreError::decode(format!(
+            "expected a signed integer, found {other:?}"
+        ))),
+    }
+}
+
 pub(crate) fn as_bool(value: &Value) -> Result<bool, StoreError> {
     match value {
         Value::Bool(b) => Ok(*b),
