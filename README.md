@@ -60,6 +60,9 @@ We'd rather say that plainly up front than oversell it.
   text as untrusted data, and a red-team suite are all in scope for v1.
 - **Same input, same output.** Given the same graph state, retrieval returns the same
   ordering every time, and derived state can always be rebuilt from the primary graph.
+  The optional LLM distiller — the one place a generative model touches stored content — runs
+  off the consolidation cursor and writes only non-canonical notes, so turning it on can't
+  perturb that byte-for-byte path. It's off by default and degrades to the rule tier.
 
 ## Building
 

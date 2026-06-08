@@ -11,5 +11,8 @@ This is reference and guides, not planning or changelogs.
 - [Completion client](completion-client.md) — the optional, off-by-default chat client:
   one provider-agnostic seam over OpenAI Chat Completions, OpenAI Responses, and Anthropic
   Messages (and any OpenAI-compatible local server), with pinned sampling and graceful degrade.
+- [LLM distillation](distillation.md) — the optional, off-by-default layer that condenses facts
+  into notes with a chat model, run off the consolidation cursor so it can never perturb the
+  byte-deterministic canonical path; guarded against lossy output and degrading to the rule tier.
 
 More subsystem guides land here as each one is built.

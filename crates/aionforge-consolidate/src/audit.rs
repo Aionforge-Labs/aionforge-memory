@@ -212,6 +212,94 @@ pub(crate) fn induced_deprecate_audit(
     }
 }
 
+/// The deterministic actor id stamped on the off-cursor [`Distiller`](crate::Distiller)'s audit
+/// events: a content hash over the distiller's identity (rule version and the declared model
+/// family/version). The same distiller configuration attributes its calls to the same actor
+/// across runs, like the extraction and induction actor ids.
+pub(crate) fn distill_actor_id(identity: &SummarizerIdentity) -> Id {
+    let key = format!(
+        "distill|{}|{}|{}",
+        identity.rule_version,
+        identity.model_family.as_deref().unwrap_or(""),
+        identity.model_version.as_deref().unwrap_or(""),
+    );
+    Id::from_content_hash(key.as_bytes())
+}
+
+/// The model-provenance a `distill` audit records for the cross-family guard (07 §T3, M6.T01):
+/// the distiller's declared identity, plus the endpoint and seed the call was made with. The
+/// endpoint and seed are not derivable from the [`Summarizer`](aionforge_domain::contracts::Summarizer)
+/// seam, so the distiller supplies them from its configuration; the API key never appears here.
+pub(crate) struct DistillProvenance<'a> {
+    /// The distiller's declared identity (model family/version, rule version).
+    pub identity: &'a SummarizerIdentity,
+    /// The configured completion endpoint (the base URL — not a secret).
+    pub endpoint: Option<&'a str>,
+    /// The pinned sampling seed the completion was requested with.
+    pub seed: Option<i64>,
+}
+
+/// The `distill` audit event recording one off-cursor distillation call (M3.T08). Unlike the
+/// cursor `summarize` audit, its id is keyed on the cluster's full source-fact set (like the
+/// distilled note's id) **and the outcome**, so a replay of the same cluster-state dedups to a
+/// no-op while a genuinely different outcome (the model recovered and a previously declined
+/// cluster now writes) records its own call rather than overwriting the old verdict.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn distill_audit(
+    actor_id: &Id,
+    cluster: &SummarizationCluster,
+    provenance: &DistillProvenance<'_>,
+    outcome: &str,
+    retention: Option<&RetentionOutcome>,
+    note_id: Option<&Id>,
+    namespace: &Namespace,
+    now: &Timestamp,
+) -> AuditEvent {
+    let mut fact_ids: Vec<&str> = cluster
+        .facts
+        .iter()
+        .map(|f| f.identity.id.as_str())
+        .collect();
+    fact_ids.sort_unstable();
+    let facts_key = fact_ids.join(",");
+    let id = audit_id(
+        "distill",
+        namespace,
+        &[
+            cluster.subject_id.as_str(),
+            &facts_key,
+            &provenance.identity.rule_version,
+            outcome,
+        ],
+    );
+    AuditEvent {
+        identity: Identity {
+            id,
+            ingested_at: now.clone(),
+            namespace: namespace.clone(),
+            expired_at: None,
+        },
+        kind: AuditKind::Distill,
+        subject_id: cluster.subject_id.clone(),
+        actor_id: actor_id.clone(),
+        payload: json!({
+            "outcome": outcome,
+            "model_family": provenance.identity.model_family,
+            "model_version": provenance.identity.model_version,
+            "rule_version": provenance.identity.rule_version,
+            "endpoint": provenance.endpoint,
+            "seed": provenance.seed,
+            "source_fact_count": cluster.facts.len(),
+            "entity_count": cluster.entity_names.len(),
+            "entity_retention": retention.map(|r| r.entity_retention),
+            "mean_confidence": retention.map(|r| r.mean_confidence),
+            "note_id": note_id.map(Id::as_str),
+        }),
+        signature: String::new(),
+        occurred_at: now.clone(),
+    }
+}
+
 /// The `summarize` audit event recording one cluster's outcome (written or skipped). Its id
 /// is keyed on the episode and the cluster's subject, so a replay reproduces it exactly.
 pub(crate) fn summarize_audit(

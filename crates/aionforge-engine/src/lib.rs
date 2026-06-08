@@ -15,10 +15,11 @@
 use std::sync::Arc;
 
 use aionforge_capture::Capturer;
-use aionforge_consolidate::{Consolidator, FactExtractionPass, SkillInductionPass};
+use aionforge_consolidate::{Consolidator, Distiller, FactExtractionPass, SkillInductionPass};
 use aionforge_domain::contracts::{
     Capture, Embedder, FactExtractor, Retriever, SkillInducer, Summarizer,
 };
+use aionforge_domain::namespace::Namespace;
 use aionforge_domain::time::Timestamp;
 use aionforge_retrieval::HybridRetriever;
 use aionforge_security::{CaptureFilter, SecurityError};
@@ -27,9 +28,10 @@ pub use aionforge_capture::{
     CaptureConfig, CaptureReceipt, CaptureRequest, CaptureVerdict, EmbeddingOutcome, WriterContext,
 };
 pub use aionforge_consolidate::{
-    ConsolidationConfig, ConsolidationHandle, ConsolidationLag, DetectionConfig, InductionConfig,
-    ObjectRule, PassConfig, PredicateRule, ResolutionConfig, Rule, RuleExtractor, RuleInducer,
-    RuleSummarizer, SummarizationConfig,
+    ConsolidationConfig, ConsolidationHandle, ConsolidationLag, DISTILL_RULE_VERSION,
+    DetectionConfig, DistillError, DistillationConfig, DistillationReport, InductionConfig,
+    LLMSummarizer, ObjectRule, PassConfig, PredicateRule, ResolutionConfig, Rule, RuleExtractor,
+    RuleInducer, RuleSummarizer, SummarizationConfig,
 };
 pub use aionforge_retrieval::{
     EpisodeEntry, FactEntry, QueryClass, RecallBundle, RecallExplanation, RecallOptions,
@@ -197,6 +199,41 @@ impl<E: Embedder + 'static> Memory<E> {
         consolidator.register(Box::new(induction));
         consolidator.start()
     }
+
+    /// Run the optional, off-by-default LLM distiller over one namespace's current support facts,
+    /// **off the consolidation cursor** (M3.T08, 04 §*Canonical vs. distilled*).
+    ///
+    /// This is the on-demand entry point for distillation — call it at session end, on a timer, or
+    /// from a tool. It is independent of [`start_consolidation`](Self::start_consolidation): the
+    /// scheduler keeps writing the canonical, byte-deterministic rule summaries inside the cursor
+    /// flip, while this condenses the same subjects with the injected model-backed
+    /// [`Summarizer`] (an [`LLMSummarizer`] over the chat client) into non-canonical
+    /// `DERIVED_FROM`-linked notes that sit alongside canonical recall and never enter the
+    /// current-fact path. The summarizer is injected rather than constructed here, so the facade
+    /// stays off the chat-client crate and a caller chooses (and gates) the model.
+    ///
+    /// A no-op (empty report) unless `config.enabled` is set. A slow or unavailable model degrades
+    /// to the canonical tier — each such call is recorded and writes no note — so distillation can
+    /// never stall or corrupt the cursor. `now` is supplied by the caller; the facade keeps no
+    /// ambient clock, so distilled-note transaction time is deterministic.
+    ///
+    /// # Errors
+    /// Returns [`EngineError::Distillation`] if a store read, the note-body embedding, or the
+    /// final write fails. A model that is unavailable or returns nothing usable is not an error.
+    pub async fn distill<Sz>(
+        &self,
+        summarizer: Sz,
+        namespace: &Namespace,
+        config: DistillationConfig,
+        now: &Timestamp,
+    ) -> Result<DistillationReport, EngineError>
+    where
+        Sz: Summarizer,
+    {
+        let distiller = Distiller::new(summarizer, Arc::clone(&self.embedder), config);
+        let report = distiller.distill(&self.store, namespace, now).await?;
+        Ok(report)
+    }
 }
 
 /// An error from the memory facade.
@@ -214,6 +251,10 @@ pub enum EngineError {
     /// The retrieval path failed.
     #[error("retrieval failed")]
     Retrieval(#[from] aionforge_retrieval::RetrievalError),
+
+    /// The optional off-cursor LLM distiller failed (a store read, embedding, or the write).
+    #[error("distillation failed")]
+    Distillation(#[from] DistillError),
 
     /// The default capture privacy filter could not be built.
     #[error("could not initialize the capture filter: {0}")]
