@@ -160,7 +160,12 @@ pub(crate) fn check_detail_retention(
 /// letting a lossy summary through, so the test must respect word boundaries. Internal content
 /// of a multi-word `needle` (`"new york"`) is matched literally; only the two outer edges are
 /// checked, so multi-word names work without tokenizing.
-fn contains_word(haystack: &str, needle: &str) -> bool {
+///
+/// Shared with the LLM distiller ([`crate::llm_summarizer`]), which derives a note's keywords as
+/// the entity names actually present in the generated prose — by the same whole-word rule, so the
+/// keywords it adds are a subset of what the guard already finds in the content and cannot inflate
+/// retention past an honest reading of the summary.
+pub(crate) fn contains_word(haystack: &str, needle: &str) -> bool {
     if needle.is_empty() {
         return false;
     }
