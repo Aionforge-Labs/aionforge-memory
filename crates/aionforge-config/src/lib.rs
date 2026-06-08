@@ -49,7 +49,7 @@ mod error;
 mod load;
 
 pub use config::{
-    Config, EmbedderConfig, PersistenceConfig, RetrievalConfig, SecurityConfig,
+    CompleterConfig, Config, EmbedderConfig, PersistenceConfig, RetrievalConfig, SecurityConfig,
     endpoint_transport_is_allowed,
 };
 pub use error::ConfigError;

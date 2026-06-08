@@ -4542,6 +4542,7 @@ Used by:
 - selene-persist v1.1.0 — https://github.com/jscott3201/selene-db
 - aionforge v0.1.0 — https://github.com/Aionforge-Labs/aionforge-memory
 - aionforge-capture v0.1.0 — https://github.com/Aionforge-Labs/aionforge-memory
+- aionforge-chat v0.1.0 — https://github.com/Aionforge-Labs/aionforge-memory
 - aionforge-cli v0.1.0 — https://github.com/Aionforge-Labs/aionforge-memory
 - aionforge-config v0.1.0 — https://github.com/Aionforge-Labs/aionforge-memory
 - aionforge-consolidate v0.1.0 — https://github.com/Aionforge-Labs/aionforge-memory

@@ -45,6 +45,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "aionforge-chat"
+version = "0.1.0"
+dependencies = [
+ "aionforge-config",
+ "aionforge-domain",
+ "miette",
+ "reqwest",
+ "rustls",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "wiremock",
+]
+
+[[package]]
 name = "aionforge-cli"
 version = "0.1.0"
 dependencies = [

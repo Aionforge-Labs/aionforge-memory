@@ -24,6 +24,7 @@
 //!   canonical.
 
 pub mod blocks;
+pub mod completion;
 pub mod contracts;
 pub mod edges;
 pub mod embedding;
@@ -36,8 +37,9 @@ pub mod time;
 pub mod value;
 
 pub use blocks::{Identity, Stats};
+pub use completion::{ChatMessage, ChatRole, CompleterModel, Completion, CompletionRequest};
 pub use contracts::{
-    Capture, Consolidator, Embedder, EntitySurface, ExtractedFact, ExtractedObject,
+    Capture, Completer, Consolidator, Embedder, EntitySurface, ExtractedFact, ExtractedObject,
     ExtractorIdentity, FactExtractor, FilterOutcome, Forgetting, Merge, PrivacyFilter,
     ProceduralMemory, Retriever,
 };
