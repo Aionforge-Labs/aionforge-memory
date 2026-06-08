@@ -505,6 +505,7 @@ impl<X, E, S> FactExtractionPass<X, E, S> {
                 continue;
             };
             current.push(CurrentFact {
+                id: fact.identity.id,
                 key: FactKey {
                     subject_id: fact.subject_id,
                     predicate: fact.predicate,

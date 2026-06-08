@@ -303,6 +303,24 @@ fn current_support_with_predicate(store: &Store, predicate: &str) -> Vec<FactSta
     out
 }
 
+/// The objects of the current-support facts (the recall set) for a predicate, sorted so the
+/// result is comparable across runs regardless of node iteration order.
+fn current_support_objects(store: &Store, predicate: &str) -> Vec<ObjectValue> {
+    let members = store
+        .candidate_state_members(CandidateSet::CurrentSupportFacts)
+        .expect("current-support members");
+    let mut out = Vec::new();
+    for node in members {
+        if let Some(fact) = store.fact_by_node_id(node).expect("fact by node")
+            && fact.predicate == predicate
+        {
+            out.push(fact.object);
+        }
+    }
+    out.sort_by_key(|object| format!("{object:?}"));
+    out
+}
+
 /// Reset every episode to `raw` so a re-drain replays consolidation — the crash/re-trigger
 /// path. With content-derived ids and idempotent materialization, a replay writes nothing.
 fn reset_to_raw(store: &Store) {
@@ -497,21 +515,24 @@ async fn a_high_trust_contradiction_quarantines_the_new_fact() {
 
     drain(&consolidator).await;
 
-    // The incumbent "up" fact is untouched; the new "down" fact is quarantined.
+    // Both facts are high-trust (0.9), so the quarantine victim is settled by the object-order
+    // tiebreak: 'down' sorts before 'up', so 'down' is the victim — here that is the new fact,
+    // but by the symmetric rule, not by virtue of arriving second. The "up" survivor stays
+    // active; the "down" victim is quarantined.
     assert_eq!(
         facts_with_status(&store, "status", "active"),
         1,
-        "the high-trust incumbent stays active"
+        "the surviving 'up' fact stays active"
     );
     assert_eq!(
         facts_with_status(&store, "status", "quarantined"),
         1,
-        "the contradicting new fact is held for review"
+        "the 'down' victim is held for review"
     );
     assert_eq!(
         total_fact_edges(&store, "CONTRADICTS"),
         1,
-        "one CONTRADICTS edge from the new fact to the incumbent"
+        "one CONTRADICTS edge from the victim to the survivor"
     );
 
     // The contradiction is not a supersession: nothing is retired.
@@ -636,15 +657,17 @@ async fn replaying_an_episode_re_applies_no_detection() {
 }
 
 #[tokio::test]
-async fn a_low_trust_contradiction_is_recorded_without_quarantine() {
+async fn a_symmetric_low_trust_contradiction_keeps_both_active_but_recall_picks_one() {
     let store = store();
     let namespace = Namespace::Agent("ops".to_string());
     let (extractor, pass_config) = status_extractor_and_config();
 
-    // The incumbent is LOW trust (0.5, below the 0.7 threshold): the contradiction is still
-    // recorded, but the new fact is not quarantined — it stands on equal footing.
+    // Both sides are LOW trust (0.5, below the 0.7 bar): the contradiction is recorded and
+    // neither is quarantined (status stays active for both). But recall still resolves to one
+    // value — the CONTRADICTS source (the victim, chosen symmetrically by the smaller object
+    // order) is excluded from current_support by edge presence, regardless of status.
     insert_raw_episode_trust(&store, "Server status up.", &namespace, 0, 0.5);
-    insert_raw_episode(&store, "Server status down.", &namespace, 5);
+    insert_raw_episode_trust(&store, "Server status down.", &namespace, 5, 0.5);
 
     let mut consolidator = Consolidator::new(Arc::clone(&store), ConsolidationConfig::default());
     consolidator.register(Box::new(FactExtractionPass::new(
@@ -656,7 +679,7 @@ async fn a_low_trust_contradiction_is_recorded_without_quarantine() {
 
     drain(&consolidator).await;
 
-    // Both facts stay active; the contradiction is recorded; nothing is quarantined.
+    // Both facts stay active by status, and nothing is quarantined.
     assert_eq!(
         facts_with_status(&store, "status", "active"),
         2,
@@ -665,7 +688,7 @@ async fn a_low_trust_contradiction_is_recorded_without_quarantine() {
     assert_eq!(
         facts_with_status(&store, "status", "quarantined"),
         0,
-        "a low-trust incumbent does not quarantine the new fact"
+        "below the trust bar, neither side is quarantined"
     );
     assert_eq!(
         total_fact_edges(&store, "CONTRADICTS"),
@@ -676,6 +699,89 @@ async fn a_low_trust_contradiction_is_recorded_without_quarantine() {
         audit_count(&store, "quarantine"),
         0,
         "no quarantine, so no reconcile signal"
+    );
+    // The recall set is exactly one fact: the contradiction's victim is excluded from
+    // current_support even though its status is active — the observable point of the
+    // symmetric-victim rule that the status-only assertions miss.
+    let current = current_support_with_predicate(&store, "status");
+    assert_eq!(
+        current,
+        vec![FactStatus::Active],
+        "recall resolves the contradiction to a single value: {current:?}"
+    );
+}
+
+/// Consolidate an up/down `status` contradiction with the given per-side trust in a chosen
+/// arrival order, and return the recall set (current-support objects) for `status`.
+async fn recall_after_status_contradiction(
+    up_trust: f64,
+    down_trust: f64,
+    up_first: bool,
+) -> Vec<ObjectValue> {
+    let store = store();
+    let namespace = Namespace::Agent("ops".to_string());
+    let (extractor, pass_config) = status_extractor_and_config();
+
+    let (first, first_trust, second, second_trust) = if up_first {
+        (
+            "Server status up.",
+            up_trust,
+            "Server status down.",
+            down_trust,
+        )
+    } else {
+        (
+            "Server status down.",
+            down_trust,
+            "Server status up.",
+            up_trust,
+        )
+    };
+    insert_raw_episode_trust(&store, first, &namespace, 0, first_trust);
+    insert_raw_episode_trust(&store, second, &namespace, 5, second_trust);
+
+    let mut consolidator = Consolidator::new(Arc::clone(&store), ConsolidationConfig::default());
+    consolidator.register(Box::new(FactExtractionPass::new(
+        Arc::new(extractor),
+        Arc::new(AxisEmbedder::new()),
+        Arc::new(RuleSummarizer::with_default_rules()),
+        pass_config,
+    )));
+    drain(&consolidator).await;
+    current_support_objects(&store, "status")
+}
+
+#[tokio::test]
+async fn a_contradiction_converges_to_the_same_recall_in_either_arrival_order() {
+    let up = ObjectValue::Text("up".to_string());
+
+    // Asymmetric trust: the lower-trust 'down' is the victim, so 'up' survives recall — in BOTH
+    // arrival orders. This is the convergence the arrival-fragile incumbent-keyed rule lacked
+    // (it left recall depending on which side was consolidated first).
+    let asym_up_first = recall_after_status_contradiction(0.9, 0.5, true).await;
+    let asym_down_first = recall_after_status_contradiction(0.9, 0.5, false).await;
+    assert_eq!(
+        asym_up_first,
+        vec![up.clone()],
+        "the higher-trust 'up' survives"
+    );
+    assert_eq!(
+        asym_up_first, asym_down_first,
+        "recall is identical regardless of arrival order"
+    );
+
+    // Symmetric (both-low) trust: the victim is the smaller object order ('down'), so 'up'
+    // survives — again identical across orders.
+    let sym_up_first = recall_after_status_contradiction(0.5, 0.5, true).await;
+    let sym_down_first = recall_after_status_contradiction(0.5, 0.5, false).await;
+    assert_eq!(
+        sym_up_first,
+        vec![up],
+        "the larger-object-order 'up' survives the tie"
+    );
+    assert_eq!(
+        sym_up_first, sym_down_first,
+        "recall is identical regardless of arrival order"
     );
 }
 

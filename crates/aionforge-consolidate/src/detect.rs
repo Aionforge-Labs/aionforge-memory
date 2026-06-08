@@ -21,20 +21,22 @@
 
 use std::collections::BTreeMap;
 
-use aionforge_domain::blocks::Identity;
 use aionforge_domain::ids::Id;
 use aionforge_domain::namespace::Namespace;
-use aionforge_domain::nodes::forensic::{AuditEvent, AuditKind};
+use aionforge_domain::nodes::forensic::AuditEvent;
 use aionforge_domain::nodes::semantic::Fact;
 use aionforge_domain::time::Timestamp;
 use aionforge_domain::value::ObjectValue;
 use aionforge_store::{Contradiction, FactKey, MaterializedFact, Supersession};
-use serde_json::json;
 
 use crate::config::DetectionConfig;
+use crate::merge::{new_is_contradiction_victim, new_wins_functional_slot, object_order_key};
 
 /// A committed current fact (no live supersession/contradiction), projected for detection.
 pub(crate) struct CurrentFact {
+    /// The fact's node id — needed to name it as the quarantine victim when a contradiction
+    /// resolves against it (the victim can be the incumbent, not only the new fact).
+    pub id: Id,
     /// The fact's identifying triple.
     pub key: FactKey,
     /// The fact's event-time `valid_from` (its `ABOUT` window open instant).
@@ -101,7 +103,12 @@ pub(crate) fn detect(
                 // doc): the winner is a pure function of the two assertions, so the same
                 // object ends up current under any consolidation order. The loser is
                 // superseded by the winner — retained in history, never dropped.
-                if new_wins_functional_slot(&new_key, captured_at, incumbent) {
+                if new_wins_functional_slot(
+                    &new_key.object,
+                    captured_at,
+                    &incumbent.key.object,
+                    &incumbent.valid_from,
+                ) {
                     // The new assertion wins (strictly later, or the tie-winning object):
                     // it retires the incumbent. Its window closes at the new event time,
                     // which is >= the incumbent's here, so the closed window stays ordered.
@@ -127,19 +134,56 @@ pub(crate) fn detect(
                     });
                 }
             } else if mutually_exclusive(&rule, &incumbent.key.object, &new_key.object) {
-                let quarantine = incumbent.trust >= cfg.high_trust_threshold;
+                // The contradiction's victim — the `CONTRADICTS` source, which the
+                // `current_support_facts` provider excludes from recall by edge presence
+                // (store providers.rs, `exclude_outgoing(CONTRADICTS)`), regardless of the
+                // quarantine status — is the LOWER-TRUST side, ties settled by the smaller
+                // object order. A pure function of the unordered pair {(trust, object)}, never
+                // of which side is incumbent vs new, so the same contradiction excludes the
+                // same value under any consolidation order (06 §2). The survivor stays current;
+                // the victim is retained (node, edge, and — when quarantined — an audit signal).
+                let new_trust = materialized.fact.stats.trust;
+                let new_is_victim = new_is_contradiction_victim(
+                    &new_key.object,
+                    new_trust,
+                    &incumbent.key.object,
+                    incumbent.trust,
+                );
+                // Quarantine — actively flag the victim for review — only when the pair carries
+                // real weight: either side at or above the high-trust bar. Symmetric in the
+                // pair, not keyed on whichever side happened to be the incumbent.
+                let quarantine = new_trust.max(incumbent.trust) >= cfg.high_trust_threshold;
+                let (source_fact, target_fact) = if new_is_victim {
+                    (new_key.clone(), incumbent.key.clone())
+                } else {
+                    (incumbent.key.clone(), new_key.clone())
+                };
                 out.contradictions.push(Contradiction {
-                    source_fact: new_key.clone(),
-                    target_fact: incumbent.key.clone(),
+                    source_fact,
+                    target_fact,
                     detected_by: "detection-v1".to_string(),
                     quarantine_source: quarantine,
                     detected_at: captured_at.clone(),
                 });
                 if quarantine {
-                    out.audits.push(quarantine_audit(
+                    let (victim_id, victim_object, victim_trust) = if new_is_victim {
+                        (materialized.fact.identity.id, &new_key.object, new_trust)
+                    } else {
+                        (incumbent.id, &incumbent.key.object, incumbent.trust)
+                    };
+                    let (survivor_object, survivor_trust) = if new_is_victim {
+                        (&incumbent.key.object, incumbent.trust)
+                    } else {
+                        (&new_key.object, new_trust)
+                    };
+                    out.audits.push(crate::audit::quarantine_audit(
                         namespace,
-                        &materialized.fact,
-                        incumbent,
+                        &new_key.predicate,
+                        &victim_id,
+                        victim_object,
+                        victim_trust,
+                        survivor_object,
+                        survivor_trust,
                         now,
                         actor_id,
                     ));
@@ -257,94 +301,12 @@ fn fact_key(fact: &Fact) -> FactKey {
     }
 }
 
-/// Whether the new assertion wins the single functional slot over `incumbent` under the K1
-/// order: the later event time wins, and an exact `valid_from` tie is settled by the smaller
-/// [`object_order_key`]. Pure and total over the two (always distinct) functional objects,
-/// so exactly one side wins regardless of which was committed first.
-fn new_wins_functional_slot(
-    new_key: &FactKey,
-    new_valid_from: &Timestamp,
-    incumbent: &CurrentFact,
-) -> bool {
-    if *new_valid_from > incumbent.valid_from {
-        true
-    } else if *new_valid_from < incumbent.valid_from {
-        false
-    } else {
-        object_order_key(&new_key.object) < object_order_key(&incumbent.key.object)
-    }
-}
-
-/// A deterministic, injective ordering key over an object value, for the K1 simultaneous-tie
-/// settle. It deliberately avoids the content-hash `Fact.id` (which folds in the source
-/// episode and so is fixed by whichever episode wins the `(subject, predicate, object)`
-/// dedup race — arrival-fragile) and the originating agent (arrival-fragile for the same
-/// reason): the key is a pure function of the value alone, so two distinct objects always
-/// get distinct keys and the functional winner is identical under any consolidation order.
-/// The order is DETERMINISTIC, not semantic — numbers and datetimes sort by their canonical
-/// text, not their magnitude — which is all a tiebreak between two already-distinct objects
-/// needs. Exhaustive and infallible by construction: it never collapses two values to one
-/// key, so the total order cannot silently degenerate (the kind prefix keeps the variants
-/// disjoint; entity ids and the JSON `Debug` fallback stay injective).
-fn object_order_key(object: &ObjectValue) -> String {
-    match object {
-        ObjectValue::Entity(id) => format!("entity:{id}"),
-        ObjectValue::Text(text) => format!("string:{text}"),
-        ObjectValue::Number(number) => format!("number:{:016x}", number.to_bits()),
-        ObjectValue::Bool(value) => format!("bool:{value}"),
-        ObjectValue::DateTime(timestamp) => format!("datetime:{timestamp}"),
-        ObjectValue::Json(value) => format!(
-            "json:{}",
-            serde_json::to_string(value).unwrap_or_else(|_| format!("{value:?}"))
-        ),
-    }
-}
-
-/// The `quarantine` reconcile-signal audit event (the spec's surfaced signal).
-fn quarantine_audit(
-    namespace: &Namespace,
-    new_fact: &Fact,
-    incumbent: &CurrentFact,
-    now: &Timestamp,
-    actor_id: &Id,
-) -> AuditEvent {
-    // Keyed on the contradicting fact (content-derived, namespace-scoped id) AND the incumbent
-    // it contradicts: one new fact can contradict several incumbents in a single episode, so
-    // the incumbent object keeps each reconcile signal distinct, while a replay still reproduces
-    // every id exactly and the dedup-aware write makes the whole set a no-op (04 §3).
-    let incumbent_object = serde_json::to_string(&incumbent.key.object).unwrap_or_default();
-    let new_fact_id_str = new_fact.identity.id.to_string();
-    AuditEvent {
-        identity: Identity {
-            id: crate::audit::audit_id(
-                "quarantine",
-                namespace,
-                &[new_fact_id_str.as_str(), &incumbent_object],
-            ),
-            ingested_at: now.clone(),
-            namespace: namespace.clone(),
-            expired_at: None,
-        },
-        kind: AuditKind::Quarantine,
-        subject_id: new_fact.identity.id,
-        actor_id: *actor_id,
-        payload: json!({
-            "predicate": new_fact.predicate,
-            "new_object": new_fact.object,
-            "incumbent_object": incumbent.key.object,
-            "incumbent_trust": incumbent.trust,
-            "reason": "new fact contradicts a high-trust current fact",
-        }),
-        signature: String::new(),
-        occurred_at: now.clone(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aionforge_domain::blocks::Stats;
+    use aionforge_domain::blocks::{Identity, Stats};
     use aionforge_domain::edges::About;
+    use aionforge_domain::nodes::forensic::AuditKind;
     use aionforge_domain::nodes::semantic::FactStatus;
     use aionforge_domain::time::BiTemporal;
 
@@ -394,6 +356,7 @@ mod tests {
         trust: f64,
     ) -> CurrentFact {
         CurrentFact {
+            id: Id::generate(),
             key: FactKey {
                 subject_id: *subject,
                 predicate: predicate.to_string(),
@@ -443,6 +406,19 @@ mod tests {
 
     fn mfact(subject: &Id, predicate: &str, object: ObjectValue) -> MaterializedFact {
         mfact_with_id(Id::generate(), subject, predicate, object)
+    }
+
+    /// A new materialized fact with an explicit writer trust (drives the contradiction
+    /// quarantine decision).
+    fn mfact_trust(
+        subject: &Id,
+        predicate: &str,
+        object: ObjectValue,
+        trust: f64,
+    ) -> MaterializedFact {
+        let mut materialized = mfact(subject, predicate, object);
+        materialized.fact.stats.trust = trust;
+        materialized
     }
 
     fn text(value: &str) -> ObjectValue {
@@ -519,7 +495,15 @@ mod tests {
         assert_eq!(out.contradictions.len(), 1, "one contradiction");
         assert!(
             out.contradictions[0].quarantine_source,
-            "a high-trust incumbent quarantines the new fact"
+            "a high-trust pair quarantines the victim"
+        );
+        // The victim (the quarantined CONTRADICTS source) is the smaller object order on a
+        // trust tie: object_order_key(false) < object_order_key(true), so `false` is the
+        // victim — here that is the new fact, but by the symmetric rule, not by being new.
+        assert_eq!(
+            out.contradictions[0].source_fact.object,
+            ObjectValue::Bool(false),
+            "the smaller-object-order side is the victim"
         );
         assert_eq!(
             out.audits.len(),
@@ -530,20 +514,101 @@ mod tests {
     }
 
     #[test]
-    fn a_low_trust_incumbent_records_the_contradiction_without_quarantine() {
+    fn a_symmetric_low_trust_contradiction_records_without_quarantine() {
+        // Both sides below the high-trust bar: the contradiction is still recorded, the victim
+        // is still chosen symmetrically (smaller object order), but neither side is quarantined
+        // — max trust does not clear the threshold.
         let cfg = DetectionConfig::with_default_rules();
         let subject = Id::generate();
         let cur = vec![current(&subject, "is_up", ObjectValue::Bool(true), 0.5)];
-        let new = vec![mfact(&subject, "is_up", ObjectValue::Bool(false))];
+        let new = vec![mfact_trust(
+            &subject,
+            "is_up",
+            ObjectValue::Bool(false),
+            0.5,
+        )];
 
         let out = run(&cur, &new, &cfg);
 
         assert_eq!(out.contradictions.len(), 1, "still recorded");
         assert!(
             !out.contradictions[0].quarantine_source,
-            "below the trust threshold the new fact is not quarantined"
+            "below the trust threshold neither side is quarantined"
+        );
+        assert_eq!(
+            out.contradictions[0].source_fact.object,
+            ObjectValue::Bool(false),
+            "the victim is still the smaller object order, deterministically"
         );
         assert!(out.audits.is_empty(), "no quarantine, no reconcile signal");
+    }
+
+    #[test]
+    fn the_lower_trust_side_is_the_victim_in_either_arrival_order() {
+        // up@0.5 vs down@0.9, mutually exclusive. The lower-trust side is the victim (the
+        // quarantined CONTRADICTS source) regardless of which side is the incumbent — including
+        // the direction the old incumbent-keyed rule could never produce: a higher-trust
+        // newcomer quarantining the lower-trust incumbent, with the audit naming the incumbent.
+        let cfg = DetectionConfig::with_default_rules();
+        let subject = Id::generate();
+
+        // The low-trust `true` is the incumbent; the high-trust `false` arrives and wins.
+        let incumbent = current(&subject, "is_up", ObjectValue::Bool(true), 0.5);
+        let incumbent_id = incumbent.id;
+        let a = detect(
+            &[incumbent],
+            &[mfact_trust(
+                &subject,
+                "is_up",
+                ObjectValue::Bool(false),
+                0.9,
+            )],
+            &cfg,
+            &ns(),
+            &t2(),
+            &t2(),
+            &Id::generate(),
+        );
+        assert_eq!(a.contradictions.len(), 1);
+        assert_eq!(
+            a.contradictions[0].source_fact.object,
+            ObjectValue::Bool(true),
+            "the lower-trust incumbent is the victim/source"
+        );
+        assert_eq!(
+            a.contradictions[0].target_fact.object,
+            ObjectValue::Bool(false),
+            "the higher-trust newcomer survives as the target"
+        );
+        assert!(
+            a.contradictions[0].quarantine_source,
+            "max trust 0.9 clears the bar"
+        );
+        assert_eq!(
+            a.audits[0].subject_id, incumbent_id,
+            "the audit names the quarantined incumbent, not the new fact"
+        );
+
+        // Mirror arrival order: the high-trust `false` is the incumbent, the low-trust `true`
+        // arrives. The same low-trust `true` is the victim, so the contradiction converges.
+        let b = detect(
+            &[current(&subject, "is_up", ObjectValue::Bool(false), 0.9)],
+            &[mfact_trust(&subject, "is_up", ObjectValue::Bool(true), 0.5)],
+            &cfg,
+            &ns(),
+            &t2(),
+            &t2(),
+            &Id::generate(),
+        );
+        assert_eq!(
+            b.contradictions[0].source_fact.object,
+            ObjectValue::Bool(true),
+            "the same low-trust side is the victim in the reverse order"
+        );
+        assert_eq!(
+            a.contradictions[0].source_fact.object, b.contradictions[0].source_fact.object,
+            "the victim is identical in both arrival orders — the contradiction converges"
+        );
     }
 
     #[test]
@@ -574,6 +639,20 @@ mod tests {
             reverse.contradictions.len(),
             1,
             "down vs up contradicts too"
+        );
+
+        // The victim is identical regardless of which side arrived first: equal trust, so the
+        // smaller object order ('down' < 'up') is the victim in BOTH orders. This is the
+        // arrival-order-symmetry the old incumbent-keyed rule lacked.
+        assert_eq!(
+            forward.contradictions[0].source_fact.object,
+            text("down"),
+            "'down' is the victim when 'up' is the incumbent"
+        );
+        assert_eq!(
+            reverse.contradictions[0].source_fact.object,
+            text("down"),
+            "'down' is still the victim when 'down' is the incumbent"
         );
     }
 
@@ -657,6 +736,7 @@ mod tests {
         let cfg = DetectionConfig::with_default_rules();
         let subject = Id::generate();
         let cur = vec![CurrentFact {
+            id: Id::generate(),
             key: FactKey {
                 subject_id: subject,
                 predicate: "based_in".to_string(),
