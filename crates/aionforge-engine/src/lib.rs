@@ -18,7 +18,6 @@ use aionforge_capture::Capturer;
 use aionforge_consolidate::{
     Consolidator, Distiller, FactExtractionPass, LinkEvolvePass, SkillInductionPass,
 };
-use aionforge_domain::authz::{Authorizer, DefaultAuthorizer};
 use aionforge_domain::contracts::{
     Capture, Embedder, FactExtractor, LinkEvolver, Retriever, SkillInducer, Summarizer,
 };
@@ -37,6 +36,9 @@ pub use aionforge_consolidate::{
     LinkEvolveReport, ObjectRule, PassConfig, PredicateRule, RELATIONSHIP_VOCABULARY,
     RULE_LINK_EVOLVE_VERSION, ResolutionConfig, Rule, RuleExtractor, RuleInducer, RuleLinkEvolver,
     RuleSummarizer, SummarizationConfig,
+};
+pub use aionforge_domain::authz::{
+    AuthorizationError, Authorizer, DefaultAuthorizer, DenyReason, Principal, VisibleSet,
 };
 pub use aionforge_retrieval::{
     EpisodeEntry, FactEntry, QueryClass, RecallBundle, RecallExplanation, RecallOptions,

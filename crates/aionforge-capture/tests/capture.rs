@@ -182,6 +182,15 @@ fn namespace_denied_audit_count(store: &Store) -> usize {
     }
 }
 
+/// A scalar field of the single `namespace_denied` audit (the payload round-trip itself is asserted
+/// at L0 in the store's `commit_audit` test).
+fn namespace_denied_audit_field(store: &Store, field: &str) -> Option<String> {
+    // `field` is a trusted static identifier from the test; the kind literal is a constant.
+    let source =
+        format!("MATCH (a:AuditEvent) WHERE a.kind = 'namespace_denied' RETURN a.{field} AS v"); // gql-ident-ok
+    first_string(store, BoundQuery::new(source))
+}
+
 fn episode_field(store: &Store, id: &Id, field: &str) -> Option<String> {
     // `field` is a trusted static identifier from the test; the id value is bound.
     let source = format!("MATCH (e:Episode) WHERE e.id = $id RETURN e.{field} AS v"); // gql-ident-ok
@@ -492,7 +501,8 @@ async fn a_trusted_write_to_a_non_member_team_is_refused_and_audited() {
         matches!(err, aionforge_capture::CaptureError::Unauthorized(_)),
         "the write is refused as unauthorized, got {err:?}"
     );
-    // No episode landed, and the attempt was recorded as a namespace_denied audit.
+    // No episode landed, and the attempt was recorded as a namespace_denied audit whose subject is
+    // the agent and which lives in the system namespace (the payload is asserted at L0).
     assert_eq!(
         episode_count(&store),
         0,
@@ -503,31 +513,84 @@ async fn a_trusted_write_to_a_non_member_team_is_refused_and_audited() {
         1,
         "the cross-namespace attempt is audited"
     );
+    assert_eq!(
+        namespace_denied_audit_field(&store, "subject_id").as_deref(),
+        Some(agent.as_str()),
+        "the rejected agent is the audit subject"
+    );
+    assert_eq!(
+        namespace_denied_audit_field(&store, "namespace").as_deref(),
+        Some("system"),
+        "the audit lives in the system namespace"
+    );
 }
 
 #[tokio::test]
-async fn a_trusted_write_to_global_is_refused() {
+async fn a_trusted_write_to_global_or_system_is_refused_and_audited() {
+    for target in [Namespace::Global, Namespace::System] {
+        let store = store();
+        let agent = Id::generate();
+        let cap = capturer(
+            store.clone(),
+            FakeEmbedder::new(&[]),
+            CaptureConfig::default(),
+        );
+
+        let mut req = request("privileged content", &agent);
+        req.trusted = true;
+        req.namespace = Some(target.clone());
+
+        let err = cap
+            .capture(req)
+            .await
+            .expect_err("global/system are never directly writable");
+        assert!(
+            matches!(err, aionforge_capture::CaptureError::Unauthorized(_)),
+            "refused for {target}"
+        );
+        assert_eq!(episode_count(&store), 0);
+        assert_eq!(
+            namespace_denied_audit_count(&store),
+            1,
+            "the {target} attempt is audited"
+        );
+    }
+}
+
+#[tokio::test]
+async fn authorization_is_checked_before_content_dedup() {
     let store = store();
-    let agent = Id::generate();
+    let alice = Id::generate();
+    let bob = Id::generate();
     let cap = capturer(
         store.clone(),
         FakeEmbedder::new(&[]),
         CaptureConfig::default(),
     );
 
-    let mut req = request("global content", &agent);
-    req.trusted = true;
-    req.namespace = Some(Namespace::Global);
-
-    let err = cap
-        .capture(req)
+    // Alice captures content into her own private namespace.
+    cap.capture(request("shared phrasing", &alice))
         .await
-        .expect_err("global is never directly writable");
+        .expect("alice's write");
+    assert_eq!(episode_count(&store), 1);
+
+    // Bob makes a trusted write of the SAME content to a team he is not in. Even though the content
+    // already exists (the exact-dedup probe would short-circuit a permitted write), authorization
+    // runs first, so the write is refused and audited — the dedup path is never reached.
+    let mut req = request("shared phrasing", &bob);
+    req.trusted = true;
+    req.namespace = Some(Namespace::Team("squad".to_string()));
+    let err = cap.capture(req).await.expect_err("refused before dedup");
     assert!(matches!(
         err,
         aionforge_capture::CaptureError::Unauthorized(_)
     ));
-    assert_eq!(episode_count(&store), 0);
+    assert_eq!(
+        episode_count(&store),
+        1,
+        "no new episode, original untouched"
+    );
+    assert_eq!(namespace_denied_audit_count(&store), 1);
 }
 
 #[tokio::test]
