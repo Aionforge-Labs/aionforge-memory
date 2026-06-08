@@ -54,4 +54,4 @@ pub use ids::{ContentHash, Id, SerializationId};
 pub use namespace::Namespace;
 pub use time::{BiTemporal, Timestamp};
 pub use value::{ObjectKind, ObjectValue};
-pub use verify::{SignatureVerifier, VerifyError};
+pub use verify::{PublicKeyResolver, ResolveError, SignatureVerifier, VerifyError};

@@ -10,6 +10,24 @@
 
 use thiserror::Error;
 
+use crate::ids::Id;
+
+/// Resolves a writer agent's stored base64 public key by agent id.
+///
+/// Implemented by the trust layer over the store, so the domain seam stays free of a
+/// store dependency. Returns `Ok(None)` for an agent that is not registered — the gate
+/// treats an unregistered writer as a failure (fail-closed) when signed writes are on.
+pub trait PublicKeyResolver: Send + Sync {
+    /// The base64 public key registered for `agent_id`, or `None` if no such agent.
+    fn public_key(&self, agent_id: &Id) -> Result<Option<String>, ResolveError>;
+}
+
+/// A backend failure while resolving a public key. The underlying store error is carried
+/// as text so this domain seam need not name the store's error type.
+#[derive(Debug, Error)]
+#[error("public-key resolution failed: {0}")]
+pub struct ResolveError(pub String);
+
 /// Verifies an Ed25519 signature over arbitrary message bytes against a public key.
 ///
 /// The key and signature are the base64 strings stored on the `Agent` (`public_key`)
