@@ -66,20 +66,26 @@ pub struct FactKey {
     pub object: ObjectValue,
 }
 
-/// An instruction to supersede a prior fact with a newer one (04 §2, non-lossy).
+/// An instruction to supersede one fact with another (04 §2, non-lossy).
 ///
-/// Materialization closes the prior fact's `ABOUT` event-time window at `valid_from`,
-/// writes `old -SUPERSEDED_BY-> new`, and mirrors the prior fact's status — all
-/// idempotently (a second apply is a no-op).
+/// Materialization closes the superseded (`old`) fact's `ABOUT` event-time window at
+/// `valid_from`, writes `old -SUPERSEDED_BY-> new`, and mirrors the superseded fact's
+/// status — all idempotently (a second apply is a no-op).
+///
+/// The direction is set by the detector's convergence order, not by which fact is newer in
+/// arrival: either endpoint may be a fact this episode just created or an existing committed
+/// incumbent. The common case retires a committed incumbent with a newer assertion, but a
+/// stale assertion (older event time) arriving after a newer incumbent is itself born
+/// superseded — so `old` is then the just-created fact and `new` the committed incumbent.
 #[derive(Debug, Clone)]
 pub struct Supersession {
-    /// The prior fact being superseded (a committed current fact).
+    /// The fact being superseded — committed or newly created this episode.
     pub old_fact: FactKey,
-    /// The newer fact that supersedes it (asserted this episode).
+    /// The fact that supersedes it — committed or newly created this episode.
     pub new_fact: FactKey,
     /// Why the supersession occurred (recorded on the edge).
     pub reason: String,
-    /// The supersession instant — the prior window closes here.
+    /// The supersession instant — the superseded window closes here.
     pub valid_from: Timestamp,
 }
 
@@ -260,10 +266,12 @@ pub(crate) fn materialize_into(
             &canonical_id,
             &supersession.new_fact,
         )?;
-        // A correctly-built pass always references resolvable facts (the new side from
-        // this txn, the prior side from the committed graph). An unresolved endpoint is a
-        // pass bug; degrade gracefully — drop just this instruction so one bad key can't
-        // wedge the whole pipeline — but name the missing side so the bug is diagnosable.
+        // A correctly-built pass always references resolvable facts; either endpoint may come
+        // from this txn (`fact_nodes`) or the committed graph, depending on the K1 direction
+        // (a stale newcomer is superseded by a committed incumbent), and
+        // `resolve_instruction_fact` tries both. An unresolved endpoint is a pass bug; degrade
+        // gracefully — drop just this instruction so one bad key can't wedge the whole
+        // pipeline — but name the missing side so the bug is diagnosable.
         let (Some(old), Some(new)) = (old, new) else {
             tracing::warn!(
                 reason = %supersession.reason,
