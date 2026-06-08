@@ -27,6 +27,7 @@ use aionforge_domain::nodes::episodic::Episode;
 use aionforge_domain::nodes::forensic::{AuditEvent, AuditKind};
 use aionforge_domain::nodes::procedural::Skill;
 use aionforge_domain::time::Timestamp;
+use aionforge_domain::value::ObjectValue;
 use serde_json::json;
 
 use crate::resolve::Resolution;
@@ -448,6 +449,55 @@ pub(crate) fn summarize_audit(
             "entity_retention": retention.entity_retention,
             "mean_confidence": retention.mean_confidence,
             "rule_version": rule_version,
+        }),
+        signature: String::new(),
+        occurred_at: now.clone(),
+    }
+}
+
+/// The `quarantine` reconcile-signal audit event (the spec's surfaced signal), naming the
+/// quarantined victim and the survivor it contradicts. The victim may be the new fact or the
+/// incumbent, whichever the symmetric victim rule selects.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn quarantine_audit(
+    namespace: &Namespace,
+    predicate: &str,
+    victim_id: &Id,
+    victim_object: &ObjectValue,
+    victim_trust: f64,
+    survivor_object: &ObjectValue,
+    survivor_trust: f64,
+    now: &Timestamp,
+    actor_id: &Id,
+) -> AuditEvent {
+    // Keyed on the quarantined victim (content-derived, namespace-scoped id) AND the survivor
+    // object it contradicts: one fact can be the victim against several survivors in a single
+    // episode, so the survivor object keeps each reconcile signal distinct. The key is a pure
+    // function of the unordered pair (victim id + survivor object), so a replay reproduces the
+    // same id and the dedup-aware write makes the whole set a no-op (04 §3).
+    let survivor_object_str = serde_json::to_string(survivor_object).unwrap_or_default();
+    let victim_id_str = victim_id.to_string();
+    AuditEvent {
+        identity: Identity {
+            id: audit_id(
+                "quarantine",
+                namespace,
+                &[victim_id_str.as_str(), &survivor_object_str],
+            ),
+            ingested_at: now.clone(),
+            namespace: namespace.clone(),
+            expired_at: None,
+        },
+        kind: AuditKind::Quarantine,
+        subject_id: *victim_id,
+        actor_id: *actor_id,
+        payload: json!({
+            "predicate": predicate,
+            "victim_object": victim_object,
+            "victim_trust": victim_trust,
+            "survivor_object": survivor_object,
+            "survivor_trust": survivor_trust,
+            "reason": "the lower-trust side of a contradiction is quarantined for review",
         }),
         signature: String::new(),
         occurred_at: now.clone(),

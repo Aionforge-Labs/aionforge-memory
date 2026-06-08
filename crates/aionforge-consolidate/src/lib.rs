@@ -29,6 +29,7 @@ mod lag;
 mod link_evolution;
 mod llm_link_evolver;
 mod llm_summarizer;
+mod merge;
 mod pass;
 mod prompt;
 mod resolve;
