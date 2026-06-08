@@ -90,6 +90,7 @@ dependencies = [
  "aionforge-store",
  "async-trait",
  "metrics",
+ "proptest",
  "serde_json",
  "thiserror",
  "tokio",
