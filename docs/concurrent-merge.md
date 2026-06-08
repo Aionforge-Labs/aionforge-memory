@@ -91,3 +91,15 @@ deterministic choice, but not a meaningful one. The losing claim isn't lost: it 
 graph, the `CONTRADICTS` edge records the conflict, and a reader looking to reconcile can find
 both. But default recall shows one. Surfacing both equally contested values directly in recall
 would be a larger change to how the current-state set is computed, and is left for later.
+
+## How the guarantees are checked
+
+The two properties this page leans on — that the processing order can't change the outcome, and
+that nothing is silently dropped — are not only argued, they are tested. A property test runs the
+real consolidation pipeline over randomized sets of assertions, replays each set under several
+arrival orders that deliberately disagree with event time, and checks two things every time: the
+recall set is identical across all the orders and equal to the order-independent winner computed
+by hand, and the number of fact nodes left in the graph equals the number of distinct assertions
+made. A superseded loser or a quarantined victim still counts toward that total — it is retired,
+not deleted, so it stays reachable through history. The check covers both the functional path and
+the contradiction path.
