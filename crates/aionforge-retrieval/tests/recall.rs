@@ -178,7 +178,7 @@ fn alice() -> Principal {
 
 /// Alice's own private namespace — where `seed`ed data must land to be visible to `alice()`.
 fn alice_ns() -> Namespace {
-    Namespace::Agent(alice_id().as_str().to_string())
+    Namespace::Agent(alice_id().to_string())
 }
 
 fn retriever(store: Arc<Store>, embedder: FakeEmbedder) -> HybridRetriever<FakeEmbedder> {
@@ -713,7 +713,7 @@ async fn compact_view_is_score_ordered_with_verbose_detail() {
     );
     // Verbose surfaces provenance as attributes on each memory line.
     assert!(
-        compact.contains(&format!("ns=\"agent:{}\"", alice_id().as_str())),
+        compact.contains(&format!("ns=\"agent:{}\"", alice_id())),
         "verbose ns: {compact}"
     );
     assert!(compact.contains("trust=\""), "verbose trust: {compact}");
