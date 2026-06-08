@@ -35,6 +35,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use aionforge_domain::Retriever;
+use aionforge_domain::authz::Principal;
 use aionforge_domain::blocks::{Identity, Stats};
 use aionforge_domain::contracts::Embedder;
 use aionforge_domain::edges::About;
@@ -303,7 +304,7 @@ fn retriever(store: Arc<Store>) -> HybridRetriever<FakeEmbedder> {
 async fn recall(r: &HybridRetriever<FakeEmbedder>, class: QueryClass) -> RecallBundle {
     r.recall(RecallQuery {
         text: QUERY.to_string(),
-        viewer: Namespace::Global,
+        principal: Principal::agent(Id::generate()),
         limit: WINDOW,
         options: RecallOptions {
             mode_override: Some(class),

@@ -11,7 +11,7 @@ use aionforge_domain::namespace::Namespace;
 use aionforge_domain::nodes::episodic::Role;
 use aionforge_domain::time::Timestamp;
 use aionforge_engine::{
-    CaptureRequest, CaptureVerdict, Memory, MemoryConfig, RecallQuery, WriterContext,
+    CaptureRequest, CaptureVerdict, Memory, MemoryConfig, Principal, RecallQuery, WriterContext,
 };
 
 /// A fake embedder that maps every input to one unit vector, so capture and search
@@ -96,8 +96,9 @@ async fn open_capture_then_search_round_trips() {
         .expect("capture");
     assert_eq!(receipt.verdict, CaptureVerdict::New);
 
-    // The viewer must be the writer's private namespace to see the untrusted write.
-    let viewer = Namespace::Agent(agent.as_str().to_string());
+    // The reader is the writer, so its own private namespace is in its visible set and the
+    // untrusted write surfaces.
+    let viewer = Principal::agent(agent.clone());
     let bundle = memory
         .search(RecallQuery::new("graph databases", viewer, 5))
         .await

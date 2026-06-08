@@ -5,7 +5,7 @@ use std::future::Future;
 
 use aionforge::Embedder;
 use aionforge::{
-    CaptureRequest, CaptureVerdict, EmbedderModel, Embedding, Id, Memory, MemoryConfig, Namespace,
+    CaptureRequest, CaptureVerdict, EmbedderModel, Embedding, Id, Memory, MemoryConfig, Principal,
     RecallQuery, Role, Timestamp, WriterContext,
 };
 
@@ -90,7 +90,7 @@ async fn a_host_can_capture_and_search_through_the_library() {
         .expect("capture");
     assert_eq!(receipt.verdict, CaptureVerdict::New);
 
-    let viewer = Namespace::Agent(agent.as_str().to_string());
+    let viewer = Principal::agent(agent.clone());
     let bundle = memory
         .search(RecallQuery::new("ferns", viewer, 5))
         .await

@@ -9,7 +9,7 @@
 //!
 //! ```no_run
 //! use aionforge::{Memory, MemoryConfig, CaptureRequest, RecallQuery, WriterContext};
-//! use aionforge::{Embedder, Namespace, Role, Id, Timestamp};
+//! use aionforge::{Embedder, Principal, Role, Id, Timestamp};
 //!
 //! # async fn run<E: Embedder>(embedder: E) -> Result<(), Box<dyn std::error::Error>> {
 //! let now: Timestamp = "2026-06-06T09:30:00-05:00[America/Chicago]".parse()?;
@@ -36,7 +36,7 @@
 //!     })
 //!     .await?;
 //!
-//! let viewer = Namespace::Agent(agent.as_str().to_string());
+//! let viewer = Principal::agent(agent.clone());
 //! let bundle = memory.search(RecallQuery::new("graph databases", viewer, 5)).await?;
 //! println!("{}", bundle.rendered);
 //! # Ok(())
@@ -44,10 +44,11 @@
 //! ```
 
 pub use aionforge_engine::{
-    CaptureConfig, CaptureReceipt, CaptureRequest, CaptureVerdict, EmbeddingOutcome, EngineError,
-    EpisodeEntry, FactEntry, Memory, MemoryConfig, QueryClass, RecallBundle, RecallExplanation,
-    RecallOptions, RecallQuery, RetrieverConfig, Signal, SignalWeights, Store, StoreConfig,
-    StructuredEntry, TemporalMode, WriterContext,
+    AuthorizationError, Authorizer, CaptureConfig, CaptureReceipt, CaptureRequest, CaptureVerdict,
+    DefaultAuthorizer, DenyReason, EmbeddingOutcome, EngineError, EpisodeEntry, FactEntry, Memory,
+    MemoryConfig, Principal, QueryClass, RecallBundle, RecallExplanation, RecallOptions,
+    RecallQuery, RetrieverConfig, Signal, SignalWeights, Store, StoreConfig, StructuredEntry,
+    TemporalMode, VisibleSet, WriterContext,
 };
 
 pub use aionforge_domain::DomainError;

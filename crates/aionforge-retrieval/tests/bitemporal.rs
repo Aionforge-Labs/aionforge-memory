@@ -11,6 +11,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use aionforge_domain::Retriever;
+use aionforge_domain::authz::Principal;
 use aionforge_domain::blocks::{Identity, Stats};
 use aionforge_domain::contracts::Embedder;
 use aionforge_domain::edges::{About, SupersededBy};
@@ -242,7 +243,7 @@ fn retriever() -> HybridRetriever<FakeEmbedder> {
 async fn recall(r: &HybridRetriever<FakeEmbedder>, mode: TemporalMode) -> RecallBundle {
     r.recall(RecallQuery {
         text: "acme".to_string(),
-        viewer: Namespace::Global,
+        principal: Principal::agent(Id::generate()),
         limit: 10,
         options: RecallOptions {
             temporal: mode,

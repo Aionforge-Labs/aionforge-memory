@@ -19,6 +19,7 @@ mod router;
 mod signals;
 mod temporal;
 
+pub use aionforge_domain::authz::Principal;
 pub use bundle::{
     EpisodeEntry, FactEntry, RecallBundle, RecallExplanation, StageTimings, StructuredEntry, render,
 };
