@@ -1,16 +1,20 @@
-//! The signature-verification seam for Ed25519 provenance (06 §3).
+//! The Ed25519 crypto seams: write-provenance verification (06 §3) and substrate audit
+//! signing (06 §6).
 //!
 //! Writes carry an Ed25519 signature over a canonical [`signing`](crate::signing)
-//! payload. The substrate stores the writer's public key (`Agent.public_key`) and the
-//! signature (`ProvenanceRecord.signature`) and *verifies* — a private key never enters
-//! the process. This module declares the verification seam and its typed error; the
-//! Ed25519 implementation lives in the trust layer (M4), so this crate stays free of a
-//! crypto dependency. The seam is generic over the message bytes, so the same primitive
-//! verifies provenance now and attestation (M4.T04) later.
+//! payload. On the **writer channel** the substrate stores the writer's public key
+//! (`Agent.public_key`) and the signature (`ProvenanceRecord.signature`) and *verifies*
+//! — a writer's private key never enters the process. The one carve-out is the **audit
+//! channel** (06 §6): the substrate is itself the author of the audit events it emits,
+//! so it holds its own audit keypair and signs through [`AuditEventSigner`]. Both seams
+//! are declared here and implemented in the trust layer (M4), so this crate stays free
+//! of a crypto dependency. The verification seam is generic over the message bytes, so
+//! the same primitive verifies provenance, attestation (M4.T04), and audit signatures.
 
 use thiserror::Error;
 
 use crate::ids::Id;
+use crate::nodes::forensic::AuditEvent;
 
 /// Resolves a writer agent's stored base64 public key by agent id.
 ///
@@ -56,4 +60,77 @@ pub enum VerifyError {
     /// The signature did not verify against the key and message.
     #[error("signature does not verify")]
     Invalid,
+}
+
+/// Signs a substrate-authored [`AuditEvent`] over its canonical audit payload (06 §6).
+///
+/// The signing dual of [`SignatureVerifier`], for the one channel where the substrate is an
+/// author rather than a verifier: the audit events it emits about its own operations. The
+/// trait is object-safe so the store's commit functions can take an optional
+/// `&dyn AuditEventSigner` and stamp signatures where the events cross into the store,
+/// without the store naming a crypto crate — the same layering as the verification seam
+/// (declared here, implemented in the trust layer).
+///
+/// The returned string is the base64 Ed25519 signature over
+/// [`signing::audit_payload`](crate::signing::audit_payload). That payload excludes the
+/// `signature` field itself, so the caller signs once every other field is final and stamps
+/// the result onto `AuditEvent::signature` without invalidating the bytes. Implementations
+/// must be deterministic (Ed25519 is, per RFC 8032): a crash-replay that rebuilds the same
+/// event re-signs to identical bytes, so the store's dedup-by-id write stays a true no-op.
+pub trait AuditEventSigner: Send + Sync {
+    /// The base64 signature over `event`'s canonical audit payload.
+    fn sign(&self, event: &AuditEvent) -> String;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AuditEventSigner;
+    use crate::blocks::Identity;
+    use crate::ids::Id;
+    use crate::namespace::Namespace;
+    use crate::nodes::forensic::{AuditEvent, AuditKind};
+    use crate::time::Timestamp;
+
+    /// A stand-in implementation: the seam carries no crypto of its own, so any signer
+    /// shape — here a marker the assertions can recognize — satisfies it.
+    struct StubSigner;
+
+    impl AuditEventSigner for StubSigner {
+        fn sign(&self, event: &AuditEvent) -> String {
+            format!("stub:{:?}", event.kind)
+        }
+    }
+
+    fn event() -> AuditEvent {
+        let at: Timestamp = "2026-06-09T09:00:00-05:00[America/Chicago]"
+            .parse()
+            .expect("valid zoned datetime");
+        AuditEvent {
+            identity: Identity {
+                id: Id::from_content_hash(b"verify-seam-test"),
+                ingested_at: at.clone(),
+                namespace: Namespace::System,
+                expired_at: None,
+            },
+            kind: AuditKind::KeyRotation,
+            subject_id: Id::from_content_hash(b"subject"),
+            actor_id: Id::from_content_hash(b"actor"),
+            payload: serde_json::json!({}),
+            signature: String::new(),
+            occurred_at: at,
+        }
+    }
+
+    /// The seam is object-safe: the store will hold it as a trait object, so a regression
+    /// to a non-object-safe shape (a generic method, a `Self` return) must fail here.
+    #[test]
+    fn the_signer_seam_is_object_safe() {
+        let signer: Box<dyn AuditEventSigner> = Box::new(StubSigner);
+        assert_eq!(signer.sign(&event()), "stub:KeyRotation");
+
+        fn sign_through(signer: &dyn AuditEventSigner, event: &AuditEvent) -> String {
+            signer.sign(event)
+        }
+        assert_eq!(sign_through(signer.as_ref(), &event()), "stub:KeyRotation");
+    }
 }
