@@ -6,11 +6,13 @@
 //! it attributes an invalidated fact to its producing agents, reads an agent's reliability event
 //! log, records a new event idempotently, and refreshes the two caches write-when-changed. It
 //! adds **no** node or edge types and **no** index — `AuditKind::ReliabilityUpdate`, the
-//! `AuditEvent.(kind, subject_id)` indexes, and the `Episode.agent_id` / `DERIVED_FROM` wiring all
-//! already exist.
+//! `AuditEvent.kind` and `AuditEvent.subject_id` scalar indexes, and the `Episode.agent_id` /
+//! `DERIVED_FROM` wiring all already exist. (`reliability_events` probes the `subject_id` index
+//! and filters `kind` in memory — see its doc; this PR registers no composite.)
 //!
-//! Everything here is **off-cursor** — a consolidation pass is read-only ([`crate::pass`]), so
-//! the trust fold runs from the engine facade, never from inside a pass. A split-out `impl Store`.
+//! Everything here is **off-cursor** — a consolidation pass is read-only
+//! ([`crate::consolidation`]), so the trust fold runs from the engine facade, never from inside a
+//! pass. A split-out `impl Store`.
 
 use aionforge_domain::edges::{Audit, DerivedFrom};
 use aionforge_domain::ids::Id;
@@ -186,9 +188,9 @@ impl Store {
 
     /// Refresh a fact's cached `stats.trust` node summary, write-when-changed (06 §5, M4.T05).
     ///
-    /// `Fact.stats.trust` is recomputable derived state (the L2 scorer recomputes it as the `min`
-    /// over the fact's distinct producing agents' reliabilities), so a surgical single-property
-    /// update is safe; an unchanged value is a true no-op. This is what lets the retrieval `Trust`
+    /// `Fact.stats.trust` is recomputable derived state (the L2 scorer derives it from the fact's
+    /// distinct producing agents' reliabilities), so a surgical single-property update is safe; an
+    /// unchanged value is a true no-op. This is what lets the retrieval `Trust`
     /// signal sink a fact whose producer decayed without any query-time agent join.
     ///
     /// # Errors

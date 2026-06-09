@@ -85,8 +85,8 @@ fn enroll(store: &Store, category: &str, score: f64) -> Id {
     id
 }
 
-/// A `ReliabilityUpdate` audit event keyed by `marker`, subject = the agent whose score moved.
-fn reliability_event(agent: Id, marker: &str) -> AuditEvent {
+/// An `AuditEvent` of a given `kind` keyed by `marker`, subject = the agent it concerns.
+fn audit_event(agent: Id, marker: &str, kind: AuditKind) -> AuditEvent {
     AuditEvent {
         identity: Identity {
             id: Id::from_content_hash(marker.as_bytes()),
@@ -94,7 +94,7 @@ fn reliability_event(agent: Id, marker: &str) -> AuditEvent {
             namespace: Namespace::System,
             expired_at: None,
         },
-        kind: AuditKind::ReliabilityUpdate,
+        kind,
         subject_id: agent,
         actor_id: Id::from_content_hash(b"substrate"),
         payload: serde_json::json!({
@@ -103,6 +103,28 @@ fn reliability_event(agent: Id, marker: &str) -> AuditEvent {
         signature: String::new(),
         occurred_at: ts(NOW),
     }
+}
+
+/// A `ReliabilityUpdate` audit event keyed by `marker`, subject = the agent whose score moved.
+fn reliability_event(agent: Id, marker: &str) -> AuditEvent {
+    audit_event(agent, marker, AuditKind::ReliabilityUpdate)
+}
+
+/// Wire a `DERIVED_FROM` edge fact → a non-`Episode` `Fact` target. `DERIVED_FROM` is polymorphic
+/// (catalog.rs has no `FROM`/`TO` clause), so a `Fact` is a valid endpoint that carries no
+/// `agent_id` — exactly the producing-agent skip case.
+fn derive_to_fact(store: &Store, fact_id: &Id, target_fact_id: &Id) {
+    let query = BoundQuery::new(
+        "MATCH (a:Fact {id: $from}), (b:Fact {id: $to}) \
+         INSERT (a)-[:DERIVED_FROM {derived_at: $ts}]->(b)",
+    )
+    .bind_uuid("from", fact_id)
+    .expect("bind from")
+    .bind_uuid("to", target_fact_id)
+    .expect("bind to")
+    .bind("ts", zdt())
+    .expect("bind ts");
+    store.execute(&query).expect("derive edge to fact");
 }
 
 #[test]
@@ -157,6 +179,48 @@ fn a_fact_with_no_derivation_has_no_producers() {
 }
 
 #[test]
+fn producing_agents_skips_a_derivation_target_without_an_agent_id() {
+    let store = store();
+    let subject = entity("graph databases");
+    let f = fact(
+        subject.identity.id,
+        "preferred_by",
+        ObjectValue::Text("the team".to_string()),
+        "the team prefers graph databases",
+    );
+    let fact_node: NodeId = assert_about(&store, &subject, &f, &open_window(FROM));
+
+    // Two real Episode producers carry an agent_id...
+    let ada = Id::generate();
+    let bo = Id::generate();
+    let ep1 = insert_episode(&store, ada, b"skip-ep1");
+    let ep2 = insert_episode(&store, bo, b"skip-ep2");
+    derive(&store, &f.identity.id, &ep1);
+    derive(&store, &f.identity.id, &ep2);
+
+    // ...alongside an outgoing DERIVED_FROM to another Fact, a polymorphic endpoint that has no
+    // agent_id. The skip branch (trust_fold.rs `else { continue }`) is dead in the graph today
+    // (only fact->Episode is Fact-outgoing), so this pins it before a future Fact->X edge.
+    let other = entity("a non-episode source");
+    let g = fact(
+        other.identity.id,
+        "is",
+        ObjectValue::Text("not an episode".to_string()),
+        "a fact used as a non-episode derivation target",
+    );
+    assert_about(&store, &other, &g, &open_window(FROM));
+    derive_to_fact(&store, &f.identity.id, &g.identity.id);
+
+    let mut expected = vec![ada, bo];
+    expected.sort_unstable();
+    assert_eq!(
+        store.producing_agents(fact_node).expect("producing agents"),
+        expected,
+        "the no-agent_id Fact target is skipped, not attributed and not an error"
+    );
+}
+
+#[test]
 fn recording_a_reliability_update_is_idempotent_by_event_id() {
     let store = store();
     let ada = enroll(&store, "reliability", 0.5);
@@ -203,6 +267,32 @@ fn reliability_events_filters_to_the_agent_and_the_kind() {
             .is_empty(),
         "an agent with no reliability events reads empty"
     );
+}
+
+#[test]
+fn reliability_events_excludes_other_audit_kinds_for_the_same_subject() {
+    let store = store();
+    let ada = enroll(&store, "reliability", 0.5);
+
+    // Two audits against the SAME subject through the same write path, differing only in kind.
+    // subject_id is shared by every AuditEvent kind and the by-subject index is kind-agnostic, so
+    // only the `kind == ReliabilityUpdate` filter (the M4.T06 by-subject replay seam) keeps the
+    // Summarize out. `record_reliability_update` is mechanically kind-agnostic, so it seeds the
+    // non-reliability event without a separate raw-audit write path.
+    store
+        .record_reliability_update(&reliability_event(ada, "ada|reliability"))
+        .expect("reliability event");
+    store
+        .record_reliability_update(&audit_event(ada, "ada|summarize", AuditKind::Summarize))
+        .expect("summarize event");
+
+    let events = store.reliability_events(&ada).expect("read events");
+    assert_eq!(
+        events.len(),
+        1,
+        "the by-subject read keeps only ReliabilityUpdate kinds, not every audit for the subject"
+    );
+    assert_eq!(events[0].kind, AuditKind::ReliabilityUpdate);
 }
 
 #[test]
