@@ -149,7 +149,9 @@ impl<E: Embedder> Memory<E> {
     /// the security crate's conservative default patterns.
     ///
     /// # Errors
-    /// Returns [`EngineError::Config`] if the capture tuning is out of range, or
+    /// Returns [`EngineError::Config`] if the capture tuning, the promotion policy (an
+    /// out-of-range `k`/threshold, an unreachable threshold for that `k`, a non-positive prior,
+    /// or — with promotion on — a zero or oversized clock-skew tolerance) is out of range, or
     /// [`EngineError::Filter`] if the default privacy filter fails to compile, which the
     /// security crate's tests guard against.
     pub fn new(store: Arc<Store>, embedder: E, config: MemoryConfig) -> Result<Self, EngineError> {
@@ -167,8 +169,16 @@ impl<E: Embedder> Memory<E> {
         config: MemoryConfig,
         authorizer: Arc<dyn Authorizer>,
     ) -> Result<Self, EngineError> {
+        // Front-load all configuration validation, before any subsystem is constructed, so an
+        // invalid policy is rejected up front and never interleaves with a side-effecting build
+        // step. `validate_promotion_skew` covers the promotion-on / signed-writes-off case that
+        // `SecurityGate::validate` (gated on `signed_writes`) does not.
         config.capture.validate().map_err(EngineError::Config)?;
         config.security.validate().map_err(EngineError::Config)?;
+        config.promotion.validate().map_err(EngineError::Config)?;
+        if config.promotion.enabled {
+            validate_promotion_skew(config.security.clock_skew_tolerance_ms)?;
+        }
         let embedder = Arc::new(embedder);
         let filter = CaptureFilter::with_defaults().map_err(EngineError::filter)?;
         let capturer = Capturer::new(
@@ -193,11 +203,10 @@ impl<E: Embedder> Memory<E> {
             capturer
         };
         // Quorum promotion (06 §4): when on, build the attestation/promotion orchestrator over the
-        // store's registered agent keys, reusing the signed-write skew knob. Off ⇒ no orchestrator,
-        // and the attestation API is inert.
-        config.promotion.validate().map_err(EngineError::Config)?;
+        // store's registered agent keys, reusing the signed-write skew knob. The policy and skew
+        // were validated up front; the `Option<Promoter>` is the single off-switch, so the engine
+        // never invokes the orchestrator while disabled. Off ⇒ no orchestrator, API inert.
         let promoter = if config.promotion.enabled {
-            validate_promotion_skew(config.security.clock_skew_tolerance_ms)?;
             let gate = AttestationGate::new(
                 Ed25519Verifier,
                 Arc::new(StoreKeyResolver::new(Arc::clone(&store))),

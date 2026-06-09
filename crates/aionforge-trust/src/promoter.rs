@@ -59,7 +59,10 @@ pub struct PromotionPolicy {
     pub prior_beta: f64,
     /// The category bucket an uncategorized attestation falls into.
     pub default_category: String,
-    /// Per-category overrides; the strictest applicable rule governs a mixed-category candidate.
+    /// Per-category overrides. For a candidate whose attestations span several categories the
+    /// effective gate composes the **maximum `k` and the maximum threshold independently** over
+    /// the present categories, so the bar may be stricter than any single configured rule and a
+    /// sensitive-category fact is never promoted under a laxer count or threshold.
     pub categories: BTreeMap<String, CategoryRule>,
 }
 
@@ -68,7 +71,13 @@ impl Default for PromotionPolicy {
         Self {
             enabled: false,
             default_k: 3,
-            default_threshold: 0.95,
+            // 0.80 is the highest threshold a quorum of `default_k = 3` can actually clear under
+            // the uninformative Beta(1, 1) prior: the bounded posterior maxes out at
+            // (alpha + k) / (alpha + beta + k) = 4/5 even with perfectly reliable attesters, so a
+            // higher default (an earlier 0.95) would be mutually unsatisfiable with k = 3 and
+            // promote nothing. `validate` enforces that reachability. A deployment that wants a
+            // stricter global bar raises both the count and the threshold together (per category).
+            default_threshold: 0.80,
             prior_alpha: 1.0,
             prior_beta: 1.0,
             default_category: "reliability".to_string(),
@@ -78,9 +87,9 @@ impl Default for PromotionPolicy {
 }
 
 impl PromotionPolicy {
-    /// Validate the policy when it is on (06 §4): `k >= 2`, `0.5 < threshold <= 1.0`, finite
-    /// positive priors, a non-empty default category, and per-category rules held to the same
-    /// bounds.
+    /// Validate the policy when it is on (06 §4): finite positive priors, `k >= 2`,
+    /// `0.5 < threshold <= 1.0`, the threshold **reachable** at that `k` under the prior, a
+    /// non-empty default category, and per-category rules held to the same bounds.
     ///
     /// # Errors
     /// Returns a message naming the offending field when a bound is violated.
@@ -88,12 +97,8 @@ impl PromotionPolicy {
         if !self.enabled {
             return Ok(());
         }
-        check_gate(
-            "promotion.default_k",
-            "promotion.default_threshold",
-            self.default_k,
-            self.default_threshold,
-        )?;
+        // Priors first: the reachability check below divides by them, so they must be sane before
+        // the gate is evaluated.
         if !self.prior_alpha.is_finite() || self.prior_alpha <= 0.0 {
             return Err(
                 "promotion.prior_alpha must be a finite value greater than zero".to_string(),
@@ -104,6 +109,14 @@ impl PromotionPolicy {
                 "promotion.prior_beta must be a finite value greater than zero".to_string(),
             );
         }
+        check_gate(
+            "promotion.default_k",
+            "promotion.default_threshold",
+            self.default_k,
+            self.default_threshold,
+            self.prior_alpha,
+            self.prior_beta,
+        )?;
         if self.default_category.trim().is_empty() {
             return Err("promotion.default_category must not be empty".to_string());
         }
@@ -113,6 +126,8 @@ impl PromotionPolicy {
                 &format!("promotion.categories.{category}.threshold"),
                 rule.k,
                 rule.threshold,
+                self.prior_alpha,
+                self.prior_beta,
             )?;
         }
         Ok(())
@@ -127,7 +142,14 @@ impl PromotionPolicy {
     }
 }
 
-fn check_gate(k_key: &str, threshold_key: &str, k: u64, threshold: f64) -> Result<(), String> {
+fn check_gate(
+    k_key: &str,
+    threshold_key: &str,
+    k: u64,
+    threshold: f64,
+    prior_alpha: f64,
+    prior_beta: f64,
+) -> Result<(), String> {
     if k < 2 {
         return Err(format!(
             "{k_key} must be at least 2 (a quorum of one is not a quorum)"
@@ -135,6 +157,19 @@ fn check_gate(k_key: &str, threshold_key: &str, k: u64, threshold: f64) -> Resul
     }
     if !(threshold > 0.5 && threshold <= 1.0) {
         return Err(format!("{threshold_key} must be in the range (0.5, 1.0]"));
+    }
+    // Cross-field reachability. The reliability-weighted posterior asymptotes to the attesters'
+    // quality mean and, with `k` perfectly reliable attesters, maxes out at the prior-shifted
+    // mean (prior_alpha + k) / (prior_alpha + prior_beta + k). If that ceiling is below the
+    // threshold the two AND-ed gates are mutually unsatisfiable — `k` attesters can never clear
+    // the bar, no matter how reliable — so the policy would silently promote nothing and `k`
+    // would be misleading. Reject the pairing rather than ship a dead one.
+    let max_posterior = (prior_alpha + k as f64) / (prior_alpha + prior_beta + k as f64);
+    if threshold > max_posterior {
+        return Err(format!(
+            "{threshold_key} is unreachable with {k_key} = {k} under the prior (the posterior \
+             tops out at {max_posterior:.3}); lower the threshold or raise the count"
+        ));
     }
     Ok(())
 }
@@ -270,13 +305,10 @@ impl Promoter {
             });
         }
 
-        // Explicit-only: the attester must name a real fact. An unknown fact is a coarse
-        // rejection so a prober cannot distinguish a foreign-but-real fact from a missing one.
-        let Some(fact_node) = self.store.fact_node_by_id(&req.fact_id)? else {
-            self.audit_rejection(req, AuditKind::InvalidSignature, "unknown_fact")?;
-            return Err(PromotionError::InvalidAttestation);
-        };
-
+        // Gate first (skew → key resolution → signature), over only the caller-supplied fields.
+        // A replayed or unsigned attestation is dropped before any store read, and the
+        // fact/attester probes below are reachable only by an already-authenticated attester — so
+        // a garbage request can't drive an unauthenticated audit write (skew-first, 06 §4).
         match self.gate.admit(
             &req.fact_id,
             &req.attester_id,
@@ -291,6 +323,14 @@ impl Promoter {
             }
             Err(AttestError::Backend(error)) => return Err(PromotionError::Backend(error)),
         }
+
+        // Explicit-only: the (now authenticated) attester must name a real fact. An unknown fact
+        // is the same coarse rejection so a prober cannot distinguish a foreign-but-real fact from
+        // a missing one — but it is now a post-auth rejection, not an unauthenticated one.
+        let Some(fact_node) = self.store.fact_node_by_id(&req.fact_id)? else {
+            self.audit_rejection(req, AuditKind::InvalidSignature, "unknown_fact")?;
+            return Err(PromotionError::InvalidAttestation);
+        };
 
         // The gate resolved the attester's key, so the agent exists; resolve its node for the edge.
         let Some(attester_node) = self.store.agent_node_by_id(&req.attester_id)? else {
@@ -346,6 +386,14 @@ impl Promoter {
             return Ok(PromotionOutcome::AlreadyPromoted {
                 global_id: ledger.promoted_fact_id,
             });
+        }
+        // Current-support precondition — the exact dual of the demotion trigger (02 §9, 06 §4).
+        // Only a team fact still in `current_support_facts` may be promoted: a superseded or
+        // contradicted fact has lost standing, and its immutable `ATTESTED_BY` votes survive the
+        // supersession, so without this guard a retracted (or already-demoted) fact could be
+        // promoted — or re-promoted — into `global` on stale attestations.
+        if !self.is_current(fact_node)? {
+            return Ok(PromotionOutcome::NotApplicable);
         }
 
         let attesters = self.store.distinct_attesters(fact_node)?;
@@ -470,7 +518,9 @@ impl Promoter {
     /// canonical attester-id order so the floating-point result is byte-identical on replay.
     fn posterior(&self, attesters: &[AttesterRecord]) -> Result<f64, PromotionError> {
         let mut sorted: Vec<&AttesterRecord> = attesters.iter().collect();
-        sorted.sort_by_key(|a| a.attester_id.to_string());
+        // Any fixed total order makes the floating-point sum byte-identical on replay; sort by the
+        // native (byte-ordered, `Copy`) `Id` so the canonical order costs no per-attester allocation.
+        sorted.sort_by_key(|a| a.attester_id);
         let mut reliabilities = Vec::with_capacity(sorted.len());
         for attester in sorted {
             let category = attester
@@ -497,9 +547,11 @@ impl Promoter {
             .unwrap_or(0.5))
     }
 
-    /// The strictest applicable `(k, threshold)`: the max over the categories the candidate's
-    /// attestations carry (so a sensitive-category fact is never promoted under a laxer bar),
-    /// starting from the defaults.
+    /// The strictest applicable `(k, threshold)`: the **max `k` and the max threshold taken
+    /// independently** over the categories the candidate's attestations carry, starting from the
+    /// defaults. The two axes can come from different categories, so the effective bar may be
+    /// stricter than any single configured rule — a sensitive-category fact is never promoted
+    /// under a laxer count or threshold.
     fn strictest_rule(&self, attesters: &[AttesterRecord]) -> (u64, f64) {
         let mut k = self.policy.default_k;
         let mut threshold = self.policy.default_threshold;
@@ -515,12 +567,23 @@ impl Promoter {
         (k, threshold)
     }
 
-    /// Whether a fact node is in `current_support_facts` — the canonical "still supported" test.
+    /// Whether a fact node is currently supported (02 §9): `status == active` **and** no live
+    /// outgoing `SUPERSEDED_BY` / `CONTRADICTS`. The provider expresses only the edge half (it
+    /// cannot carry a scalar predicate), so the `active` conjunct is layered here rather than
+    /// leaning on the emergent "every status demotion co-writes an excluding edge" coupling — a
+    /// future status-only quarantine path would otherwise slip past membership alone.
     fn is_current(&self, node: NodeId) -> Result<bool, StoreError> {
-        Ok(self
+        if !self
             .store
             .candidate_state_members(CandidateSet::CurrentSupportFacts)?
-            .contains(&node))
+            .contains(&node)
+        {
+            return Ok(false);
+        }
+        Ok(self
+            .store
+            .fact_by_node_id(node)?
+            .is_some_and(|fact| fact.status == FactStatus::Active))
     }
 
     fn ledger(
@@ -605,6 +668,12 @@ impl Promoter {
     }
 }
 
+// The governance/promote audit ids are content-addressed on `(tag, subject)` with no cycle
+// component, so a same-cycle replay dedupes to a true no-op (the property the idempotent write-set
+// relies on). The trade-off: a second *genuine* promote/demote of the same fact in a later cycle
+// computes the same id and writes no new audit, so the audit subgraph holds one event per fact
+// lifetime, not per cycle. A deterministic cycle discriminator (e.g. a ledger version) lands with
+// the M4.T06 by-subject audit-history consumer that actually reads this back.
 fn content_id(tag: &str, key: &str) -> Id {
     Id::from_content_hash(format!("{tag}|{key}").as_bytes())
 }
@@ -662,7 +731,10 @@ fn demote_payload(candidate: Id, global: Id, posterior: f64, k: u64) -> serde_js
     })
 }
 
-/// The audit kind and reason string for a gate rejection.
+/// The audit kind and reason string for a gate rejection. `InvalidSignature` is the umbrella
+/// reject-kind here — an unknown attester (and, at the call site, an unknown fact) record under it
+/// too, with the true cause in the reason field — matching the deliberately coarse caller error.
+/// A dedicated rejection kind, if the audit vocabulary gains one, lands with the M4.T06 subgraph.
 fn rejection_audit(rejection: &AttestRejection) -> (AuditKind, &'static str) {
     match rejection {
         AttestRejection::UnknownAttester => (AuditKind::InvalidSignature, "unknown_attester"),

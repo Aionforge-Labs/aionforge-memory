@@ -3,9 +3,9 @@
 //! Exercises the real composition: the engine builds an Ed25519 [`AttestationGate`] and a
 //! `Promoter` over the store's registered agent keys, so a fact promotes only when enough
 //! distinct attesters sign it and the reliability-weighted posterior clears the threshold. The
-//! posterior is bounded by attester quality, so the test tunes the policy (a reachable
-//! threshold) the way an operator would — the production default `0.95` is deliberately a high
-//! bar (it takes a strong consensus of high-reliability attesters to reach).
+//! posterior is bounded by attester quality; most cases tune the policy (a small quorum at a
+//! lower threshold) so the math is easy to read, and one case exercises the shipped default
+//! `(k = 3, threshold = 0.80)` directly to prove it is reachable by a strong consensus.
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -249,6 +249,96 @@ fn a_quorum_above_threshold_promotes_a_team_fact_to_global() {
         .expect("ledger")
         .expect("row");
     assert_eq!(ledger.status, PromotionStatus::Promoted);
+}
+
+#[test]
+fn the_default_policy_promotes_under_a_strong_consensus() {
+    let store = migrated_store();
+    // Calibrated against the shipped default gates — fail loudly here if they ever change, since
+    // the attester counts below bracket the 0.80 boundary precisely.
+    let defaults = PromotionPolicy::default();
+    assert_eq!((defaults.default_k, defaults.default_threshold), (3, 0.80));
+    let config = policy(defaults.default_k, defaults.default_threshold);
+    let (_, fact_id) = team_fact(&store, "the default policy can actually promote");
+    let memory = Memory::new(Arc::clone(&store), FakeEmbedder::new(), config).expect("memory");
+
+    // Three near-perfect attesters meet the quorum of 3, but the bounded posterior (~0.794) is
+    // just shy of 0.80 — both gates have to clear and the belief gate does not yet.
+    for seed in 0..3u8 {
+        let key = SigningKey::from_bytes(&[seed + 20; 32]);
+        let attester = enroll(&store, &key, "reliability", 0.99);
+        let receipt = memory
+            .attest(attest_request(fact_id, attester, &key, "reliability"))
+            .expect("attest");
+        assert_eq!(
+            receipt.promoted, None,
+            "three attesters: quorum met, belief still short of 0.80"
+        );
+    }
+    // A fourth pushes the posterior to ~0.827, clearing 0.80 — so the shipped default promotes.
+    let key = SigningKey::from_bytes(&[24u8; 32]);
+    let attester = enroll(&store, &key, "reliability", 0.99);
+    let global_id = memory
+        .attest(attest_request(fact_id, attester, &key, "reliability"))
+        .expect("attest")
+        .promoted
+        .expect("a strong consensus clears the shipped default threshold");
+    let global = store
+        .fact_node_by_id(&global_id)
+        .expect("probe")
+        .and_then(|node| store.fact_by_node_id(node).expect("read"))
+        .expect("global copy");
+    assert_eq!(global.identity.namespace, Namespace::Global);
+}
+
+#[test]
+fn a_superseded_fact_does_not_promote_even_with_a_quorum() {
+    let store = migrated_store();
+    let key_a = SigningKey::from_bytes(&[7u8; 32]);
+    let key_b = SigningKey::from_bytes(&[8u8; 32]);
+    let ada = enroll(&store, &key_a, "reliability", 0.95);
+    let bo = enroll(&store, &key_b, "reliability", 0.95);
+    let (team_node, fact_id) = team_fact(&store, "a claim that gets superseded");
+    let memory =
+        Memory::new(Arc::clone(&store), FakeEmbedder::new(), policy(2, 0.7)).expect("memory");
+
+    // Supersede the fact before it is attested: it drops out of current_support_facts, so it has
+    // lost standing even though its later attestations are perfectly valid.
+    let (newer_node, _) = team_fact(&store, "the newer claim that replaces it");
+    store
+        .supersede_fact(
+            team_node,
+            newer_node,
+            &SupersededBy {
+                reason: "newer".to_string(),
+                temporal: open_window(),
+            },
+        )
+        .expect("supersede");
+
+    // A full quorum of high-reliability attesters signs it — enough to clear both gates if it
+    // were current — but promotion is the dual of demotion and refuses a non-current fact.
+    memory
+        .attest(attest_request(fact_id, ada, &key_a, "reliability"))
+        .expect("attest a");
+    let second = memory
+        .attest(attest_request(fact_id, bo, &key_b, "reliability"))
+        .expect("attest b");
+    assert_eq!(
+        second.promoted, None,
+        "a superseded fact does not promote on stale attestations"
+    );
+    assert!(matches!(
+        memory.evaluate_promotion(&fact_id, &ts()).expect("eval"),
+        PromotionOutcome::NotApplicable
+    ));
+    assert!(
+        store
+            .promotion_by_candidate(&fact_id)
+            .expect("ledger")
+            .is_none(),
+        "no promotion ledger row for a non-current fact"
+    );
 }
 
 #[test]

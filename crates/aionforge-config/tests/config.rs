@@ -245,6 +245,17 @@ fn promotion_gates_are_validated_only_when_enabled() {
         "a NaN threshold is rejected"
     );
 
+    // On: an in-range threshold that the quorum cannot reach under the prior is rejected — the
+    // two gates would be mutually unsatisfiable. With k = 3 and Beta(1, 1) the posterior tops out
+    // at 4/5, so 0.90 is unreachable.
+    let mut config = Config::default();
+    config.promotion.enabled = true;
+    config.promotion.default_threshold = 0.90;
+    assert!(
+        matches!(config.validate(), Err(ConfigError::Invalid { key, .. }) if key == "promotion.default_threshold"),
+        "a threshold unreachable at the default k is rejected"
+    );
+
     // On: a non-positive Beta prior is rejected.
     let mut config = Config::default();
     config.promotion.enabled = true;
@@ -278,7 +289,8 @@ fn promotion_gates_are_validated_only_when_enabled() {
         "a bad per-category threshold is rejected and names the category"
     );
 
-    // On: sensible higher-k, higher-threshold sensitive overrides validate.
+    // On: a per-category override also faces the reachability guard. A threshold of 0.99 needs a
+    // far larger quorum than k = 5 can supply under the prior, so the pairing is rejected.
     let mut config = Config::default();
     config.promotion.enabled = true;
     config.promotion.categories.insert(
@@ -286,6 +298,23 @@ fn promotion_gates_are_validated_only_when_enabled() {
         CategoryPromotionRule {
             k: 5,
             threshold: 0.99,
+        },
+    );
+    assert!(
+        matches!(config.validate(), Err(ConfigError::Invalid { key, .. }) if key == "promotion.categories.pii.threshold"),
+        "a per-category threshold unreachable at its k is rejected and names the category"
+    );
+
+    // On: sensible higher-k, higher-threshold sensitive overrides validate. With k = 5 the
+    // posterior reaches 6/7 ≈ 0.857, so a 0.85 bar (stricter than the 0.80 default on both axes)
+    // is satisfiable.
+    let mut config = Config::default();
+    config.promotion.enabled = true;
+    config.promotion.categories.insert(
+        "pii".to_string(),
+        CategoryPromotionRule {
+            k: 5,
+            threshold: 0.85,
         },
     );
     config

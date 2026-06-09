@@ -45,12 +45,17 @@ Two gates both have to clear, and neither trades off against the other:
   not a quorum.
 - **The posterior.** At or above the category's threshold.
 
-Because the posterior is bounded by attester quality, the threshold is a real bar: a high default
-like `0.95` is reached only by a strong consensus of high-reliability attesters, not by a few
-votes. Operators tune the count and threshold per category, and a sensitive category (say one
-holding personal data) sets a higher count and a higher threshold than the default. When a
-candidate's attestations span more than one category, the **strictest** of them governs, so a
-fact touched by a sensitive category is never promoted under a laxer bar.
+Because the posterior is bounded by attester quality, the threshold is a real bar — reached only
+by a strong consensus, not by a few votes. But the count and the threshold can't be set apart from
+each other. The same bound that stops a flood also caps what any fixed quorum can reach: `k`
+attesters, however reliable, can't push the posterior past `(alpha + k) / (alpha + beta + k)`. So
+the default pairs a quorum of three with a `0.80` threshold — the highest a three-attester quorum
+can clear under the default prior — and the substrate refuses a policy whose threshold its own `k`
+can never reach rather than quietly promoting nothing. A deployment that wants a stricter global
+bar raises the count and the threshold together. When a candidate's attestations span more than one
+category, the effective gate takes the **strictest count and the strictest threshold
+independently**, so a fact touched by a sensitive category is never promoted under a laxer bar (and
+the bar can end up stricter than any single category's rule).
 
 ## Reliability comes from elsewhere
 
@@ -60,12 +65,20 @@ invalidated — is trust scoring's job, which builds on this one. Until an agent
 contributes the uninformative `0.5`, which moves the posterior toward neither pole. So on a cold
 start, before any reliability has been earned, nothing promotes — the conservative default.
 
-> **A note on independence.** "Independent attestations" here means distinct attesters: one
-> signed vote per agent. Excluding a fact's own author from its quorum would need an authorship
-> link the substrate does not yet record, so that refinement waits on it; in the meantime an
-> agent vouching for its own fact is still just one vote and cannot meet the quorum alone.
+> **A note on independence.** "Independent attestations" here means distinct attesters: one signed
+> vote per agent. Fully excluding a fact's own author from its quorum would need an authorship link
+> the substrate doesn't yet record, so that refinement waits on it. Until then an author's vote
+> fills one of the `k` slots like any other, so independence rests on the quorum of at least two
+> plus the reliability-weighted posterior — a lone author still can't promote its own fact, and a
+> low-reliability one barely moves the bar.
 
 ## Promotion writes a copy, never a move
+
+Only a fact that still holds can promote. If it has been superseded by a newer assertion or
+contradicted — so it has dropped out of the current-support set — its standing is gone, and the
+old attestations on it can't carry it to `global`. Promotion is the exact mirror of the demotion
+below: the same lost-support test that pulls a promoted fact back is what blocks an unsupported one
+from going up in the first place.
 
 Promoting a team fact creates a **new** fact in the `global` namespace — a copy that carries the
 same statement, subject, and embedding — and links the original to it with a `PROMOTED_TO` edge.
@@ -93,8 +106,9 @@ with trust scoring; it reuses this same demotion machinery.)
 Promotion is controlled by a small policy:
 
 - `promotion.enabled` — off by default; set it on to gate promotion.
-- `promotion.default_k` / `promotion.default_threshold` — the count and posterior bars, bounded
-  to a quorum of at least two and a threshold in `(0.5, 1.0]`.
+- `promotion.default_k` / `promotion.default_threshold` — the count and posterior bars, bounded to
+  a quorum of at least two and a threshold in `(0.5, 1.0]` that the count can actually reach under
+  the prior. The default is a quorum of three at `0.80`; a higher threshold needs a higher count.
 - `promotion.prior_alpha` / `promotion.prior_beta` — the Beta prior; the default `1, 1` is
   uninformative.
 - `promotion.default_category` — the bucket an uncategorized attestation falls into.
