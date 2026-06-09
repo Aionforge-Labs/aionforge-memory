@@ -1,4 +1,4 @@
-//! The off-cursor LLM distiller (M3.T08): the driver that runs an [`LLMSummarizer`] over the
+//! The off-cursor LLM distiller (M3.T08): the driver that runs an [`LLMSummarizer`](crate::LLMSummarizer) over the
 //! committed graph and writes non-canonical distilled notes — entirely off the consolidation
 //! cursor.
 //!

@@ -136,6 +136,12 @@ jobs:
         run: |
           cargo nextest run --workspace --locked --all-features --profile ci
           cargo test --workspace --locked --all-features --doc
+      - name: rustdoc (no broken intra-doc links)
+        env:
+          RUSTDOCFLAGS: -D warnings
+        # --lib only: the `aionforge` lib and bin share a name, so documenting bins
+        # trips an output-filename collision unrelated to doc quality.
+        run: cargo doc --no-deps --workspace --lib --document-private-items --locked
 
   deny:
     name: cargo-deny

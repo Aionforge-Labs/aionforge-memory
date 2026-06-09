@@ -76,7 +76,7 @@ impl Store {
     /// instead discoverable by the **scalar `kind` and `subject_id` indexes** (`subject_id` is the
     /// agent, so an M4.T06 by-subject lookup over `subject_id` returns an agent's denied attempts).
     /// The spec's `(kind, occurred_at)` / `(actor_id, occurred_at)` composites are deferred until
-    /// selene-db can index `ZONED DATETIME` (the gap noted in [`crate::indexes`]); `actor_id` is not
+    /// selene-db can index `ZONED DATETIME` (the gap noted in the `indexes` module); `actor_id` is not
     /// scalar-indexed today, so an actor-only scan is the fallback for that axis.
     ///
     /// # Errors

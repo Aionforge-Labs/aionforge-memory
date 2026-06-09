@@ -59,7 +59,7 @@ pub struct RetrieverConfig {
     /// How many `SUPPORTS` hops the additive support signal expands the query-entity roots
     /// through to recover their supporting evidence (03 §1, §4, M3.T02). `0` disables
     /// support expansion (the dense pass alone stands); the value is clamped to
-    /// [`MAX_EXPANSION_DEPTH`]. v1 expands a single hop.
+    /// `MAX_EXPANSION_DEPTH`. v1 expands a single hop.
     pub support_expansion_depth: usize,
 }
 
