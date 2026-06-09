@@ -105,7 +105,8 @@ pub enum AuditKind {
     ClockSkewRejected,
     /// A signature failed verification.
     InvalidSignature,
-    /// A signing key was rotated.
+    /// A substrate audit-signing key entered service (genesis or rotation). The payload is
+    /// the typed [`KeyRotationPayload`] (06 §6).
     KeyRotation,
     /// An agent was retired.
     AgentRetired,
@@ -139,6 +140,69 @@ pub struct AuditEvent {
 impl AuditEvent {
     /// The selene-db node label for this kind.
     pub const LABEL: &str = "AuditEvent";
+}
+
+/// The typed payload of a [`AuditKind::KeyRotation`] audit event (06 §6): a substrate
+/// audit-signing key entering service.
+///
+/// Two shapes share this schema:
+/// - **Genesis** — the substrate's first key. `predecessor_pubkey_b64` and `retired_at` are
+///   `None`; the event is signed by the announced key itself (the only self-signed rotation),
+///   and `admitted_at` doubles as the instant the substrate first had a key at all.
+/// - **Rotation** — a successor key. The event is signed by the *predecessor* (a key that is
+///   already trusted), announces the new key, and stamps `retired_at` — the upper bound of the
+///   predecessor's validity window, so a leaked old seed cannot keep signing events that read
+///   as valid forever.
+///
+/// A key's validity window is `[its admitted_at, the retired_at announced by its successor)`;
+/// the genesis window stays open until the first rotation closes it.
+///
+/// Trust never bootstraps from this event. The anchor is the substrate's out-of-band keyring
+/// file; the in-band `KeyRotation` event is that file's verifiable echo in the audit trail —
+/// a rotation whose announcing event is not signed by an already-trusted key, or whose key is
+/// absent from the keyring file, enrolls nothing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct KeyRotationPayload {
+    /// The base64 Ed25519 public key entering service.
+    pub announced_pubkey_b64: String,
+    /// The base64 public key being rotated out; `None` on the genesis rotation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predecessor_pubkey_b64: Option<String>,
+    /// When the announced key entered service (its validity-window lower bound).
+    pub admitted_at: Timestamp,
+    /// When the predecessor stopped being valid for new events; `None` on genesis.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retired_at: Option<Timestamp>,
+}
+
+impl KeyRotationPayload {
+    /// The JSON value carried as the event's [`AuditEvent::payload`]. Absent options are
+    /// omitted (not `null`), so a genesis payload is terse and the canonical signed bytes
+    /// carry no inert keys.
+    #[must_use]
+    pub fn to_value(&self) -> serde_json::Value {
+        serde_json::to_value(self)
+            .expect("a KeyRotationPayload of strings and timestamps serializes to JSON")
+    }
+
+    /// Parse a payload back from a stored [`AuditEvent::payload`].
+    ///
+    /// Unknown fields are tolerated, so a later schema revision can add a field without
+    /// breaking this parser. That leniency is safe because integrity comes from the
+    /// signature over the canonical payload bytes, not from field rejection — an added or
+    /// altered field changes the signed bytes and fails verification on its own.
+    ///
+    /// # Errors
+    /// Returns the deserialization error when a required field is missing or mistyped. One
+    /// failure mode involves no tampering at all: [`Timestamp`] parsing rejects a stored
+    /// offset that the host's current tz database no longer agrees with for that zone and
+    /// instant (a tzdb revision between emit and parse). A parse failure is therefore not a
+    /// tamper signal — integrity rides on the signature over the stored bytes — and emitters
+    /// sidestep the conflict entirely by stamping the window timestamps in UTC.
+    pub fn from_value(value: &serde_json::Value) -> Result<Self, serde_json::Error> {
+        use serde::Deserialize as _;
+        Self::deserialize(value)
+    }
 }
 
 /// The resolution status of a promotion candidate (02 §4.12).
@@ -185,4 +249,85 @@ pub struct Promotion {
 impl Promotion {
     /// The selene-db node label for this kind.
     pub const LABEL: &str = "Promotion";
+}
+
+#[cfg(test)]
+mod tests {
+    use super::KeyRotationPayload;
+    use crate::time::Timestamp;
+
+    fn at(s: &str) -> Timestamp {
+        s.parse().expect("valid zoned datetime")
+    }
+
+    fn genesis() -> KeyRotationPayload {
+        KeyRotationPayload {
+            announced_pubkey_b64: "Z2VuZXNpcy1rZXk=".to_owned(),
+            predecessor_pubkey_b64: None,
+            admitted_at: at("2026-06-09T09:00:00-05:00[America/Chicago]"),
+            retired_at: None,
+        }
+    }
+
+    #[test]
+    fn a_rotation_payload_round_trips_with_every_field() {
+        let rotation = KeyRotationPayload {
+            announced_pubkey_b64: "bmV3LWtleQ==".to_owned(),
+            predecessor_pubkey_b64: Some("b2xkLWtleQ==".to_owned()),
+            admitted_at: at("2026-06-09T10:00:00-05:00[America/Chicago]"),
+            retired_at: Some(at("2026-06-09T10:00:00-05:00[America/Chicago]")),
+        };
+        let value = rotation.to_value();
+        let parsed = KeyRotationPayload::from_value(&value).expect("parses back");
+        assert_eq!(parsed, rotation);
+        // The wire form keeps the full zoned instant (RFC 9557, zone bracket included), so the
+        // store's JSON round-trip is exact, not a lossy instant.
+        let admitted = value["admitted_at"].as_str().expect("a string timestamp");
+        assert!(
+            admitted.contains("[America/Chicago]"),
+            "kept the zone: {admitted}"
+        );
+    }
+
+    #[test]
+    fn a_genesis_payload_omits_its_absent_fields_and_round_trips() {
+        let value = genesis().to_value();
+        let object = value.as_object().expect("an object payload");
+        assert!(
+            !object.contains_key("predecessor_pubkey_b64") && !object.contains_key("retired_at"),
+            "absent options are omitted, not null: {value}"
+        );
+        let parsed = KeyRotationPayload::from_value(&value).expect("parses back");
+        assert_eq!(parsed, genesis());
+    }
+
+    #[test]
+    fn unknown_payload_fields_are_tolerated() {
+        // Forward-compat: a later schema revision may add a field. Integrity is anchored by
+        // the signature over the canonical bytes, so leniency here smuggles nothing.
+        let mut value = genesis().to_value();
+        value
+            .as_object_mut()
+            .expect("an object payload")
+            .insert("future_field".to_owned(), serde_json::json!(1));
+        let parsed = KeyRotationPayload::from_value(&value).expect("tolerates the unknown field");
+        assert_eq!(parsed, genesis());
+    }
+
+    #[test]
+    fn a_payload_missing_a_required_field_is_rejected() {
+        // Both non-optional fields: the announced key and the window lower bound. Pinning
+        // each keeps a refactor from quietly loosening one to an `Option` "for symmetry".
+        for required in ["announced_pubkey_b64", "admitted_at"] {
+            let mut value = genesis().to_value();
+            value
+                .as_object_mut()
+                .expect("an object payload")
+                .remove(required);
+            assert!(
+                KeyRotationPayload::from_value(&value).is_err(),
+                "a rotation without {required} is malformed"
+            );
+        }
+    }
 }

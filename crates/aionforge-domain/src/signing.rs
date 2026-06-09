@@ -366,6 +366,46 @@ mod tests {
         );
     }
 
+    /// The typed `KeyRotation` payload (PR-5b) signs stably. Its `Timestamp` fields serialize
+    /// to RFC 9557 strings inside the payload JSON — strings round-trip exactly, so the same
+    /// rotation built twice, read back from the store, or parsed and re-serialized through
+    /// `from_value`/`to_value` all sign to identical bytes. The verifier never re-emits — it
+    /// checks the signature over the payload as stored — but the emitter builds rotations
+    /// through this struct, and these legs pin it as a faithful codec: a crash-replay rebuild
+    /// signs the same bytes, so the store's dedup-by-id write stays a true no-op.
+    #[test]
+    fn a_key_rotation_payload_signs_stably() {
+        use crate::nodes::forensic::KeyRotationPayload;
+        let admitted: Timestamp = "2026-06-09T10:00:00-05:00[America/Chicago]"
+            .parse()
+            .expect("valid zoned datetime");
+        let rotation = KeyRotationPayload {
+            announced_pubkey_b64: "bmV3LWtleQ==".to_string(),
+            predecessor_pubkey_b64: Some("b2xkLWtleQ==".to_string()),
+            admitted_at: admitted.clone(),
+            retired_at: Some(admitted),
+        };
+
+        // Same rotation, built twice: identical signed bytes.
+        let event = audit_event(AuditKind::KeyRotation, rotation.to_value());
+        let twin = audit_event(AuditKind::KeyRotation, rotation.to_value());
+        let bytes = audit_payload(&event);
+        assert_eq!(bytes, audit_payload(&twin));
+
+        // Read back from the store (JSON string round-trip): identical signed bytes.
+        let mut round_tripped = event.clone();
+        let as_string = serde_json::to_string(&event.payload).unwrap();
+        round_tripped.payload = serde_json::from_str(&as_string).unwrap();
+        assert_eq!(bytes, audit_payload(&round_tripped));
+
+        // Parsed into the typed struct and re-serialized: identical signed bytes.
+        let mut rebuilt = event.clone();
+        rebuilt.payload = KeyRotationPayload::from_value(&event.payload)
+            .expect("a stored rotation payload parses")
+            .to_value();
+        assert_eq!(bytes, audit_payload(&rebuilt));
+    }
+
     /// The bytes survive a JSON round-trip, so a signature stamped at emit time still recomputes
     /// after the event is read back from the store. This drives the payload through a string
     /// (`to_string`/`from_str`) — a strictly harder case than the store's own structural
