@@ -8,12 +8,17 @@ out, or whose timestamp is too far off, is refused and recorded — it never bec
 This is off by default. A development or single-trusted-host deployment runs unsigned with
 no overhead. Turning it on is a deliberate production decision.
 
-## The substrate verifies, it never signs
+## On the writer channel, the substrate verifies — it never signs
 
 The host holds the private key and signs; the substrate holds only the public key and
-verifies. A private key never enters the process. The substrate stores each writer's public
-key on its `Agent` record and the signature on the capture's provenance record, and it checks
-one against the other — that's the whole of its role in the signing scheme.
+verifies. No writer's private key ever enters the process. The substrate stores each writer's
+public key on its `Agent` record and the signature on the capture's provenance record, and it
+checks one against the other — that's the whole of its role in the writer signing scheme.
+
+The one place the substrate holds a key of its own is the audit channel: it is the author of
+the audit events it emits about its own operations, so it signs those with a dedicated audit
+key. That key signs substrate-authored audit events and nothing else — never a host's writes —
+and key generation is confined to a single function and enforced in CI.
 
 Verification is strict: a malleable signature is rejected, not just an outright wrong one.
 
