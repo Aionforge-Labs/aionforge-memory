@@ -157,8 +157,8 @@ fn persistence_round_trips_schema_data_indexes_and_providers() {
         assert_eq!(store.schema_version().expect("schema version"), 1);
         assert_eq!(store.vector_indexes().len(), 7);
         assert_eq!(store.text_indexes().len(), 5);
-        assert_eq!(store.property_indexes().len(), 47);
-        assert_eq!(store.composite_indexes().len(), 3);
+        assert_eq!(store.property_indexes().len(), 49);
+        assert_eq!(store.composite_indexes().len(), 5);
         assert_eq!(fact_count(&store), 2);
         assert_eq!(provider_count(&store, "current_support_facts"), 1);
         // Drop releases the WAL file lock so recovery can reopen it in this process.
@@ -180,13 +180,22 @@ fn persistence_round_trips_schema_data_indexes_and_providers() {
     assert_eq!(recovered.text_indexes().len(), 5, "text indexes rebuilt");
     assert_eq!(
         recovered.property_indexes().len(),
-        47,
+        49,
         "property indexes rebuilt"
     );
     assert_eq!(
         recovered.composite_indexes().len(),
-        3,
+        5,
         "composite indexes rebuilt"
+    );
+    // The first ZONED DATETIME property index in the schema rebuilds cleanly from the WAL —
+    // the recovery smoke test for the M4.T06 audit temporal index.
+    assert!(
+        recovered
+            .property_indexes()
+            .iter()
+            .any(|(label, prop)| label == "AuditEvent" && prop == "occurred_at"),
+        "AuditEvent.occurred_at datetime index survives recovery"
     );
     assert_eq!(fact_count(&recovered), 2, "Fact rows survive");
     assert_eq!(

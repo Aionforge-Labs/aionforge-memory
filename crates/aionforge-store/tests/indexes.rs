@@ -5,8 +5,13 @@
 //! fails loudly on a mismatch; and the candidate-state providers are registered and
 //! track Fact membership through edge changes.
 
+use aionforge_domain::blocks::Identity;
 use aionforge_domain::ids::Id;
-use aionforge_store::{BoundQuery, DEFAULT_EMBEDDING_DIMENSION, Store, StoreConfig, Value};
+use aionforge_domain::namespace::Namespace;
+use aionforge_domain::nodes::forensic::{AuditEvent, AuditKind};
+use aionforge_store::{
+    BoundQuery, DEFAULT_EMBEDDING_DIMENSION, QueryResult, Store, StoreConfig, Value,
+};
 
 use jiff::Zoned;
 
@@ -56,26 +61,49 @@ fn migration_registers_all_native_indexes() {
     // §8: BM25 text indexes over the five content surfaces.
     assert_eq!(store.text_indexes().len(), 5, "text index count");
 
-    // §8 + §11: scalar property indexes — namespace on every kind (17) plus the 30 per-kind
+    // §8 + §11: scalar property indexes — namespace on every kind (17) plus the 32 per-kind
     // INDEXED entries in SCALAR_INDEXES (which include Entity.id, Note.id, AuditEvent.id for
     // consolidation resolution and audit dedup, Skill.id for the by-domain-id procedural
     // lookups, Agent.id for provenance key resolution, Episode.id for the signed-write
-    // collision pre-check (M4.T03), and Fact.id for the quorum-promotion global-copy
-    // idempotency probe (M4.T04)) = 47.
+    // collision pre-check (M4.T03), Fact.id for the quorum-promotion global-copy
+    // idempotency probe (M4.T04), and AuditEvent.actor_id + AuditEvent.occurred_at (the
+    // first datetime property index) for the M4.T06 audit-history readers) = 49.
     assert_eq!(
         store.property_indexes().len(),
-        47,
+        49,
         "scalar property index count"
     );
 
-    // §8: the three pure-scalar composites (timestamp-bearing ones are deferred).
+    // §8: the three pure-scalar composites plus the two AuditEvent temporal composites
+    // (now that selene indexes ZONED DATETIME).
     let composites = store.composite_indexes();
-    assert_eq!(composites.len(), 3, "composite index count: {composites:?}");
+    assert_eq!(composites.len(), 5, "composite index count: {composites:?}");
     assert!(
         composites
             .iter()
             .any(|(label, cols)| label == "Skill" && cols == &["name", "version"]),
         "Skill(name, version) composite present"
+    );
+    assert!(
+        composites
+            .iter()
+            .any(|(label, cols)| label == "AuditEvent" && cols == &["subject_id", "occurred_at"]),
+        "AuditEvent(subject_id, occurred_at) temporal composite present"
+    );
+    assert!(
+        composites
+            .iter()
+            .any(|(label, cols)| label == "AuditEvent" && cols == &["kind", "occurred_at"]),
+        "AuditEvent(kind, occurred_at) temporal composite present"
+    );
+
+    // §8: occurred_at is the first ZONED DATETIME property index in the schema.
+    assert!(
+        store
+            .property_indexes()
+            .iter()
+            .any(|(label, prop)| label == "AuditEvent" && prop == "occurred_at"),
+        "AuditEvent.occurred_at datetime property index present"
     );
 }
 
@@ -113,6 +141,87 @@ fn index_registration_is_idempotent() {
         store.composite_indexes().len(),
     );
     assert_eq!(before, after, "index counts stable across re-migration");
+}
+
+/// An `AuditEvent` keyed by `marker` with a specific `occurred_at`, for the temporal index.
+fn audit_at(marker: &str, occurred: &str) -> AuditEvent {
+    let when: Zoned = occurred.parse().expect("valid zoned datetime");
+    AuditEvent {
+        identity: Identity {
+            id: Id::from_content_hash(marker.as_bytes()),
+            ingested_at: now(),
+            namespace: Namespace::System,
+            expired_at: None,
+        },
+        kind: AuditKind::Promote,
+        subject_id: Id::from_content_hash(b"audit-subject"),
+        actor_id: Id::from_content_hash(b"substrate"),
+        payload: serde_json::json!({ "marker": marker }),
+        signature: String::new(),
+        occurred_at: when,
+    }
+}
+
+/// The `a.id` UUID column of a query, in row order.
+fn id_column(store: &Store, query: &BoundQuery) -> Vec<String> {
+    match store.execute(query).expect("query audit ids") {
+        QueryResult::Rows(rows) => (0..rows.row_count())
+            .map(|r| match rows.value(r, 0) {
+                Some(Value::Uuid(u)) => u.to_string(),
+                other => panic!("id was not a uuid: {other:?}"),
+            })
+            .collect(),
+        other => panic!("unexpected query result: {other:?}"),
+    }
+}
+
+#[test]
+fn audit_events_filter_on_the_occurred_at_datetime_index() {
+    let store = migrated();
+
+    // Three events at distinct instants, committed OUT of chronological order. `occurred_at` is
+    // the first ZONED DATETIME property index in the schema; a half-open `[t1, t3)` range filter
+    // over it exercises typed datetime comparison and the STRICT type-check of `occurred_at`
+    // through the real `to_node` write path.
+    let t1 = "2026-06-06T08:00:00-05:00[America/Chicago]";
+    let t2 = "2026-06-06T09:00:00-05:00[America/Chicago]";
+    let t3 = "2026-06-06T10:00:00-05:00[America/Chicago]";
+    store
+        .commit_audit(&audit_at("evt-2", t2))
+        .expect("commit t2");
+    store
+        .commit_audit(&audit_at("evt-1", t1))
+        .expect("commit t1");
+    store
+        .commit_audit(&audit_at("evt-3", t3))
+        .expect("commit t3");
+
+    // The range returns exactly evt-1 and evt-2; evt-3 is excluded at the open upper bound.
+    // Compared as a set (sorted in Rust) — ordering is the reader's job (PR-2 sorts the bounded
+    // result by `(occurred_at, id)` in Rust rather than leaning on GQL ORDER BY).
+    let lo: Zoned = t1.parse().unwrap();
+    let hi: Zoned = t3.parse().unwrap();
+    let query = BoundQuery::new(
+        "MATCH (a:AuditEvent) \
+         WHERE a.occurred_at >= $lo AND a.occurred_at < $hi \
+         RETURN a.id",
+    )
+    .bind("lo", Value::ZonedDateTime(Box::new(lo)))
+    .unwrap()
+    .bind("hi", Value::ZonedDateTime(Box::new(hi)))
+    .unwrap();
+
+    let mut got = id_column(&store, &query);
+    got.sort();
+    let mut want = vec![
+        Id::from_content_hash(b"evt-1").to_string(),
+        Id::from_content_hash(b"evt-2").to_string(),
+    ];
+    want.sort();
+    assert_eq!(
+        got, want,
+        "the range filter selects exactly the in-range events"
+    );
 }
 
 #[test]
