@@ -53,6 +53,7 @@ pub use materialize::{
 };
 pub use migrate::{MigrationPlan, MigrationReport, PendingChange};
 pub use note::MaterializedNote;
+pub use promotion::PromoteWriteIds;
 pub use providers::CandidateStateInfo;
 pub use relates_to::{LinkEdgeWrite, RelatesToLink};
 pub use schema::{EdgeTypeShape, NodeTypeShape, PropertyKind, PropertyShape, SchemaSnapshot};

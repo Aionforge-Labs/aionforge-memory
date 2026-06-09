@@ -10,7 +10,7 @@ use aionforge_domain::edges::{AttestedBy, Audit};
 use aionforge_domain::ids::Id;
 use aionforge_domain::nodes::forensic::AuditEvent;
 use selene_core::{NodeId, PropertyMap, db_string};
-use selene_graph::RowIndex;
+use selene_graph::{RowIndex, SeleneGraph};
 
 use crate::convert::{as_id, as_str, id_value, key, string_value, timestamp_value};
 use crate::error::StoreError;
@@ -75,9 +75,6 @@ impl Store {
         let edge_props = attested_by_props(edge)?;
         let (audit_labels, audit_props) = audit::to_node(audit)?;
         let audit_edge = db_string(Audit::LABEL)?;
-        // Content-addressed dedup against the committed snapshot: a replay of the same
-        // attestation finds its audit already present and writes no second one.
-        let existing_audit = audit::find_existing(&self.graph().read(), &audit.identity.id)?;
 
         let mut txn = self.graph().begin_write();
         let ids = {
@@ -85,6 +82,10 @@ impl Store {
             // Write-when-absent: ensure_edge skips when the edge already exists, so the
             // immutable ATTESTED_BY signature/instant is never rewritten (06 §4).
             materialize::ensure_edge(&mut mutator, AttestedBy::LABEL, fact, attester, edge_props)?;
+            // Content-addressed dedup against the in-txn working graph (committed state plus
+            // this txn's writes), under the write lock — so a concurrent re-attest cannot probe
+            // the same id and both create a second audit. Mirrors the consolidation audit dedup.
+            let existing_audit = audit::find_existing(mutator.read(), &audit.identity.id)?;
             let audit_node = match existing_audit {
                 Some(node) => node,
                 None => {
@@ -119,13 +120,15 @@ impl Store {
         let Some(adjacency) = snapshot.outgoing_edges(fact) else {
             return Ok(Vec::new());
         };
+        let id_key = db_string(ID)?;
+        let category_key = db_string(CATEGORY)?;
         let mut seen: Vec<Id> = Vec::new();
         let mut records: Vec<AttesterRecord> = Vec::new();
         for edge in adjacency.iter_label(&label) {
             let Some(props) = snapshot.node_properties(edge.neighbor) else {
                 continue;
             };
-            let Some(id_value) = props.get(&db_string(ID)?) else {
+            let Some(id_value) = props.get(&id_key) else {
                 continue;
             };
             let attester_id = as_id(id_value)?;
@@ -135,7 +138,7 @@ impl Store {
             seen.push(attester_id);
             let category = snapshot
                 .edge_properties(edge.edge_id)
-                .and_then(|edge_props| edge_props.get(&db_string(CATEGORY).ok()?).cloned())
+                .and_then(|edge_props| edge_props.get(&category_key).cloned())
                 .map(|value| as_str(&value).map(str::to_string))
                 .transpose()?;
             records.push(AttesterRecord {
@@ -148,29 +151,37 @@ impl Store {
 
     /// The `NodeId` of the fact with this domain id, if one exists — live or expired.
     ///
-    /// A probe over the `Fact.id` index (registered for exactly this, see [`crate::indexes`]).
-    /// Quorum promotion uses it two ways: to resolve a candidate fact id the attester named, and
-    /// to check whether a promoted global copy already exists (the idempotency probe in
+    /// A probe over the `Fact.id` scalar index (registered for exactly this; the index lets the
+    /// probe mean anything — `nodes_with_property_eq` reads as absent without one). Quorum
+    /// promotion uses it two ways: to resolve a candidate fact id the attester named, and to
+    /// check whether a promoted global copy already exists (the idempotency probe in
     /// [`Store::promote_fact`]). `Fact.id` is `UNIQUE`, so at most one node matches.
     ///
     /// # Errors
     /// Returns [`StoreError`] if the id cannot be encoded for the lookup.
     pub fn fact_node_by_id(&self, id: &Id) -> Result<Option<NodeId>, StoreError> {
-        let snapshot = self.graph().read();
-        let label = db_string("Fact")?;
-        let prop = db_string(ID)?;
-        let value = id_value(id)?;
-        let Some(rows) = snapshot.nodes_with_property_eq(&label, &prop, &value) else {
-            return Ok(None);
-        };
-        for row in rows.iter() {
-            let Some(node) = snapshot.node_id_for_row(RowIndex::new(row)) else {
-                continue;
-            };
-            if snapshot.node_properties(node).is_some() {
-                return Ok(Some(node));
-            }
-        }
-        Ok(None)
+        fact_node_in(&self.graph().read(), id)
     }
+}
+
+/// Resolve a fact's `NodeId` by its domain id within a given snapshot — the committed graph
+/// for [`Store::fact_node_by_id`], or a transaction's working graph (`mutator.read()`) for the
+/// in-txn idempotency probe in [`Store::promote_fact`], so the probe and its write share one
+/// view under the write lock.
+pub(crate) fn fact_node_in(snapshot: &SeleneGraph, id: &Id) -> Result<Option<NodeId>, StoreError> {
+    let label = db_string("Fact")?;
+    let prop = db_string(ID)?;
+    let value = id_value(id)?;
+    let Some(rows) = snapshot.nodes_with_property_eq(&label, &prop, &value) else {
+        return Ok(None);
+    };
+    for row in rows.iter() {
+        let Some(node) = snapshot.node_id_for_row(RowIndex::new(row)) else {
+            continue;
+        };
+        if snapshot.node_properties(node).is_some() {
+            return Ok(Some(node));
+        }
+    }
+    Ok(None)
 }

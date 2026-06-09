@@ -211,20 +211,11 @@ impl Store {
         }
 
         // Resolve the canonical subject entity from the team fact's ABOUT edge — the global
-        // copy points at the same shared entity node.
+        // copy points at the same shared entity node. The team fact is not modified here, so
+        // this committed read is stable for the write below.
         let subject_entity = self.about_neighbor(team_fact)?.ok_or_else(|| {
             StoreError::decode("promoted team fact has no ABOUT edge".to_string())
         })?;
-
-        // Pre-probe the committed snapshot for idempotency / partial-write recovery.
-        let existing_global = self.fact_node_by_id(&global_fact.identity.id)?;
-        let (existing_ledger, existing_audit) = {
-            let snapshot = self.graph().read();
-            (
-                find_by_candidate(&snapshot, &ledger.candidate_fact_id)?,
-                audit::find_existing(&snapshot, &audit.identity.id)?,
-            )
-        };
 
         let (global_labels, global_props) = fact::to_node(global_fact)?;
         let about_props = fact::about_props(about)?;
@@ -236,6 +227,14 @@ impl Store {
         let mut txn = self.graph().begin_write();
         let ids = {
             let mut mutator = txn.mutator();
+            // Probe for idempotency / partial-write recovery against the in-txn working graph,
+            // under the write lock — so each probe and its write are atomic and no concurrent
+            // committer can slip a duplicate global node, ledger row, or audit between them. The
+            // UNIQUE ids are the commit-time backstop; this keeps the heal decision consistent.
+            let existing_global =
+                crate::attestation::fact_node_in(mutator.read(), &global_fact.identity.id)?;
+            let existing_ledger = find_by_candidate(mutator.read(), &ledger.candidate_fact_id)?;
+            let existing_audit = audit::find_existing(mutator.read(), &audit.identity.id)?;
             let global_node = match existing_global {
                 Some(node) => node,
                 None => mutator.create_node(global_labels, global_props)?,
@@ -320,22 +319,6 @@ impl Store {
             ));
         }
 
-        let already_quarantined = {
-            let snapshot = self.graph().read();
-            let expired_key = db_string(EXPIRED_AT)?;
-            snapshot
-                .node_properties(global_fact)
-                .is_some_and(|props| props.get(&expired_key).is_some())
-        };
-        let (existing_ledger, existing_demote, existing_quarantine) = {
-            let snapshot = self.graph().read();
-            (
-                find_by_candidate(&snapshot, &ledger.candidate_fact_id)?,
-                audit::find_existing(&snapshot, &demote_audit.identity.id)?,
-                audit::find_existing(&snapshot, &quarantine_audit.identity.id)?,
-            )
-        };
-
         let demoted_props = lineage_props(&demoted.temporal)?;
         let (ledger_labels, ledger_props) = to_node(ledger)?;
         let audit_edge = db_string(Audit::LABEL)?;
@@ -343,6 +326,26 @@ impl Store {
         let mut txn = self.graph().begin_write();
         {
             let mut mutator = txn.mutator();
+            // Probe under the write lock against the in-txn working graph, so the
+            // already-quarantined guard and the ledger/audit dedup are atomic with their writes.
+            // Key the short-circuit on the status mirror, not bare `expired_at` presence: an
+            // expiry written by another path (e.g. a future supersession writer) must still get
+            // `status = quarantined` here, keeping `expired_at` and `status` set together (06 §4).
+            let already_quarantined = {
+                let status_key = db_string(STATUS)?;
+                mutator
+                    .read()
+                    .node_properties(global_fact)
+                    .and_then(|props| props.get(&status_key).cloned())
+                    .map(|value| enum_from_value::<FactStatus>(&value))
+                    .transpose()?
+                    == Some(FactStatus::Quarantined)
+            };
+            let existing_ledger = find_by_candidate(mutator.read(), &ledger.candidate_fact_id)?;
+            let existing_demote = audit::find_existing(mutator.read(), &demote_audit.identity.id)?;
+            let existing_quarantine =
+                audit::find_existing(mutator.read(), &quarantine_audit.identity.id)?;
+
             materialize::ensure_edge(
                 &mut mutator,
                 DemotedFrom::LABEL,
@@ -406,5 +409,45 @@ impl Store {
                 .next()
                 .map(|edge| edge.neighbor)
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{from_properties, to_node};
+    use aionforge_domain::blocks::Identity;
+    use aionforge_domain::ids::Id;
+    use aionforge_domain::namespace::Namespace;
+    use aionforge_domain::nodes::forensic::{Promotion, PromotionStatus};
+    use aionforge_domain::time::Timestamp;
+
+    fn ts() -> Timestamp {
+        "2026-06-08T09:00:00-05:00[America/Chicago]"
+            .parse()
+            .expect("valid zoned datetime")
+    }
+
+    /// A `pending` ledger row exercises the `None` branches of `resolved_at`/`promoted_fact_id`,
+    /// which no store write path produces (the substrate persists only terminal rows), so this
+    /// guards the round-trip of the optional fields directly.
+    #[test]
+    fn a_pending_ledger_row_round_trips_with_its_optional_fields_unset() {
+        let row = Promotion {
+            identity: Identity {
+                id: Id::generate(),
+                ingested_at: ts(),
+                namespace: Namespace::System,
+                expired_at: None,
+            },
+            candidate_fact_id: Id::generate(),
+            posterior: 0.5,
+            k: 2,
+            status: PromotionStatus::Pending,
+            resolved_at: None,
+            promoted_fact_id: None,
+        };
+        let (_, props) = to_node(&row).expect("to_node");
+        let back = from_properties(&props).expect("from_properties");
+        assert_eq!(row, back);
     }
 }
