@@ -58,13 +58,7 @@ fn provenance_current_support_facts_includes_grounded_facts() {
     // Ground it: supporter -SUPPORTS-> grounded, and grounded -HAS_PROVENANCE-> record.
     let prov_id = Id::generate();
     insert_provenance(&store, &prov_id, &grounded.identity.id);
-    insert_edge(
-        &store,
-        "MATCH (a:Fact {id: $from}), (b:Fact {id: $to}) \
-         INSERT (a)-[:SUPPORTS {weight: 1.0}]->(b)",
-        &supporter.identity.id,
-        &grounded.identity.id,
-    );
+    support_edge(&store, &supporter.identity.id, &grounded.identity.id);
     insert_edge(
         &store,
         "MATCH (a:Fact {id: $from}), (b:ProvenanceRecord {id: $to}) \

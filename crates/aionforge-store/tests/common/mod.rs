@@ -250,3 +250,20 @@ pub fn insert_edge(store: &Store, source: &str, from: &Id, to: &Id) {
         .unwrap();
     store.execute(&query).expect("insert edge");
 }
+
+/// Wire a `Fact -SUPPORTS-> Fact` edge, binding the `NOT NULL` Float `weight` as a
+/// parameter (a bare `1.0` literal parses as `Decimal` and trips the schema's `Float`
+/// type check).
+pub fn support_edge(store: &Store, from: &Id, to: &Id) {
+    let query = BoundQuery::new(
+        "MATCH (a:Fact {id: $from}), (b:Fact {id: $to}) \
+         INSERT (a)-[:SUPPORTS {weight: $weight}]->(b)",
+    )
+    .bind_uuid("from", from)
+    .unwrap()
+    .bind_uuid("to", to)
+    .unwrap()
+    .bind("weight", Value::Float(1.0))
+    .unwrap();
+    store.execute(&query).expect("insert SUPPORTS edge");
+}

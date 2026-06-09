@@ -16,7 +16,9 @@ use aionforge_domain::value::ObjectValue;
 
 use aionforge_store::{BoundQuery, NodeId, QueryResult, SearchHit, SearchKind, Store, Value};
 
-use common::{entity, fact, identity, insert_scope, open_window, stats, store, ts, zdt};
+use common::{
+    entity, fact, identity, insert_scope, open_window, stats, store, support_edge, ts, zdt,
+};
 
 /// A minimal raw episode (no embedding — PageRank ignores vectors entirely).
 fn episode(content: &str) -> Episode {
@@ -51,19 +53,6 @@ fn mention(store: &Store, episode_id: &Id, entity_id: &Id) {
     .bind("ts", zdt())
     .unwrap();
     store.execute(&query).expect("insert MENTIONS edge");
-}
-
-/// Wire a `Fact -SUPPORTS-> Fact` edge by domain id (weight is `NOT NULL` on the type).
-fn support(store: &Store, from_fact_id: &Id, to_fact_id: &Id) {
-    let query = BoundQuery::new(
-        "MATCH (a:Fact {id: $from}), (b:Fact {id: $to}) \
-         INSERT (a)-[:SUPPORTS {weight: 1.0}]->(b)",
-    )
-    .bind_uuid("from", from_fact_id)
-    .unwrap()
-    .bind_uuid("to", to_fact_id)
-    .unwrap();
-    store.execute(&query).expect("insert SUPPORTS edge");
 }
 
 /// The matched nodes of a hit list, sorted, for set comparison.
@@ -235,7 +224,7 @@ fn mass_spreads_across_support_chains_and_skips_disconnected_facts() {
         )
         .expect("assert f3");
 
-    support(&store, &f1_id, &f2_id);
+    support_edge(&store, &f1_id, &f2_id);
 
     // Seeding on E1 alone reaches F2 two hops away (E1 -ABOUT- F1 -SUPPORTS-> F2): the
     // associative, multi-hop behavior the signal exists for. F3, in its own component,
