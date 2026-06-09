@@ -3,7 +3,7 @@
 //! Where the model-backed [`LLMLinkEvolver`](crate::LLMLinkEvolver) judges *which kind* of
 //! relationship holds, the rule evolver draws the one relationship a pure-vector method can infer:
 //! `related_to`, to every candidate it is offered, with the source-to-candidate embedding cosine as
-//! the confidence. It is [`Infallible`](std::convert::Infallible) and fully deterministic, so the
+//! the confidence. It is [`Infallible`] and fully deterministic, so the
 //! off-cursor [`LinkEvolvePass`](crate::LinkEvolvePass) is testable with no network and the rule
 //! tier is always present beneath the optional LLM tier (the layered-determinism doctrine, 04
 //! §*Canonical vs. distilled*). The candidate set, the confidence floor, and the cascade guard are

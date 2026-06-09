@@ -3,7 +3,7 @@
 //! [`Memory`] is the one object a host holds. It wires the capture path and the
 //! retrieval path over a shared store and a single embedder, so a caller writes with
 //! [`Memory::capture`] and reads with [`Memory::search`] without naming the
-//! subsystems. It is generic over the [`Embedder`](aionforge_domain::contracts::Embedder)
+//! subsystems. It is generic over the [`Embedder`]
 //! seam — the real HTTP client in production, a fake in tests — and fixes the
 //! capture-side privacy filter to the security crate's default rule set.
 //!

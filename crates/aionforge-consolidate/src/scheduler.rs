@@ -57,7 +57,7 @@ enum EpisodeOutcome {
 ///
 /// Holds the registered passes, the tuning, and an injected clock. The retry count is not
 /// kept here — it is derived per failure from the durable audit trail, so it survives a
-/// restart (see [`Self::handle_failure`]). Generic over the [`Clock`] so tests inject a fixed
+/// restart (see `handle_failure`). Generic over the [`Clock`] so tests inject a fixed
 /// time; production uses [`SystemClock`].
 pub struct Consolidator<C: Clock = SystemClock> {
     store: Arc<Store>,

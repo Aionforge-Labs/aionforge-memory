@@ -10,7 +10,7 @@
 //! seam only renders the candidate, mirroring how [`crate::rule_summarizer`] only renders prose.
 //!
 //! Its [`Error`](aionforge_domain::contracts::SkillInducer::Error) is
-//! [`Infallible`](std::convert::Infallible): a pure rule inducer cannot fail, and the type
+//! [`Infallible`]: a pure rule inducer cannot fail, and the type
 //! statically forbids a network- or model-backed default from ever masquerading as the M3
 //! inducer.
 

@@ -46,7 +46,7 @@ impl BoundQuery {
         self.bind(name, v)
     }
 
-    /// Bind a parameter to an [`Id`] as a native UUID value (convenience over
+    /// Bind a parameter to an [`Id`](aionforge_domain::ids::Id) as a native UUID value (convenience over
     /// [`BoundQuery::bind`]). Use this for id-equality filters so the bound value's
     /// type matches the UUID-typed id columns.
     ///
