@@ -86,7 +86,14 @@ impl Store {
         let mut txn = self.graph().begin_write();
         let id = {
             let mut mutator = txn.mutator();
-            mutator.create_node(labels, props)?
+            // Content-addressed dedup against the in-txn working graph, under the write lock: a
+            // replayed event (same `AuditEvent.id`) is a no-op that returns the existing node, so a
+            // deterministic retry — e.g. a refused attestation re-sent verbatim — never trips the
+            // `id` UNIQUE constraint and surfaces a spurious store error. Mirrors `attest_fact`.
+            match audit::find_existing(mutator.read(), &audit.identity.id)? {
+                Some(node) => node,
+                None => mutator.create_node(labels, props)?,
+            }
         };
         txn.commit()?;
         Ok(id)

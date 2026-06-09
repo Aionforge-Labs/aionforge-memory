@@ -293,6 +293,118 @@ fn promotion_is_atomic_idempotent_and_preserves_the_original() {
 }
 
 #[test]
+fn a_re_promotion_after_demotion_restores_the_global_copy() {
+    let store = store();
+    let (team_node, team) = team_fact(&store);
+    let global = global_copy(&team);
+    let about = About {
+        temporal: lineage(),
+    };
+    let promoted = PromotedTo {
+        temporal: lineage(),
+    };
+
+    // Promote, then demote on lost support: the global copy is quarantined and expired.
+    let ids = store
+        .promote_fact(
+            team_node,
+            &global,
+            &about,
+            &promoted,
+            &ledger(
+                team.identity.id,
+                PromotionStatus::Promoted,
+                Some(global.identity.id),
+            ),
+            &audit(
+                AuditKind::Promote,
+                team.identity.id,
+                Id::from_content_hash(b"sub"),
+                "p|1",
+            ),
+        )
+        .expect("promote");
+    let global_node = ids.global_fact;
+    store
+        .demote_fact(
+            global_node,
+            team_node,
+            &DemotedFrom {
+                temporal: lineage(),
+            },
+            &now(),
+            &ledger(
+                team.identity.id,
+                PromotionStatus::Rejected,
+                Some(global.identity.id),
+            ),
+            &audit(
+                AuditKind::Demote,
+                global.identity.id,
+                Id::from_content_hash(b"sub"),
+                "d|1",
+            ),
+            &audit(
+                AuditKind::Quarantine,
+                global.identity.id,
+                Id::from_content_hash(b"sub"),
+                "q|1",
+            ),
+        )
+        .expect("demote");
+    let quarantined = store
+        .fact_by_node_id(global_node)
+        .expect("read")
+        .expect("global");
+    assert_eq!(quarantined.status, FactStatus::Quarantined);
+    assert!(quarantined.identity.expired_at.is_some());
+
+    // Support regained: a re-promotion reuses the same content-addressed node, so it must restore
+    // it to live — otherwise the ledger reads `promoted` while the copy stays invisible.
+    let ids2 = store
+        .promote_fact(
+            team_node,
+            &global,
+            &about,
+            &promoted,
+            &ledger(
+                team.identity.id,
+                PromotionStatus::Promoted,
+                Some(global.identity.id),
+            ),
+            &audit(
+                AuditKind::Promote,
+                team.identity.id,
+                Id::from_content_hash(b"sub"),
+                "p|2",
+            ),
+        )
+        .expect("re-promote");
+    assert_eq!(
+        ids2.global_fact, global_node,
+        "the re-promotion reuses the same global node"
+    );
+    let restored = store
+        .fact_by_node_id(global_node)
+        .expect("read")
+        .expect("global");
+    assert_eq!(
+        restored.status,
+        FactStatus::Active,
+        "the reused copy is restored to active"
+    );
+    assert!(
+        restored.identity.expired_at.is_none(),
+        "the quarantine expiry is cleared on re-promotion"
+    );
+    let entry = store
+        .promotion_by_candidate(&team.identity.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(entry.status, PromotionStatus::Promoted);
+}
+
+#[test]
 fn demotion_quarantines_the_global_copy_and_leaves_the_original() {
     let store = store();
     let (team_node, team) = team_fact(&store);

@@ -231,8 +231,10 @@ pub struct PromotionConfig {
     pub default_category: String,
     /// Per-category overrides. A sensitive category (e.g. `pii`) raises `k` and the
     /// threshold above the defaults. Empty by default; a `BTreeMap` keeps the rendered key
-    /// order canonical. When a candidate's attestations span several categories, the
-    /// strictest applicable rule governs.
+    /// order canonical. When a candidate's attestations span several categories the effective
+    /// gate composes the maximum `k` and the maximum threshold independently, so the bar may be
+    /// stricter than any single rule and a sensitive-category fact is never promoted under a
+    /// laxer count or threshold.
     pub categories: BTreeMap<String, CategoryPromotionRule>,
 }
 
@@ -241,7 +243,11 @@ impl Default for PromotionConfig {
         Self {
             enabled: false,
             default_k: 3,
-            default_threshold: 0.95,
+            // The highest threshold a quorum of `default_k = 3` can reach under the Beta(1, 1)
+            // prior: the bounded posterior tops out at (alpha + k) / (alpha + beta + k) = 4/5, so a
+            // higher default would be mutually unsatisfiable with k = 3 and promote nothing.
+            // `Config::validate` enforces this reachability; a stricter global bar raises both.
+            default_threshold: 0.80,
             prior_alpha: 1.0,
             prior_beta: 1.0,
             default_category: "reliability".to_owned(),
@@ -446,12 +452,8 @@ impl Config {
             }
         }
         if self.promotion.enabled {
-            validate_promotion_rule(
-                "promotion.default_k",
-                "promotion.default_threshold",
-                self.promotion.default_k,
-                self.promotion.default_threshold,
-            )?;
+            // Priors first: the reachability check inside `validate_promotion_rule` divides by
+            // them, so they must be finite and positive before any gate is evaluated.
             if !self.promotion.prior_alpha.is_finite() || self.promotion.prior_alpha <= 0.0 {
                 return Err(ConfigError::invalid(
                     "promotion.prior_alpha",
@@ -464,6 +466,14 @@ impl Config {
                     "must be a finite value greater than zero",
                 ));
             }
+            validate_promotion_rule(
+                "promotion.default_k",
+                "promotion.default_threshold",
+                self.promotion.default_k,
+                self.promotion.default_threshold,
+                self.promotion.prior_alpha,
+                self.promotion.prior_beta,
+            )?;
             if self.promotion.default_category.trim().is_empty() {
                 return Err(ConfigError::missing("promotion.default_category"));
             }
@@ -473,6 +483,8 @@ impl Config {
                     &format!("promotion.categories.{category}.threshold"),
                     rule.k,
                     rule.threshold,
+                    self.promotion.prior_alpha,
+                    self.promotion.prior_beta,
                 )?;
             }
         }
@@ -481,15 +493,25 @@ impl Config {
 }
 
 /// Validate one `(k, threshold)` promotion gate: `k >= 2` (a quorum of one is not a
-/// quorum and reopens single-attester laundering) and `0.5 < threshold <= 1.0` (at or
+/// quorum and reopens single-attester laundering), `0.5 < threshold <= 1.0` (at or
 /// below `0.5` the uninformative prior alone could clear it; above `1.0` is unreachable
-/// for a bounded posterior, so it would lock the category shut). The `!(… )` form also
-/// rejects a `NaN` threshold, which fails every ordered comparison.
+/// for a bounded posterior, so it would lock the category shut), and the threshold
+/// **reachable** at that `k` under the prior. The `!(… )` form also rejects a `NaN`
+/// threshold, which fails every ordered comparison.
+///
+/// The reachability check is the cross-field guard. The reliability-weighted posterior maxes
+/// out at `(prior_alpha + k) / (prior_alpha + prior_beta + k)` when all `k` attesters are
+/// perfectly reliable; if that ceiling is below the threshold the two AND-ed gates are mutually
+/// unsatisfiable (`k` attesters can never clear the bar), so the policy would silently promote
+/// nothing and `k` would mislead. Callers must validate the priors are finite and positive
+/// before this runs.
 fn validate_promotion_rule(
     k_key: &str,
     threshold_key: &str,
     k: u64,
     threshold: f64,
+    prior_alpha: f64,
+    prior_beta: f64,
 ) -> Result<(), ConfigError> {
     if k < 2 {
         return Err(ConfigError::invalid(
@@ -501,6 +523,16 @@ fn validate_promotion_rule(
         return Err(ConfigError::invalid(
             threshold_key.to_owned(),
             "must be in the range (0.5, 1.0]",
+        ));
+    }
+    let max_posterior = (prior_alpha + k as f64) / (prior_alpha + prior_beta + k as f64);
+    if threshold > max_posterior {
+        return Err(ConfigError::invalid(
+            threshold_key.to_owned(),
+            format!(
+                "is unreachable with {k_key} = {k} under the prior (the posterior tops out at \
+                 {max_posterior:.3}); lower the threshold or raise the count"
+            ),
         ));
     }
     Ok(())

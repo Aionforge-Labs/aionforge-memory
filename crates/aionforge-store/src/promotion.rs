@@ -121,6 +121,22 @@ fn find_by_candidate(snapshot: &SeleneGraph, candidate: &Id) -> Result<Option<No
     Ok(None)
 }
 
+/// Whether a reused global copy needs restoring to live before a re-promotion: it is not
+/// `active`, or it still carries an `expired_at` (the state demotion leaves). A freshly created
+/// or already-live copy needs neither, so a healthy-promotion replay skips the update — keeping
+/// `promote_fact` a true no-op when nothing changed.
+fn needs_resurrection(snapshot: &SeleneGraph, node: NodeId) -> Result<bool, StoreError> {
+    let Some(props) = snapshot.node_properties(node) else {
+        return Ok(false);
+    };
+    let status = props
+        .get(&db_string(STATUS)?)
+        .map(enum_from_value::<FactStatus>)
+        .transpose()?;
+    let expired = props.get(&db_string(EXPIRED_AT)?).is_some();
+    Ok(status != Some(FactStatus::Active) || expired)
+}
+
 /// The bi-temporal property map shared by `PROMOTED_TO` and `DEMOTED_FROM`.
 fn lineage_props(temporal: &aionforge_domain::time::BiTemporal) -> Result<PropertyMap, StoreError> {
     Ok(PropertyMap::from_pairs(fact::bitemporal_pairs(temporal))?)
@@ -184,7 +200,10 @@ impl Store {
     /// Idempotent: the global copy's id is content-addressed, so a replay finds the existing
     /// node (the `Fact.id` probe) and writes no second one; the lineage and `ABOUT` edges are
     /// written only when absent (healing a crash between the node and its edges); the ledger
-    /// is created or updated in place; the audit is content-addressed and deduped.
+    /// is created or updated in place; the audit is content-addressed and deduped. When the
+    /// reused node was left `quarantined`/`expired` by a prior demotion, a re-promotion (support
+    /// regained) restores it to live — status `active`, `expired_at` cleared — so it re-enters
+    /// the current-support set; an already-live copy is left untouched (write-when-changed).
     ///
     /// # Errors
     /// Returns [`StoreError::Invariant`] if the `ABOUT` or `PROMOTED_TO` window is out of
@@ -236,7 +255,25 @@ impl Store {
             let existing_ledger = find_by_candidate(mutator.read(), &ledger.candidate_fact_id)?;
             let existing_audit = audit::find_existing(mutator.read(), &audit.identity.id)?;
             let global_node = match existing_global {
-                Some(node) => node,
+                Some(node) => {
+                    // Resurrect a previously-demoted copy. The global id is content-addressed, so a
+                    // re-promotion (support regained) reuses this same node — which demotion left
+                    // `quarantined` and `expired`. Restore it to live (status = active, drop
+                    // `expired_at`) so it re-enters current_support_facts; otherwise the ledger
+                    // would read `promoted` while the copy stayed invisible. Write-when-changed so a
+                    // healthy-promotion replay is a true no-op (06 §4).
+                    if needs_resurrection(mutator.read(), node)? {
+                        mutator.update_node(
+                            node,
+                            LabelDiff::new([], [])?,
+                            PropertyDiff::new(
+                                [(key(STATUS)?, enum_value(&FactStatus::Active)?)],
+                                [key(EXPIRED_AT)?],
+                            )?,
+                        )?;
+                    }
+                    node
+                }
                 None => mutator.create_node(global_labels, global_props)?,
             };
             // ABOUT + PROMOTED_TO: write-when-absent so a partial prior write is healed and a
