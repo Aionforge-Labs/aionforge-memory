@@ -756,12 +756,15 @@ impl Promoter {
     }
 
     fn attest_audit(&self, req: &AttestRequest) -> AuditEvent {
-        // Attestation is not monotonic — a fact can be de-attested and re-attested by the same
-        // attester at a later instant — so the audit id folds `attested_at`, keeping each
-        // attestation a distinct row in the fact's history while a replay still dedupes.
+        // Attestation is monotonic here: the `ATTESTED_BY` edge is write-when-absent and there is
+        // no de-attest path, so a re-attest by the same attester is a no-op at the edge (its
+        // instant/signature are never rewritten). The audit must mirror that — a stable
+        // content_id keyed one-per-(fact, attester) collapses a re-attest to the same row, so the
+        // ledger never claims two attestations for one immutable edge. (A *rejected* attestation
+        // writes no edge and genuinely recurs, so `audit_rejection` folds the instant into its key.)
         let key = format!("attest|{}|{}", req.fact_id, req.attester_id);
         AuditEvent {
-            identity: system_identity(cycle_id("attest", &key, &req.attested_at), &req.attested_at),
+            identity: system_identity(content_id("attest", &key), &req.attested_at),
             kind: AuditKind::Attest,
             subject_id: req.fact_id,
             actor_id: req.attester_id,
@@ -904,28 +907,4 @@ fn rejection_to_error(rejection: AttestRejection) -> PromotionError {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::DemotionReason;
-
-    /// The structural and reliability demotions must never share an audit content id, and the
-    /// structural tags must stay byte-for-byte what they were before the shared-helper refactor —
-    /// the content-addressed audit id is `(tag, subject)`, so a changed tag would either collide
-    /// the two paths or silently re-key the existing lost-support audit.
-    #[test]
-    fn demotion_reason_tags_are_distinct_and_structural_tags_are_pinned() {
-        let lost = DemotionReason::LostSupport;
-        let decay = DemotionReason::ReliabilityDecay;
-
-        assert_eq!(lost.reason(), "lost_support");
-        assert_eq!(lost.demote_tag(), "demote");
-        assert_eq!(lost.quarantine_tag(), "quarantine");
-
-        assert_eq!(decay.reason(), "reliability_decay");
-        assert_eq!(decay.demote_tag(), "demote_reliability");
-        assert_eq!(decay.quarantine_tag(), "quarantine_reliability");
-
-        assert_ne!(lost.reason(), decay.reason());
-        assert_ne!(lost.demote_tag(), decay.demote_tag());
-        assert_ne!(lost.quarantine_tag(), decay.quarantine_tag());
-    }
-}
+mod tests;

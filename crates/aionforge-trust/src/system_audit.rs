@@ -14,10 +14,11 @@ use aionforge_domain::time::Timestamp;
 ///
 /// A same-decision replay computes the same id and dedupes to a no-op (the property the idempotent
 /// write-set relies on). Used where a record is genuinely one-per-`(tag, key)`-lifetime and must
-/// resurrect the *same* node on a re-derivation: the promotion ledger, the global fact copy, and
-/// the content-idempotent consolidation audits, where re-running the same decision must never mint
-/// a duplicate. A record that legitimately recurs for the same subject across cycles — a governance
-/// transition or an attestation — uses [`cycle_id`] instead.
+/// resurrect the *same* node on a re-derivation: the promotion ledger, the global fact copy, the
+/// content-idempotent consolidation audits, and an accepted attestation — its `ATTESTED_BY` edge is
+/// write-once with no de-attest path, so a re-attest must collapse to the same audit row, not mint a
+/// second. A record that legitimately recurs for the same subject across cycles — a governance
+/// transition (promote → demote → re-promote) — uses [`cycle_id`] instead.
 pub(crate) fn content_id(tag: &str, key: &str) -> Id {
     Id::from_content_hash(format!("{tag}|{key}").as_bytes())
 }
@@ -25,14 +26,16 @@ pub(crate) fn content_id(tag: &str, key: &str) -> Id {
 /// A content-addressed id over `(tag, key)` plus the event's **millisecond instant** (M4.T06).
 ///
 /// The discriminating sibling of [`content_id`]. A governance transition (promote, demote,
-/// quarantine) or an attestation recurs for the same subject across cycles — a fact promoted, then
-/// demoted, then re-promoted is three real events — so folding the host `now` keeps each one a
-/// distinct row in the by-subject audit history. Idempotency survives: a crash-replay re-supplies
-/// the *same* host instant (stored time is never an ambient clock read), so the id re-computes
-/// identically and the write is still a no-op. The residual is sub-millisecond: two genuinely
-/// distinct decisions on one subject within the same millisecond would collapse — not reachable for
-/// the coarse-grained, reason-tagged governance transitions, and it mirrors the shipped
-/// `attest_reject` id scheme.
+/// quarantine) recurs for the same subject across cycles — a fact promoted, then demoted, then
+/// re-promoted is three real events — so folding the host `now` keeps each one a distinct row in
+/// the by-subject audit history. This is sound only because each governance transition is gated on
+/// a real ledger-state change before its audit fires (a re-promote of an already-promoted fact
+/// early-returns and never reaches the audit), so a distinct id always means a distinct event.
+/// Idempotency survives: a crash-replay re-supplies the *same* host instant (stored time is never
+/// an ambient clock read), so the id re-computes identically and the write is still a no-op. The
+/// residual is sub-millisecond: two genuinely distinct decisions on one subject within the same
+/// millisecond would collapse — not reachable for the coarse-grained, reason-tagged governance
+/// transitions, and it mirrors the shipped `attest_reject` id scheme.
 pub(crate) fn cycle_id(tag: &str, key: &str, now: &Timestamp) -> Id {
     let millis = now.timestamp().as_millisecond();
     Id::from_content_hash(format!("{tag}|{key}|{millis}").as_bytes())
