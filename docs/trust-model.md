@@ -36,10 +36,11 @@ Three things move a score, and they are deliberately asymmetric — it is far ea
 than to earn it.
 
 - **A contradiction (loss).** When an agent's fact is contradicted by a higher-trust one and
-  quarantined, each distinct agent that produced the losing fact takes a failure. This is the
-  heaviest weight.
+  quarantined, each distinct agent that produced the losing fact takes a full-weight failure.
 - **An invalidated attestation (loss).** When a fact is demoted, each distinct agent that attested
-  it takes a failure in the fact's category — they vouched for something that did not hold.
+  it takes a failure in the fact's category — they vouched for something that did not hold. By
+  default this carries the same full weight as a contradiction; the two loss channels are tuned
+  independently, so a deployment can weigh one heavier than the other.
 - **An agreement (gain).** When a later, independently-authored fact carries what an agent earlier
   asserted, that agent earns a success — but a small one, well under the contradiction weight, and
   only when the corroborating fact was authored by a *different* agent. A producer that also authored
