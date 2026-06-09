@@ -34,7 +34,7 @@ use aionforge_domain::trust::beta_posterior;
 use aionforge_store::{AttesterRecord, CandidateSet, NodeId, Store, StoreError};
 
 use crate::attest_gate::{AttestError, AttestRejection, AttestationGate};
-use crate::system_audit::{content_id, system_identity};
+use crate::system_audit::{content_id, cycle_id, system_identity};
 
 /// A per-category promotion rule: a stricter quorum and posterior bar for a named category.
 #[derive(Debug, Clone, PartialEq)]
@@ -756,6 +756,12 @@ impl Promoter {
     }
 
     fn attest_audit(&self, req: &AttestRequest) -> AuditEvent {
+        // Attestation is monotonic here: the `ATTESTED_BY` edge is write-when-absent and there is
+        // no de-attest path, so a re-attest by the same attester is a no-op at the edge (its
+        // instant/signature are never rewritten). The audit must mirror that — a stable
+        // content_id keyed one-per-(fact, attester) collapses a re-attest to the same row, so the
+        // ledger never claims two attestations for one immutable edge. (A *rejected* attestation
+        // writes no edge and genuinely recurs, so `audit_rejection` folds the instant into its key.)
         let key = format!("attest|{}|{}", req.fact_id, req.attester_id);
         AuditEvent {
             identity: system_identity(content_id("attest", &key), &req.attested_at),
@@ -806,7 +812,11 @@ impl Promoter {
         now: &Timestamp,
     ) -> AuditEvent {
         AuditEvent {
-            identity: system_identity(content_id(tag, &subject.to_string()), now),
+            // A subject's governance transitions recur across cycles (promote -> demote ->
+            // re-promote), so the audit id folds `now` to keep each transition a distinct row in
+            // the subject's history. The promotion ledger and global copy keep their stable
+            // content_id — those must resurrect the same node on a re-derivation, not multiply.
+            identity: system_identity(cycle_id(tag, &subject.to_string(), now), now),
             kind,
             subject_id: subject,
             actor_id: subject,
@@ -897,28 +907,4 @@ fn rejection_to_error(rejection: AttestRejection) -> PromotionError {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::DemotionReason;
-
-    /// The structural and reliability demotions must never share an audit content id, and the
-    /// structural tags must stay byte-for-byte what they were before the shared-helper refactor —
-    /// the content-addressed audit id is `(tag, subject)`, so a changed tag would either collide
-    /// the two paths or silently re-key the existing lost-support audit.
-    #[test]
-    fn demotion_reason_tags_are_distinct_and_structural_tags_are_pinned() {
-        let lost = DemotionReason::LostSupport;
-        let decay = DemotionReason::ReliabilityDecay;
-
-        assert_eq!(lost.reason(), "lost_support");
-        assert_eq!(lost.demote_tag(), "demote");
-        assert_eq!(lost.quarantine_tag(), "quarantine");
-
-        assert_eq!(decay.reason(), "reliability_decay");
-        assert_eq!(decay.demote_tag(), "demote_reliability");
-        assert_eq!(decay.quarantine_tag(), "quarantine_reliability");
-
-        assert_ne!(lost.reason(), decay.reason());
-        assert_ne!(lost.demote_tag(), decay.demote_tag());
-        assert_ne!(lost.quarantine_tag(), decay.quarantine_tag());
-    }
-}
+mod tests;
