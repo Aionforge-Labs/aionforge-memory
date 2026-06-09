@@ -329,6 +329,47 @@ fn reliability_decay_demotes_a_promoted_fact_and_quarantines_the_global_copy() {
 }
 
 #[test]
+fn a_single_attester_decay_demotes_with_the_quorum_count_intact() {
+    // The discriminating case for the posterior gate: only ONE of two attesters decays, so the count
+    // conjunct still holds (k = 2 >= needed_k = 2) while the belief conjunct alone fails — the
+    // posterior is (1 + 0.95 + 0.333) / 4 ≈ 0.571, under the 0.70 bar. A count-only gate would leave
+    // this promoted; the posterior conjunct is what demotes it. The still-reliable case above anchors
+    // the other side of the bar (no decay ⇒ 0.725 ⇒ NoChange), so the two bracket the threshold.
+    let store = store();
+    let promoter = promoter(Arc::clone(&store), true);
+    let scorer = scorer(Arc::clone(&store));
+    let (_, fact_id, global_id, ann, _bo) =
+        promote(&store, &promoter, "one of two attesters goes bad");
+
+    // Decay only Ann; Bo stays reliable, so the quorum keeps its full count.
+    decay_attester(&store, &scorer, ann, 40);
+
+    let outcome = promoter
+        .evaluate_reliability_demotion(&fact_id, &ts())
+        .expect("demote");
+    assert!(
+        matches!(outcome, DemotionOutcome::Demoted { .. }),
+        "{outcome:?}"
+    );
+    assert!(
+        quarantined(&store, &global_id),
+        "demoted on belief while the count held"
+    );
+
+    // The recorded ledger pins the intent: the count stayed at quorum, so demotion fired on the
+    // posterior conjunct, not a count drop.
+    let ledger = store
+        .promotion_by_candidate(&fact_id)
+        .expect("ledger")
+        .expect("present");
+    assert_eq!(ledger.status, PromotionStatus::Rejected);
+    assert_eq!(
+        ledger.k, 2,
+        "the quorum count was intact; demotion was on belief alone"
+    );
+}
+
+#[test]
 fn a_still_reliable_promotion_is_not_reliability_demoted() {
     let store = store();
     let promoter = promoter(Arc::clone(&store), true);
