@@ -353,7 +353,6 @@ pub fn arb_edge_label() -> impl Strategy<Value = EdgeLabel> {
         EdgeLabel::RecentIn,
         EdgeLabel::DependsOn,
         EdgeLabel::DerivedFrom,
-        EdgeLabel::WrittenBy,
         EdgeLabel::AttestedBy,
         EdgeLabel::PromotedTo,
         EdgeLabel::DemotedFrom,

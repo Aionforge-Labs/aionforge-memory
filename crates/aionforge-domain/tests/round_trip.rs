@@ -15,7 +15,7 @@ mod support;
 use aionforge_domain::edges::{
     About, AttestedBy, Audit, Contradicts, DemotedFrom, DependsOn, DerivedFrom, HasFailure,
     HasProvenance, InScope, InSession, Mentions, PromotedTo, RecentIn, RelatesTo, SupersededBy,
-    Supports, ValidAt, WrittenBy,
+    Supports, ValidAt,
 };
 use aionforge_domain::nodes::agent::{Agent, Session};
 use aionforge_domain::nodes::anchors::{RecencyWindow, Scope, ValidityAnchor};
@@ -552,7 +552,6 @@ proptest! {
     #[test] fn rt_in_session(_ in Just(())) { round_trip(InSession); }
     #[test] fn rt_recent_in(_ in Just(())) { round_trip(RecentIn); }
     #[test] fn rt_depends_on(_ in Just(())) { round_trip(DependsOn); }
-    #[test] fn rt_written_by(_ in Just(())) { round_trip(WrittenBy); }
     #[test] fn rt_has_provenance(_ in Just(())) { round_trip(HasProvenance); }
     #[test] fn rt_audit(_ in Just(())) { round_trip(Audit); }
 }

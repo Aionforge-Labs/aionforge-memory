@@ -135,7 +135,7 @@ fn audit_kind_vocabulary() {
 
 #[test]
 fn edge_label_vocabulary() {
-    // §5: the 19 relationship names, SCREAMING_SNAKE_CASE.
+    // §5: the 18 relationship names, SCREAMING_SNAKE_CASE.
     let expected = [
         (EdgeLabel::Mentions, "MENTIONS"),
         (EdgeLabel::About, "ABOUT"),
@@ -148,7 +148,6 @@ fn edge_label_vocabulary() {
         (EdgeLabel::RecentIn, "RECENT_IN"),
         (EdgeLabel::DependsOn, "DEPENDS_ON"),
         (EdgeLabel::DerivedFrom, "DERIVED_FROM"),
-        (EdgeLabel::WrittenBy, "WRITTEN_BY"),
         (EdgeLabel::AttestedBy, "ATTESTED_BY"),
         (EdgeLabel::PromotedTo, "PROMOTED_TO"),
         (EdgeLabel::DemotedFrom, "DEMOTED_FROM"),
@@ -157,7 +156,7 @@ fn edge_label_vocabulary() {
         (EdgeLabel::HasProvenance, "HAS_PROVENANCE"),
         (EdgeLabel::Audit, "AUDIT"),
     ];
-    assert_eq!(expected.len(), 19);
+    assert_eq!(expected.len(), 18);
     for (variant, want) in expected {
         assert_eq!(tag(variant), want);
         // Each variant's serialized form matches its struct LABEL via as_str().

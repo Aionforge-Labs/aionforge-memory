@@ -56,7 +56,6 @@ const EDGE_KINDS: &[&str] = &[
     "RECENT_IN",
     "DEPENDS_ON",
     "DERIVED_FROM",
-    "WRITTEN_BY",
     "ATTESTED_BY",
     "PROMOTED_TO",
     "DEMOTED_FROM",
