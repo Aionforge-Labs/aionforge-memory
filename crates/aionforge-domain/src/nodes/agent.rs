@@ -3,7 +3,8 @@
 //! Both carry only the reduced [`Identity`] block (no stats): they are control /
 //! identity nodes, not retrievable memories. An [`Agent`] is the authoring
 //! principal that signs writes; a [`Session`] is the conversational scope an agent
-//! works within. Memories link to them via `WRITTEN_BY` / `IN_SESSION` (02 §5).
+//! works within. A memory's author is carried on the memory itself (`Episode.agent_id`
+//! and the signed `ProvenanceRecord`); a session links via `IN_SESSION` (02 §5).
 
 use std::collections::BTreeMap;
 

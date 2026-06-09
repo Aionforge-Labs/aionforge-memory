@@ -447,12 +447,6 @@ pub(crate) const EDGE_TYPES: &[TypeDdl] = &[
         ) STRICT"#,
     },
     TypeDdl {
-        name: "WRITTEN_BY",
-        ddl: r#"CREATE EDGE TYPE IF NOT EXISTS :WRITTEN_BY (
-            FROM :Episode, :Fact, :Entity, :Skill, :BadPattern, :Note, :CoreBlock TO :Agent
-        ) STRICT"#,
-    },
-    TypeDdl {
         name: "ATTESTED_BY",
         ddl: r#"CREATE EDGE TYPE IF NOT EXISTS :ATTESTED_BY (
             FROM :Fact, :CoreBlock TO :Agent,

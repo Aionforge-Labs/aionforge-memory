@@ -13,11 +13,12 @@
 //! attesters accrue. The promotion *policy* (`k`, threshold, priors, per-category rules) is
 //! injected; the math lives in [`aionforge_domain::trust::beta_posterior`].
 //!
-//! **Author exclusion (scoped).** The spec's "independent attestations" is realized here as
-//! distinct *attesters* (one signed vote per agent). Excluding a fact's own author would
-//! need an authorship edge the substrate does not yet populate (`WRITTEN_BY` is declared but
-//! unwired), so it is a documented follow-up; a self-attester is still only one vote and
-//! cannot meet `k >= 2` alone.
+//! **Author exclusion (scoped).** The spec's "independent attestations" is realized as
+//! distinct *attesters* (one signed vote per agent) gated at `k >= 2` and weighted by the
+//! sybil-bounded posterior — that triple *is* the v1 definition of independence (06 §4). A
+//! dedicated author-exclusion edge was considered and dropped (`WRITTEN_BY` removed, 02 §5):
+//! a self-attester is still only one vote and cannot meet `k >= 2` alone, and authorship,
+//! where needed, is read from `Fact -DERIVED_FROM-> Episode.agent_id`, never a parallel edge.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

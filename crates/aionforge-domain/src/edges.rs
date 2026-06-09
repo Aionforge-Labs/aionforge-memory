@@ -46,8 +46,6 @@ pub enum EdgeLabel {
     DependsOn,
     /// any → any (polymorphic): erasure cascade; distillation-lineage tracing.
     DerivedFrom,
-    /// any memory → `Agent`: authorship.
-    WrittenBy,
     /// `Fact`/`CoreBlock` → `Agent`: quorum promotion; attester reliability.
     AttestedBy,
     /// `Fact` → `Fact`: cross-namespace promotion lineage (team→global).
@@ -80,7 +78,6 @@ impl EdgeLabel {
             EdgeLabel::RecentIn => RecentIn::LABEL,
             EdgeLabel::DependsOn => DependsOn::LABEL,
             EdgeLabel::DerivedFrom => DerivedFrom::LABEL,
-            EdgeLabel::WrittenBy => WrittenBy::LABEL,
             EdgeLabel::AttestedBy => AttestedBy::LABEL,
             EdgeLabel::PromotedTo => PromotedTo::LABEL,
             EdgeLabel::DemotedFrom => DemotedFrom::LABEL,
@@ -245,17 +242,6 @@ pub struct DerivedFrom {
 impl DerivedFrom {
     /// The selene-db relationship label for this kind.
     pub const LABEL: &str = "DERIVED_FROM";
-}
-
-/// any memory → `Agent`: authorship (02 §5, not bi-temporal; marker).
-///
-/// Records which agent wrote the memory. No extra properties.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct WrittenBy;
-
-impl WrittenBy {
-    /// The selene-db relationship label for this kind.
-    pub const LABEL: &str = "WRITTEN_BY";
 }
 
 /// `Fact`/`CoreBlock` → `Agent`: a signed attestation (02 §5, not bi-temporal).

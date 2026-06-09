@@ -305,7 +305,6 @@ fn expected_edges() -> Vec<(&'static str, Vec<Prop>)> {
             "DERIVED_FROM",
             vec![req_imm("derived_at", K::ZonedDateTime)],
         ),
-        ("WRITTEN_BY", vec![]),
         (
             "ATTESTED_BY",
             vec![
