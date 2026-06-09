@@ -181,8 +181,10 @@ mod tests {
         Id::from_uuid(uuid::Uuid::from_u128(seed))
     }
 
-    /// A fully-populated audit event with distinct ids per field, so a payload that
-    /// dropped or transposed a field would be caught by the per-field tests below.
+    /// A fully-populated audit event with a distinct id per field, so the difference-based
+    /// per-field sweep below catches a *dropped* field. (A *transposed* field — a swap of two
+    /// equal-width slots, invisible to a difference test — is pinned by the golden layout's
+    /// distinct id/subject/actor values instead.)
     fn audit_event(kind: AuditKind, payload: serde_json::Value) -> AuditEvent {
         AuditEvent {
             identity: Identity {
@@ -250,19 +252,31 @@ mod tests {
     /// exact format — any future layout change fails here.
     #[test]
     fn audit_payload_golden_layout() {
+        // Distinct id/subject/actor values, each pinned at its own offset below. The
+        // difference-based per-field sweep cannot see a *transposition* of two equal-width UUID
+        // slots, so the golden carries that part of the contract: a swap of these three fields in
+        // `encode`'s array lands the wrong bytes here and fails.
         let event = AuditEvent {
             identity: Identity {
-                id: id(0),
+                id: id(1),
                 ingested_at: ts(999),
                 namespace: Namespace::System,
                 expired_at: None,
             },
             kind: AuditKind::Capture,
-            subject_id: id(0),
-            actor_id: id(0),
+            subject_id: id(2),
+            actor_id: id(3),
             payload: serde_json::json!({}),
             signature: "ignored".to_string(),
             occurred_at: ts(0),
+        };
+
+        // The 16-byte big-endian form of `Uuid::from_u128(n)` for a small `n`: all zeros but the
+        // final byte. Rebuilt by hand so the golden does not borrow the implementation's id codec.
+        let uuid_be = |n: u8| {
+            let mut bytes = [0u8; 16];
+            bytes[15] = n;
+            bytes
         };
 
         let mut expected = Vec::new();
@@ -270,13 +284,13 @@ mod tests {
         expected.extend_from_slice(&18u32.to_be_bytes());
         expected.extend_from_slice(b"aionforge.audit.v2");
         expected.extend_from_slice(&16u32.to_be_bytes());
-        expected.extend_from_slice(&[0u8; 16]); // id
+        expected.extend_from_slice(&uuid_be(1)); // id
         expected.extend_from_slice(&7u32.to_be_bytes());
         expected.extend_from_slice(b"capture");
         expected.extend_from_slice(&16u32.to_be_bytes());
-        expected.extend_from_slice(&[0u8; 16]); // subject
+        expected.extend_from_slice(&uuid_be(2)); // subject
         expected.extend_from_slice(&16u32.to_be_bytes());
-        expected.extend_from_slice(&[0u8; 16]); // actor
+        expected.extend_from_slice(&uuid_be(3)); // actor
         expected.extend_from_slice(&2u32.to_be_bytes());
         expected.extend_from_slice(b"{}"); // canonical empty payload
         expected.extend_from_slice(&0i64.to_be_bytes()); // occurred_at millis
@@ -352,9 +366,11 @@ mod tests {
         );
     }
 
-    /// The bytes survive the store's JSON round-trip (Value -> string -> Value), so a signature
-    /// stamped at emit time still recomputes after the event is read back. Guards the float
-    /// round-trip in particular.
+    /// The bytes survive a JSON round-trip, so a signature stamped at emit time still recomputes
+    /// after the event is read back from the store. This drives the payload through a string
+    /// (`to_string`/`from_str`) — a strictly harder case than the store's own structural
+    /// `Value -> JsonValue -> Value` clone, since it additionally forces the float through textual
+    /// reformatting. Guards the float round-trip in particular.
     #[test]
     fn audit_payload_is_stable_across_a_json_round_trip() {
         let event = audit_event(
