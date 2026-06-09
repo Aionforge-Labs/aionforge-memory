@@ -25,7 +25,7 @@ use aionforge_domain::time::{BiTemporal, Timestamp};
 use aionforge_domain::value::ObjectValue;
 use aionforge_engine::{DemotionOutcome, Memory, MemoryConfig, PromotionOutcome, PromotionPolicy};
 use aionforge_store::{BoundQuery, NodeId, Store, StoreConfig};
-use aionforge_trust::ReliabilityPolicy;
+use aionforge_trust::{ReliabilityPolicy, ReliabilityScorer};
 
 const PREDICATE: &str = "preferred_by";
 const EPS: f64 = 1e-9;
@@ -295,8 +295,34 @@ fn quarantined(store: &Store, global_id: &Id) -> bool {
         .is_some_and(|f| f.status == FactStatus::Quarantined && f.identity.expired_at.is_some())
 }
 
+/// Stage a producer decay for `agent` into the reliability event log **without** folding it into the
+/// agent's trust cache — the realistic "events recorded, not yet refolded" state the refold-first
+/// sweep must resolve. A standalone scorer builds the content-addressed events; the store records
+/// them raw, so `Agent.trust_scores` keeps its enrolled value until something refolds.
+fn stage_decay(store: &Arc<Store>, agent: Id, seed: u128) {
+    let victim = store
+        .fact_node_by_id(&produced_fact(store, agent, seed))
+        .expect("probe")
+        .expect("present");
+    let scorer = ReliabilityScorer::new(
+        Arc::clone(store),
+        ReliabilityPolicy {
+            enabled: true,
+            ..ReliabilityPolicy::default()
+        },
+    );
+    for event in &scorer.quarantine_decay(victim, &ts()).expect("build decay") {
+        store
+            .record_reliability_update(event)
+            .expect("record raw event");
+    }
+}
+
 #[test]
-fn the_refold_first_sweep_demotes_a_promotion_whose_attesters_decayed() {
+fn the_sweep_demotes_a_promotion_after_its_attesters_are_decayed() {
+    // The end-to-end facade path: promote, decay the attesters through the host-driven wrapper, then
+    // sweep. (The wrapper folds on apply, so the sweep's own refold is a no-op here; the dedicated
+    // refold-first proof is the next test, which leaves the cache stale.)
     let store = migrated_store();
     let memory = memory(&store, true);
     let ada = enroll(&store, 0.95);
@@ -326,8 +352,7 @@ fn the_refold_first_sweep_demotes_a_promotion_whose_attesters_decayed() {
         1
     );
 
-    // The sweep refolds the attesters first (their caches now read ≈0.333), then the gate fires:
-    // posterior ≈0.417 < 0.70.
+    // Both attesters now read ≈0.333, so the gate fires: posterior ≈0.417 < 0.70.
     let outcomes = memory
         .sweep_reliability_demotions(&[fact_id], &ts())
         .expect("sweep");
@@ -343,6 +368,86 @@ fn the_refold_first_sweep_demotes_a_promotion_whose_attesters_decayed() {
             .expect("present")
             .status,
         PromotionStatus::Rejected
+    );
+}
+
+#[test]
+fn the_sweep_refolds_a_stale_attester_cache_before_demoting() {
+    // The load-bearing refold-first proof. The attesters' decay events are staged into the log but
+    // NOT folded, so their caches still read the enrolled 0.95 — at which the posterior (0.725)
+    // clears the 0.70 bar and a non-refolding sweep would report NoChange. The sweep must refold the
+    // attesters from the committed log (→ 0.333, posterior 0.417) for the demotion to fire at all.
+    let store = migrated_store();
+    let memory = memory(&store, true);
+    let ada = enroll(&store, 0.95);
+    let bo = enroll(&store, 0.95);
+    let fact_id = team_fact(&store, "promote then stage a decay without folding");
+    attest(&store, &fact_id, &ada);
+    attest(&store, &fact_id, &bo);
+    let PromotionOutcome::Promoted { global_id, .. } =
+        memory.evaluate_promotion(&fact_id, &ts()).expect("promote")
+    else {
+        panic!("expected promotion");
+    };
+
+    // Stage the decays raw — events in the log, caches untouched.
+    stage_decay(&store, ada, 12);
+    stage_decay(&store, bo, 13);
+    assert!(
+        (agent_score(&store, &ada).expect("ada") - 0.95).abs() < EPS
+            && (agent_score(&store, &bo).expect("bo") - 0.95).abs() < EPS,
+        "the caches are stale at 0.95 before the sweep"
+    );
+
+    // The sweep's own refold is the only thing that can lower these caches; without it the gate
+    // would read 0.95 and not demote.
+    let outcomes = memory
+        .sweep_reliability_demotions(&[fact_id], &ts())
+        .expect("sweep");
+    assert!(
+        matches!(outcomes.as_slice(), [DemotionOutcome::Demoted { .. }]),
+        "the sweep refolded the stale caches and demoted: {outcomes:?}"
+    );
+    assert!(quarantined(&store, &global_id), "global copy quarantined");
+    assert!(
+        (agent_score(&store, &ada).expect("ada") - 1.0 / 3.0).abs() < EPS,
+        "the sweep's refold persisted the decayed score"
+    );
+}
+
+#[test]
+fn the_sweep_is_disabled_without_the_promoter_half() {
+    // Reliability ON, promotion OFF: the scorer can refold but there is no promoter to evaluate the
+    // demotion, so every candidate reports Disabled — the promoter-off arm of the both-on guard.
+    let store = migrated_store();
+    let memory = memory(&store, false);
+    let fact_id = team_fact(&store, "no promoter to demote through");
+    assert!(matches!(
+        memory
+            .sweep_reliability_demotions(&[fact_id], &ts())
+            .expect("sweep")
+            .as_slice(),
+        [DemotionOutcome::Disabled]
+    ));
+}
+
+#[test]
+fn the_sweep_reports_no_change_for_an_unpromoted_candidate() {
+    // Both halves on: an unknown id resolves to no node, and a real-but-never-promoted fact has no
+    // Promoted ledger — both report NoChange rather than demoting anything.
+    let store = migrated_store();
+    let memory = memory(&store, true);
+    let unpromoted = team_fact(&store, "asserted but never promoted");
+    let unknown = Id::generate();
+    let outcomes = memory
+        .sweep_reliability_demotions(&[unpromoted, unknown], &ts())
+        .expect("sweep");
+    assert!(
+        matches!(
+            outcomes.as_slice(),
+            [DemotionOutcome::NoChange, DemotionOutcome::NoChange]
+        ),
+        "{outcomes:?}"
     );
 }
 
@@ -416,6 +521,39 @@ fn record_reliability_decay_folds_the_producer_and_is_idempotent() {
     assert!(
         (once - twice).abs() < EPS,
         "a replayed decay does not double-count"
+    );
+}
+
+#[test]
+fn record_reliability_demotion_folds_an_attester_and_is_idempotent() {
+    // The D2 wrapper's positive path: a demoted fact's attester takes a w_attest_invalid decay,
+    // folded into its category score, idempotent on replay.
+    let store = migrated_store();
+    let memory = memory(&store, false);
+    let attester = enroll(&store, 0.95);
+    let fact_id = team_fact(&store, "a demoted fact whose attester pays");
+    attest(&store, &fact_id, &attester);
+
+    assert_eq!(
+        memory
+            .record_reliability_demotion(&fact_id, &ts())
+            .expect("once"),
+        1
+    );
+    let once = agent_score(&store, &attester).expect("scored");
+    assert!((once - 1.0 / 3.0).abs() < EPS, "one attest-invalid ⇒ 1/3");
+
+    // A replay rebuilds the same content-addressed event; apply dedups, so the score is unchanged.
+    assert_eq!(
+        memory
+            .record_reliability_demotion(&fact_id, &ts())
+            .expect("twice"),
+        1
+    );
+    let twice = agent_score(&store, &attester).expect("scored");
+    assert!(
+        (once - twice).abs() < EPS,
+        "a replayed demotion decay does not double-count"
     );
 }
 

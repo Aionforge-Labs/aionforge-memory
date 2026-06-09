@@ -537,8 +537,9 @@ impl<E: Embedder + 'static> Memory<E> {
     /// reports [`DemotionOutcome::NoChange`]. `now` is the caller's clock.
     ///
     /// # Errors
-    /// Returns [`EngineError::Reliability`] if a refold fails, or [`EngineError::Promotion`] if the
-    /// demotion read or write fails.
+    /// Returns [`EngineError::Store`] if a candidate or attester read fails,
+    /// [`EngineError::Reliability`] if a refold fails, or [`EngineError::Promotion`] if the demotion
+    /// read or write fails.
     pub fn sweep_reliability_demotions(
         &self,
         candidates: &[Id],
@@ -569,7 +570,8 @@ impl<E: Embedder + 'static> Memory<E> {
     /// scoring is off or the fact is unknown. Idempotent: a replay records nothing new.
     ///
     /// # Errors
-    /// Returns [`EngineError::Reliability`] if a store read or the cache write fails.
+    /// Returns [`EngineError::Store`] if the fact-resolution read fails, or
+    /// [`EngineError::Reliability`] if the scorer's read or its off-cursor cache write fails.
     pub fn record_reliability_decay(
         &self,
         victim_fact: &Id,
@@ -592,7 +594,8 @@ impl<E: Embedder + 'static> Memory<E> {
     /// Returns the number of decay events recorded — `0` when off or the fact is unknown. Idempotent.
     ///
     /// # Errors
-    /// Returns [`EngineError::Reliability`] if a store read or the cache write fails.
+    /// Returns [`EngineError::Store`] if the fact-resolution read fails, or
+    /// [`EngineError::Reliability`] if the scorer's read or its off-cursor cache write fails.
     pub fn record_reliability_demotion(
         &self,
         demoted_fact: &Id,
@@ -616,7 +619,8 @@ impl<E: Embedder + 'static> Memory<E> {
     /// fact is unknown, or the guard dropped them all. Idempotent.
     ///
     /// # Errors
-    /// Returns [`EngineError::Reliability`] if a store read or the cache write fails.
+    /// Returns [`EngineError::Store`] if the fact-resolution read fails, or
+    /// [`EngineError::Reliability`] if the scorer's read or its off-cursor cache write fails.
     pub fn record_reliability_agreement(
         &self,
         asserted_fact: &Id,
