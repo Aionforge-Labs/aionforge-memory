@@ -40,7 +40,9 @@ All seven signals ship. `Support` and `Graph` are the additive search signals be
 search signals already surfaced (trust by the reliability-folded stored trust, importance
 by the effective decayed importance, recency by the ingestion instant) and can never widen
 a recall. The importance and recency re-ranks run only when the caller supplies a clock on
-the query's options; there is no ambient clock in the retrieval path.
+the query's options; there is no ambient clock in the retrieval path. The MCP server is
+such a caller: its `search` handler stamps the host's wall clock onto every recall, exactly
+as `capture` stamps `captured_at`, so MCP-served recalls always carry both re-ranks.
 
 ## RRF fusion
 

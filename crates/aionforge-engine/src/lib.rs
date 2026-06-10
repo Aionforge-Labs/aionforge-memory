@@ -73,7 +73,10 @@ pub use reliability_sweep::D1SweepReport;
 pub struct MemoryConfig {
     /// Capture-path tuning.
     pub capture: CaptureConfig,
-    /// Retrieval tuning.
+    /// Retrieval tuning. The host maps `aionforge-config`'s retrieval and decay sections
+    /// into this [`RetrieverConfig`] — `DecayConfig`'s second-denominated half-lives arrive
+    /// here as `f64` — so the engine takes no config dependency, the same indirection as
+    /// the reliability policy below (05 §2, M5.T01).
     pub retriever: RetrieverConfig,
     /// Signed-write gating (06 §3). Off by default; when `signed_writes` is set the engine
     /// builds an Ed25519 provenance gate over the store's registered agent keys. The host maps
