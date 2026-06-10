@@ -25,6 +25,7 @@ mod episode;
 mod error;
 mod fact;
 mod forget_read;
+mod forget_write;
 mod gql;
 mod graph_signal;
 mod indexes;
@@ -53,6 +54,7 @@ pub use consolidation::{ConsolidationCursor, ConsolidationWorkItem, LagSnapshot}
 pub use distill::DistilledNoteWrite;
 pub use error::StoreError;
 pub use forget_read::{FORGET_SCAN_LABELS, ForgetCandidate, ForgetCandidatePage, ForgetCursor};
+pub use forget_write::ForgetWrite;
 pub use gql::{BoundQuery, QueryResult, Rows};
 pub use indexes::VectorIndexInfo;
 pub use materialize::{
