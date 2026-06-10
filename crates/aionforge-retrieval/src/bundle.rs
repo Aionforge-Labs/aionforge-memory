@@ -400,8 +400,10 @@ fn status_tag(status: FactStatus) -> &'static str {
     }
 }
 
-/// The spec string for a core block's category in the rendered view.
-fn block_kind_tag(kind: BlockKind) -> &'static str {
+/// The spec string for a core block's category in the rendered view — also a field of
+/// the core serialization-id key, so the rendered attributes and the rendered order
+/// derive from the same bytes.
+pub(crate) fn block_kind_tag(kind: BlockKind) -> &'static str {
     match kind {
         BlockKind::Persona => "persona",
         BlockKind::Commitment => "commitment",

@@ -302,12 +302,13 @@ fn an_outsider_cannot_edit_someone_elses_identity_with_any_votes() {
             &edit_request(block_id, prior, "rewritten", vec![vote], at),
         )
         .expect("call");
+    // The owner's private block is outside the outsider's visible set: the refusal
+    // answers exactly like an absent id, mirroring the read path's no-oracle rule.
     assert_eq!(
         outcome,
-        CoreEditOutcome::Unauthorized {
-            namespace: owner.private()
-        },
-        "attesters vouch for content, never for authority"
+        CoreEditOutcome::NotFound,
+        "attesters vouch for content, never for authority — and an invisible \
+         block stays invisible"
     );
     assert_eq!(
         memory
@@ -409,4 +410,99 @@ fn reads_are_scoped_to_the_principals_visible_set() {
         "a non-member cannot tell the block exists"
     );
     assert!(memory.live_core_blocks(&outsider).expect("scan").is_empty());
+}
+
+#[tokio::test]
+async fn the_editor_provenance_leg_runs_end_to_end_with_signed_writes_on() {
+    use aionforge_domain::signing::provenance_payload;
+    use aionforge_engine::SecurityGate;
+
+    let store = migrated_store();
+    let config = MemoryConfig {
+        security: SecurityGate {
+            signed_writes: true,
+            ..SecurityGate::default()
+        },
+        ..MemoryConfig::default()
+    };
+    let memory = Memory::new(Arc::clone(&store), FakeEmbedder::new(), config, &ts(0))
+        .expect("memory with signed writes");
+    let (editor_id, editor_key) = enroll(&store, 1);
+    let (attester_id, attester_key) = enroll(&store, 2);
+    let editor = Principal::agent(editor_id);
+    let prior = "I hold the line.";
+    let revised = "I hold the line, and I say when I cannot.";
+
+    let CoreBlockCreate::Created { block_id, .. } = memory
+        .create_core_block(&editor, draft(editor.private(), prior), &ts(1))
+        .expect("create")
+    else {
+        panic!("create");
+    };
+
+    // No editor signature: refused before any vote is weighed.
+    let (attester_vote, at) = vote(&block_id, prior, revised, &attester_id, &attester_key);
+    let unsigned = edit_request(
+        block_id,
+        prior,
+        revised,
+        vec![attester_vote.clone()],
+        at.clone(),
+    );
+    assert_eq!(
+        memory.edit_core_block(&editor, &unsigned).expect("call"),
+        CoreEditOutcome::Rejected(CoreEditRejection::EditorUnverified)
+    );
+
+    // The editor proves key possession over (block, editor, instant): applied.
+    let mut signed = unsigned;
+    let payload = provenance_payload(&block_id, &editor_id, &at);
+    signed.editor_signature = Some(BASE64.encode(editor_key.sign(&payload).to_bytes()));
+    let outcome = memory.edit_core_block(&editor, &signed).expect("call");
+    assert!(
+        matches!(outcome, CoreEditOutcome::Applied(_)),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        memory
+            .core_block(&editor, &block_id)
+            .expect("read")
+            .expect("present")
+            .content,
+        revised
+    );
+}
+
+#[tokio::test]
+async fn a_create_carries_its_embedding_pair() {
+    use aionforge_domain::embedding::{EmbedderModel, Embedding};
+    use common::DIM;
+
+    let store = migrated_store();
+    let memory = memory(&store);
+    let (owner_id, _) = enroll(&store, 1);
+    let owner = Principal::agent(owner_id);
+
+    let mut with_vector = draft(owner.private(), "an embedded persona");
+    with_vector.embedding = Some((
+        Embedding::new(vec![0.5; DIM as usize]).expect("embedding"),
+        EmbedderModel {
+            family: "fake".to_string(),
+            version: "1".to_string(),
+            dimension: DIM,
+        },
+    ));
+    let CoreBlockCreate::Created { block_id, .. } = memory
+        .create_core_block(&owner, with_vector, &ts(1))
+        .expect("create")
+    else {
+        panic!("create");
+    };
+
+    let read = memory
+        .core_block(&owner, &block_id)
+        .expect("read")
+        .expect("present");
+    assert!(read.embedding.is_some(), "the vector landed");
+    assert_eq!(read.embedder_model.expect("model").dimension, DIM);
 }

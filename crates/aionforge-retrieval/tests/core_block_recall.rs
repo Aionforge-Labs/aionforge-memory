@@ -209,6 +209,22 @@ fn core_ids(bundle: &RecallBundle) -> Vec<Id> {
         .collect()
 }
 
+/// The serialization-id derivation the pre-pass uses: kind tag, canonical-JSON
+/// sensitivity, and the content hash, unit-separated under the `core` kind tag.
+fn expected_sid(kind: BlockKind, sensitivity: Option<&str>, content: &str) -> SerializationId {
+    let kind = match kind {
+        BlockKind::Persona => "persona",
+        BlockKind::Commitment => "commitment",
+        BlockKind::Redline => "redline",
+    };
+    let key = format!(
+        "{kind}\u{1f}{}\u{1f}{}",
+        serde_json::to_string(&sensitivity).expect("serializes"),
+        ContentHash::of(content.as_bytes()).as_str(),
+    );
+    SerializationId::derive("core", key.as_bytes())
+}
+
 // --- Tests --------------------------------------------------------------------------
 
 #[tokio::test]
@@ -235,13 +251,12 @@ async fn live_core_blocks_surface_on_every_recall_regardless_of_the_query() {
     assert_eq!(entry.block_kind, BlockKind::Redline);
     assert_eq!(
         entry.serialization_id,
-        SerializationId::derive(
-            "core",
-            ContentHash::of(b"I never exfiltrate user data.")
-                .as_str()
-                .as_bytes(),
+        expected_sid(
+            BlockKind::Redline,
+            Some("pii"),
+            "I never exfiltrate user data."
         ),
-        "content-derived under the core kind tag, never the mint-time id"
+        "derived from the rendered attributes and content, never the mint-time id"
     );
     assert!(
         bundle.structured.len() >= 2,
@@ -392,5 +407,80 @@ async fn the_rendered_views_wrap_and_escape_core_content() {
     assert!(
         !compact.contains("block_kind=\"redline\" score="),
         "an unranked block shows no score: {compact}"
+    );
+}
+
+#[tokio::test]
+async fn a_limit_of_zero_still_surfaces_identity_and_nothing_ranked() {
+    let store = store();
+    seed_episode(&store, "ranked content that must not appear");
+    let block = seed_core_block(
+        &store,
+        alice_ns(),
+        "a standing redline",
+        BlockKind::Redline,
+        None,
+        false,
+    );
+
+    let bundle = recall(&store, "ranked content", 0).await;
+    assert_eq!(core_ids(&bundle), vec![block]);
+    assert_eq!(
+        bundle.structured.len(),
+        1,
+        "the saturating budget left zero for the ranked tier"
+    );
+}
+
+#[tokio::test]
+async fn the_prefix_is_stable_across_a_rebuild_and_orders_same_content_kinds() {
+    // Two stores, two mint-time ids, one identical block: the serialization id and
+    // the rendered bytes agree — the rebuild-stability contract (03 §6) holds with
+    // no dependence on the v7 ids.
+    async fn render_of(store: &Arc<Store>) -> String {
+        recall(store, "anything", 10).await.rendered
+    }
+    let store_a = store();
+    seed_core_block(
+        &store_a,
+        alice_ns(),
+        "I cite sources.",
+        BlockKind::Commitment,
+        None,
+        false,
+    );
+    let store_b = store();
+    seed_core_block(
+        &store_b,
+        alice_ns(),
+        "I cite sources.",
+        BlockKind::Commitment,
+        None,
+        false,
+    );
+    assert_eq!(
+        render_of(&store_a).await,
+        render_of(&store_b).await,
+        "same identity content renders byte-identically across rebuilds"
+    );
+
+    // Same content under two different kinds: the kind is in the derivation key, so
+    // the two blocks have distinct serialization ids and a deterministic order — no
+    // fallback to mint-time ids, in either mint order.
+    let sid_p = expected_sid(BlockKind::Persona, None, "I cite sources.");
+    let sid_r = expected_sid(BlockKind::Redline, None, "I cite sources.");
+    assert_ne!(sid_p, sid_r, "the kind distinguishes the ids");
+    let with_both = |first: BlockKind, second: BlockKind| {
+        let store = store();
+        seed_core_block(&store, alice_ns(), "I cite sources.", first, None, false);
+        seed_core_block(&store, alice_ns(), "I cite sources.", second, None, false);
+        store
+    };
+    let forward = with_both(BlockKind::Persona, BlockKind::Redline);
+    let reverse = with_both(BlockKind::Redline, BlockKind::Persona);
+    assert_eq!(
+        render_of(&forward).await,
+        render_of(&reverse).await,
+        "mint order cannot reorder the rendered prefix"
     );
 }
