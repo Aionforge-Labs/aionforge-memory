@@ -37,7 +37,7 @@ double-enforced: checked explicitly and absorbed by the shared eligibility rule,
 misconfigured floor can forget a pin. Non-finite importance or trust scalars spare
 rather than doom — the sweep never destroys on a value the arithmetic cannot vouch for.
 
-The graph-side protections run cheapest-first in the orchestrator before the axes:
+Three graph-side exemptions run cheapest-first in the orchestrator before the axes:
 
 - **Kind.** The sweep enumerates `Episode` and `Fact` only. Identity memory
   (`CoreBlock`) is hard-exempt, skills belong to deprecate-never-delete (point-forget
@@ -49,11 +49,13 @@ The graph-side protections run cheapest-first in the orchestrator before the axe
   and a demotion would overwrite one, so lineage nodes are excluded outright.
 - **Attestation.** An attested memory is refused entirely until the M5.T03 erasure
   cascade owns that edge.
-- **References.** The "unreferenced" axis reads live incoming edges from a protecting
-  allowlist (`DERIVED_FROM`, `SUPPORTS`, `DEPENDS_ON`, `RELATES_TO`, `HAS_FAILURE`,
-  `MENTIONS`) — never the loss-tolerant `referenced_count` cache. A closed `RELATES_TO`
-  version no longer protects; audit, provenance, scope, and session wiring never did
-  (every memory has those, and an allowlist that matches everything forgets nothing).
+
+The fourth graph probe is not an exemption but the "unreferenced" axis itself, one
+conjunct of the strict AND: it reads live incoming edges from a protecting allowlist
+(`DERIVED_FROM`, `SUPPORTS`, `DEPENDS_ON`, `RELATES_TO`, `HAS_FAILURE`, `MENTIONS`) —
+never the loss-tolerant `referenced_count` cache. A closed `RELATES_TO` version no
+longer protects; audit, provenance, scope, and session wiring never did (every memory
+has those, and an allowlist that matches everything forgets nothing).
 
 ## The sweep and the point ops
 
@@ -77,10 +79,12 @@ without reading the graph, and the point ops answer `Disabled` rather than fabri
 
 Every applied transition co-commits its audit row in the same transaction as the
 property flip, gated on a real state change — a crash-replay converges with no second
-row. Events are cycle-addressed (`forget → unforget → forget` is three real decisions,
-three rows) and carry the decision basis in the payload: the reason
+row. Events are cycle-addressed: `forget → unforget → forget` is three real decisions,
+three rows. A forget row carries the decision basis in its payload — the reason
 (`active_forgetting_sweep` or `manual`), the kind and tier, and the decayed importance
-and trust against their floors, so the reversible window is explainable after the fact.
+and trust against their floors — so the reversible window is explainable after the
+fact. An unforget row carries its reason (`manual_unforget`) and the kind, nothing
+more: restoring is always safe, so there is no decision basis to explain.
 Rows land in the forgotten memory's **own namespace** — agent-visible through the scoped
 audit reads, never hidden in substrate governance forensics.
 

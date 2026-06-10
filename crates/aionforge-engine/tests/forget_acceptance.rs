@@ -20,20 +20,22 @@ use std::sync::Arc;
 
 use aionforge_domain::authz::Principal;
 use aionforge_domain::blocks::{Identity, Stats};
+use aionforge_domain::edges::AttestedBy;
 use aionforge_domain::embedding::Embedding;
 use aionforge_domain::ids::{ContentHash, Id};
 use aionforge_domain::namespace::Namespace;
+use aionforge_domain::nodes::agent::{Agent, AgentStatus, TrustScores};
 use aionforge_domain::nodes::episodic::{ConsolidationState, Episode, Role};
-use aionforge_domain::nodes::forensic::AuditKind;
+use aionforge_domain::nodes::forensic::{AuditEvent, AuditKind};
 use aionforge_domain::nodes::procedural::Skill;
-use aionforge_domain::nodes::semantic::{Fact, FactStatus};
+use aionforge_domain::nodes::semantic::{Entity, Fact, FactStatus};
 use aionforge_domain::time::Timestamp;
 use aionforge_domain::value::ObjectValue;
 use aionforge_engine::{
     ForgettingPolicy, Memory, MemoryConfig, PointForget, PointUnforget, RecallOptions, RecallQuery,
     SpareReason, TemporalMode,
 };
-use aionforge_store::Store;
+use aionforge_store::{BoundQuery, NodeId, Store, Value};
 use common::{DIM, FakeEmbedder, migrated_store, ts};
 
 fn fake_embedding() -> Embedding {
@@ -127,6 +129,79 @@ fn low_skill(name: &str) -> Skill {
         deprecated_at: None,
         induced: false,
     }
+}
+
+fn support_edge(store: &Store, from: &Id, to: &Id) {
+    let query = BoundQuery::new(
+        "MATCH (a:Fact {id: $from}), (b:Fact {id: $to}) \
+         INSERT (a)-[:SUPPORTS {weight: $weight}]->(b)",
+    )
+    .bind_uuid("from", from)
+    .unwrap()
+    .bind_uuid("to", to)
+    .unwrap()
+    .bind("weight", Value::Float(1.0))
+    .unwrap();
+    store.execute(&query).expect("insert SUPPORTS edge");
+}
+
+fn lineage_edge(store: &Store, from: &Id, to: &Id) {
+    let query = BoundQuery::new(
+        "MATCH (a:Fact {id: $from}), (b:Fact {id: $to}) \
+         INSERT (a)-[:PROMOTED_TO {valid_from: $ts, ingested_at: $ts}]->(b)",
+    )
+    .bind_uuid("from", from)
+    .unwrap()
+    .bind_uuid("to", to)
+    .unwrap()
+    .bind("ts", Value::ZonedDateTime(Box::new(now())))
+    .unwrap();
+    store.execute(&query).expect("insert PROMOTED_TO edge");
+}
+
+/// Attest a fact so the attested exemption holds against a real `ATTESTED_BY` edge.
+fn attest(store: &Store, fact_node: NodeId) {
+    let attester_id = Id::generate();
+    let agent = Agent {
+        identity: Identity {
+            id: attester_id,
+            ingested_at: now(),
+            namespace: Namespace::Agent("ada".to_string()),
+            expired_at: None,
+        },
+        public_key: "cHVibGljLWtleQ==".to_string(),
+        model_family: "test".to_string(),
+        model_version: None,
+        trust_scores: TrustScores::default(),
+        status: AgentStatus::Active,
+    };
+    let agent_node = store.create_agent(&agent).expect("enroll agent");
+    let audit = AuditEvent {
+        identity: Identity {
+            id: Id::from_content_hash(b"acceptance-attest-audit"),
+            ingested_at: now(),
+            namespace: Namespace::Agent("ada".to_string()),
+            expired_at: None,
+        },
+        kind: AuditKind::Attest,
+        subject_id: attester_id,
+        actor_id: attester_id,
+        payload: serde_json::json!({"outcome": "accepted"}),
+        signature: String::new(),
+        occurred_at: now(),
+    };
+    store
+        .attest_fact(
+            fact_node,
+            agent_node,
+            &AttestedBy {
+                attested_at: now(),
+                signature: "sig".to_string(),
+                category: None,
+            },
+            &audit,
+        )
+        .expect("attest");
 }
 
 async fn episode_contents(memory: &Memory<FakeEmbedder>, include_expired: bool) -> Vec<String> {
@@ -372,13 +447,79 @@ async fn ac4_conservative_protections_hold_and_off_sweeps_nothing() {
         on.forget(&important.identity.id, &now()).expect("call"),
         PointForget::Protected(SpareReason::ImportanceHolds)
     );
-    // The store-level acceptance for attested/lineage/referenced protections is pinned
-    // in the orchestrator suite; here the facade contract is that nothing protected was
-    // touched.
-    let sweep = on.sweep_forgetting(None, 200, &now()).expect("sweep");
+    // The graph protections, end to end through the facade: a live protecting
+    // reference, promotion lineage (either end), and an attestation each refuse the
+    // point op by name.
+    let fresh_fact = |stats: Stats| Fact {
+        identity: Identity {
+            id: Id::generate(),
+            ingested_at: long_ago(),
+            namespace: Namespace::Global,
+            expired_at: None,
+        },
+        stats,
+        ..fact.clone()
+    };
+    let supported = fresh_fact(low_stats());
+    let supporter = fresh_fact(low_stats());
+    let lineage_a = fresh_fact(low_stats());
+    let lineage_b = fresh_fact(low_stats());
+    let attested = fresh_fact(low_stats());
+    for f in [&supported, &supporter, &lineage_a, &lineage_b] {
+        store.insert_fact(f).expect("insert");
+    }
+    let attested_node = store.insert_fact(&attested).expect("insert");
+    support_edge(&store, &supporter.identity.id, &supported.identity.id);
+    lineage_edge(&store, &lineage_a.identity.id, &lineage_b.identity.id);
+    attest(&store, attested_node);
     assert_eq!(
-        sweep.forgotten, 1,
-        "only the unprotected all-axes-low fact is swept"
+        on.forget(&supported.identity.id, &now()).expect("call"),
+        PointForget::Protected(SpareReason::Referenced)
     );
-    assert_eq!(sweep.spared, 3, "every protection held");
+    assert_eq!(
+        on.forget(&lineage_a.identity.id, &now()).expect("call"),
+        PointForget::Protected(SpareReason::PromotionLineage)
+    );
+    assert_eq!(
+        on.forget(&lineage_b.identity.id, &now()).expect("call"),
+        PointForget::Protected(SpareReason::PromotionLineage)
+    );
+    assert_eq!(
+        on.forget(&attested.identity.id, &now()).expect("call"),
+        PointForget::Protected(SpareReason::Attested)
+    );
+
+    // A protected kind is found and refused by name, never misreported "not found".
+    let entity = Entity {
+        identity: Identity {
+            id: Id::generate(),
+            ingested_at: long_ago(),
+            namespace: Namespace::Global,
+            expired_at: None,
+        },
+        stats: low_stats(),
+        canonical_name: "acceptance".to_string(),
+        entity_type: "Project".to_string(),
+        aliases: Vec::new(),
+        description: None,
+        embedding: None,
+        embedder_model: None,
+        attributes: None,
+    };
+    store.insert_entity(&entity).expect("insert entity");
+    assert_eq!(
+        on.forget(&entity.identity.id, &now()).expect("call"),
+        PointForget::Protected(SpareReason::ProtectedKind)
+    );
+
+    // The closing sweep walks the whole fact population: the unprotected all-axes-low
+    // fact and the outgoing-only supporter fall (an outgoing edge protects its target,
+    // not its source), and every protected fixture stands.
+    let sweep = on.sweep_forgetting(None, 200, &now()).expect("sweep");
+    assert_eq!(sweep.scanned, 9, "the whole fact population was evaluated");
+    assert_eq!(
+        sweep.forgotten, 2,
+        "the unprotected all-axes-low fact and the outgoing-only supporter"
+    );
+    assert_eq!(sweep.spared, 7, "every protection held");
 }
