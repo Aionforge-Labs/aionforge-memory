@@ -254,6 +254,32 @@ fn applying_the_same_decay_twice_is_idempotent() {
 }
 
 #[test]
+fn apply_counting_reports_zero_on_replay() {
+    // The auto-sweep's true new-row count: the first application reports each event created;
+    // a replay of the same content-addressed set reports zero — and still refolds, so a crash
+    // between a prior record and its refold heals on the re-scan.
+    let store = store();
+    let agent = enroll(&store);
+    let ep = episode(&store, agent, 0.8, 1);
+    let (node, f) = fact(&store, "counted claim");
+    derive(&store, &f.identity.id, &ep);
+
+    let scorer = scorer(Arc::clone(&store));
+    let events = scorer.quarantine_decay(node, &ts()).expect("events");
+    assert_eq!(
+        scorer.apply_counting(&events).expect("first apply"),
+        1,
+        "the first application records the new event"
+    );
+    assert_eq!(
+        scorer.apply_counting(&events).expect("replay"),
+        0,
+        "a replay dedups every event and reports nothing new"
+    );
+    assert!((agent_score(&store, &agent).expect("scored") - 1.0 / 3.0).abs() < EPS);
+}
+
+#[test]
 fn an_agreement_credits_a_distinct_author_but_holds_the_fact_at_baseline() {
     let store = store();
     let producer = enroll(&store);
