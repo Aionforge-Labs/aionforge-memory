@@ -228,9 +228,12 @@ pub enum CoreEditOutcome {
     Retired,
     /// The namespace authority refused the editor's write to the block's namespace
     /// (06 §1: authorization gates every write — attesters vouch for content, they do
-    /// not extend write authority over someone else's identity). Audited as a
-    /// `namespace_denied` row in the `system` namespace, like every cross-namespace
-    /// write attempt; nothing was written.
+    /// not extend write authority over someone else's identity). Only ever said about
+    /// a block the principal could already *read* (global ground, under the default
+    /// policy); a block outside its visible set answers [`CoreEditOutcome::NotFound`]
+    /// instead, so the edit surface confirms nothing the read surface would not.
+    /// Audited as a `namespace_denied` row in the `system` namespace either way, like
+    /// every cross-namespace write attempt; nothing was written.
     Unauthorized {
         /// The namespace the principal may not write.
         namespace: Namespace,
@@ -323,9 +326,13 @@ impl CoreEditor {
         let Some(block) = self.store.core_block_by_id(&request.block_id)? else {
             return Ok(CoreEditOutcome::NotFound);
         };
-        if block.identity.expired_at.is_some() {
-            return Ok(CoreEditOutcome::Retired);
-        }
+        // Authority is ruled before anything about the block is revealed. What a
+        // refusal says depends on READ visibility (06 §1, the read-path rule): a
+        // block the principal can already see — global ground under the default
+        // policy — is honestly `Unauthorized`, but one outside its visible set
+        // answers exactly like an absent id, so the edit surface is no
+        // existence-or-liveness oracle (`Retired` is likewise only ever said about a
+        // block the caller could read). The probe is still audited either way.
         if let Err(denied) = authorizer.authorize_write(principal, &block.identity.namespace) {
             self.store.commit_audit(&namespace_denied_audit(
                 principal,
@@ -334,9 +341,16 @@ impl CoreEditor {
                 &denied,
                 &request.at,
             ))?;
+            let visible = authorizer.visible_namespaces(principal);
+            if !visible.contains(&block.identity.namespace) {
+                return Ok(CoreEditOutcome::NotFound);
+            }
             return Ok(CoreEditOutcome::Unauthorized {
                 namespace: block.identity.namespace.clone(),
             });
+        }
+        if block.identity.expired_at.is_some() {
+            return Ok(CoreEditOutcome::Retired);
         }
         let prior_hash = ContentHash::of(block.content.as_bytes());
         if prior_hash != request.expected_prior {

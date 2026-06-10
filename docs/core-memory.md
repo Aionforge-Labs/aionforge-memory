@@ -39,10 +39,14 @@ a browse-pending surface is exactly the trust-laundering path the spec forbids.
 The gate refuses everything refusable before the store write, in this order:
 
 1. **Namespace authority.** The injected `Authorizer` rules on the editor's write
-   authority over the block's namespace first. Attesters vouch for *content*, never
-   for *authority* — an agent outside the namespace cannot edit its identity no
-   matter how many votes it brings. Refusals land a `namespace_denied` audit in the
-   system namespace, like every cross-namespace write attempt.
+   authority over the block's namespace first — before anything about the block is
+   revealed. Attesters vouch for *content*, never for *authority* — an agent outside
+   the namespace cannot edit its identity no matter how many votes it brings. A
+   block outside the principal's *visible set* refuses as not-found, so the edit
+   surface confirms nothing the read surface would not; only read-visible ground
+   (global, under the default policy) is refused by name. Refusals land a
+   `namespace_denied` audit in the system namespace either way, like every
+   cross-namespace write attempt.
 2. **The editor leg** (when signed writes are on). The editor proves key possession
    over the block id and instant. With signed writes off, editor identity rests on
    the host-asserted principal: the behavioral single-writer rejection still holds,

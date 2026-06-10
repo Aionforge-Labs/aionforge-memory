@@ -42,7 +42,10 @@ pub struct CoreBlockDraft {
     /// conventionally sit high — they anchor who the agent is.
     pub importance: f64,
     /// Writer trust, validated finite in `[0, 1]` — caller-supplied like the capture
-    /// path's writer context.
+    /// path's writer context. Deliberately *louder* than capture, which clamps: a
+    /// capture absorbs arbitrary writer input mid-conversation and degrades
+    /// gracefully, but a core-block create is a deliberate host act on the identity
+    /// tier, where a wild stat is a caller bug worth surfacing, not smoothing.
     pub trust: f64,
     /// The content's embedding with its model identity, or `None` to store the block
     /// unembedded (recall's always-include path does not depend on it).

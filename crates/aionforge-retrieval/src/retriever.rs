@@ -487,8 +487,10 @@ impl<E: Embedder> HybridRetriever<E> {
             .map(|block| StructuredEntry::CoreBlock(core_block_entry(&block)))
             .collect();
         // The same content-derived order (with the same content tie-break) as the
-        // rendered view, never the mint-time id, so the prefix is stable across a
-        // rebuild (03 §6).
+        // rendered view, so the prefix is stable across a rebuild (03 §6). Entries
+        // that tie on both keys render byte-identically (the serialization id covers
+        // every rendered attribute), so whatever order the stable sort leaves them in
+        // cannot change the rendered bytes.
         entries.sort_by(|a, b| {
             a.serialization_id()
                 .cmp(b.serialization_id())
@@ -792,17 +794,24 @@ fn episode_entry(episode: &Episode, candidate: &FusedCandidate) -> EpisodeEntry 
 }
 
 /// Build a core-block entry for the identity pre-pass (05 §4). The serialization id
-/// derives from the block's current content — like an episode's — so an edit moves the
-/// block's place in the rendered order exactly when its words change.
+/// derives from everything the full render emits for the block — its kind, its
+/// sensitivity, and its content hash — so two blocks render byte-identically exactly
+/// when they share a serialization id, and the rendered order needs no fallback to a
+/// mint-time id even for same-content blocks of different kinds. An edit moves the
+/// block's place in the rendered order exactly when its rendered bytes change.
 fn core_block_entry(block: &CoreBlock) -> CoreBlockEntry {
+    // The same unit-separator discipline as the fact key; the sensitivity goes in as
+    // its canonical JSON so an absent one can never collide with a literal "null".
+    let key = format!(
+        "{kind}{sep}{sensitivity}{sep}{content}",
+        kind = crate::bundle::block_kind_tag(block.block_kind),
+        sep = '\u{1f}',
+        sensitivity = serde_json::to_string(&block.sensitivity).unwrap_or_default(),
+        content = ContentHash::of(block.content.as_bytes()).as_str(),
+    );
     CoreBlockEntry {
         id: block.identity.id,
-        serialization_id: SerializationId::derive(
-            CORE_KIND_TAG,
-            ContentHash::of(block.content.as_bytes())
-                .as_str()
-                .as_bytes(),
-        ),
+        serialization_id: SerializationId::derive(CORE_KIND_TAG, key.as_bytes()),
         namespace: block.identity.namespace.clone(),
         block_kind: block.block_kind,
         sensitivity: block.sensitivity.clone(),

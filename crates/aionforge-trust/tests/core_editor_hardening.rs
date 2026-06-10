@@ -503,12 +503,14 @@ fn an_editor_without_namespace_authority_is_refused_no_matter_the_votes() {
             ),
         )
         .expect("call");
+    // The block sits outside the outsider's visible set, so the refusal answers
+    // exactly like an absent id — the edit surface is no existence oracle. The
+    // attempt is still audited below.
     assert_eq!(
         outcome,
-        CoreEditOutcome::Unauthorized {
-            namespace: Namespace::Agent("identity-owner".to_string()),
-        },
-        "attesters vouch for content, never for authority"
+        CoreEditOutcome::NotFound,
+        "attesters vouch for content, never for authority — and an invisible \
+         block stays invisible"
     );
     assert_eq!(
         store
@@ -529,4 +531,50 @@ fn an_editor_without_namespace_authority_is_refused_no_matter_the_votes() {
     assert_eq!(rows[0].actor_id, outsider_id);
     assert_eq!(rows[0].payload["surface"], "core_block_edit");
     assert_eq!(rows[0].identity.namespace, Namespace::System);
+}
+
+#[test]
+fn a_visible_but_unwritable_block_is_honestly_unauthorized() {
+    use aionforge_domain::authz::DefaultAuthorizer;
+    use aionforge_domain::namespace::Namespace;
+
+    let store = store();
+    let (editor_id, _) = enroll(&store, 1, AgentStatus::Active);
+    let (attester_id, attester_key) = enroll(&store, 2, AgentStatus::Active);
+    let principal = Principal::agent(editor_id);
+    // Global ground is in every reader's visible set but never directly writable
+    // under the default policy, so refusing it by name confirms nothing the read
+    // surface would not already show.
+    let mut b = block("global ground", BlockKind::Commitment, None);
+    b.identity.namespace = Namespace::Global;
+    genesis(&store, &b);
+    let core = editor(&store, CoreEditPolicy::default(), false);
+
+    let outcome = core
+        .edit(
+            &principal,
+            &DefaultAuthorizer,
+            &request(
+                &b,
+                "rewritten ground",
+                vec![vote_for(
+                    &b,
+                    "rewritten ground",
+                    &attester_id,
+                    &attester_key,
+                )],
+            ),
+        )
+        .expect("call");
+    assert_eq!(
+        outcome,
+        CoreEditOutcome::Unauthorized {
+            namespace: Namespace::Global,
+        }
+    );
+    let rows = store
+        .audit_by_kind(AuditKind::NamespaceDenied, None, 10)
+        .expect("audit")
+        .events;
+    assert_eq!(rows.len(), 1, "the refusal is audited");
 }
