@@ -8,6 +8,7 @@ use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 
 use crate::error::ConfigError;
+use crate::forgetting::ForgettingConfig;
 
 /// The largest sane per-request embedder timeout (ten minutes). A larger value is almost
 /// certainly a units mistake (seconds typed as milliseconds), so it is rejected rather than
@@ -61,6 +62,9 @@ pub struct Config {
     /// Importance-decay posture: the per-tier half-lives that sink a memory's effective
     /// importance with elapsed time since last access (05 §2). Off by default.
     pub decay: DecayConfig,
+    /// Active-forgetting posture: the floors and guards for the soft-forget sweep
+    /// (05 §3). Off by default.
+    pub forgetting: ForgettingConfig,
 }
 
 /// On-disk state configuration.
@@ -715,6 +719,7 @@ impl Config {
                 }
             }
         }
+        self.forgetting.validate()?;
         Ok(())
     }
 }
