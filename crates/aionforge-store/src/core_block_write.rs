@@ -17,12 +17,15 @@
 
 use aionforge_domain::edges::{AttestedBy, Audit};
 use aionforge_domain::embedding::{EmbedderModel, Embedding};
+use aionforge_domain::ids::ContentHash;
 use aionforge_domain::nodes::core::CoreBlock;
 use aionforge_domain::nodes::forensic::AuditEvent;
 use selene_core::{DbString, LabelDiff, NodeId, PropertyDiff, PropertyMap, Value, db_string};
 
 use crate::attestation::attested_by_props;
-use crate::convert::{embedder_model_value, embedding_value, json_value, key, string_value};
+use crate::convert::{
+    as_str, embedder_model_value, embedding_value, json_value, key, string_value,
+};
 use crate::error::StoreError;
 use crate::store::Store;
 use crate::{audit, core_block, materialize};
@@ -76,6 +79,12 @@ pub enum CoreEditWrite {
     /// The target is not a live core block — missing, purged, or retired
     /// (`expired_at` set). Probed under the write lock; nothing was written.
     NotLive,
+    /// The block's current content is not the content the caller's precondition named
+    /// — a concurrent edit landed between the orchestrator's read and this write. The
+    /// whole edit is refused (no swap, no edges, no audit): applying it would record
+    /// attester votes and a prior-hash claim against bytes that were never the actual
+    /// predecessor, tearing the audit chain that *is* the block's non-lossy history.
+    StaleContent,
 }
 
 impl Store {
@@ -119,8 +128,17 @@ impl Store {
     /// Apply an attested whole-value edit to a live core block, atomically (05 §4):
     /// the in-place content swap, every attester's immutable `ATTESTED_BY` edge
     /// (written only when absent), and the `core_edit` audit with its `AUDIT` edge —
-    /// one commit under the write lock, so the liveness probe, the swap, and the
-    /// attestation record can never interleave with another writer.
+    /// one commit under the write lock, so the liveness probe, the content
+    /// precondition, the swap, and the attestation record can never interleave with
+    /// another writer.
+    ///
+    /// `expected_prior` is the compare-and-swap precondition: the hash of the content
+    /// the orchestrator read, hashed into the audit payload, and handed to the
+    /// attesters to vouch over. It is re-checked here, under the same lock as the
+    /// swap — the orchestrator's read and this write are separate lock acquisitions,
+    /// so without the in-lock check a racing edit could land between them and this
+    /// write would silently tear the audit chain. A mismatch is the typed
+    /// [`CoreEditWrite::StaleContent`] whole-op refusal.
     ///
     /// The gate has already run: the orchestrator verified every attester signature,
     /// excluded the editor, and resolved the requirement for this block's sensitivity.
@@ -134,87 +152,109 @@ impl Store {
     pub fn edit_core_block(
         &self,
         block: NodeId,
+        expected_prior: &ContentHash,
         replacement: &CoreBlockReplacement,
         attestations: &[CoreAttestation],
         audit_event: &AuditEvent,
     ) -> Result<CoreEditWrite, StoreError> {
         let expired_key = db_string(EXPIRED_AT)?;
+        let content_key = db_string(CONTENT)?;
         let audit_edge = db_string(Audit::LABEL)?;
 
         let mut txn = self.graph().begin_write();
         let outcome = {
             let mut mutator = txn.mutator();
-            // Probe under the write lock: the target must be a live, unretired block.
-            let (live, has_embedding) = {
+            // Probe under the write lock: the target must be a live, unretired block
+            // whose current content is the precondition's content.
+            enum Probe {
+                NotLive,
+                Stale,
+                Live { has_embedding: bool },
+            }
+            let probe = {
                 let graph = mutator.read();
                 match graph.node_properties(block) {
-                    None => (false, false),
-                    Some(props) => (
-                        props.get(&expired_key).is_none(),
-                        props.get(&db_string(EMBEDDING)?).is_some(),
-                    ),
+                    None => Probe::NotLive,
+                    Some(props) if props.get(&expired_key).is_some() => Probe::NotLive,
+                    Some(props) => {
+                        let current = props.get(&content_key).ok_or_else(|| {
+                            StoreError::decode(
+                                "core block missing required property `content`".to_string(),
+                            )
+                        })?;
+                        if ContentHash::of(as_str(current)?.as_bytes()) != *expected_prior {
+                            Probe::Stale
+                        } else {
+                            Probe::Live {
+                                has_embedding: props.get(&db_string(EMBEDDING)?).is_some(),
+                            }
+                        }
+                    }
                 }
             };
-            if !live {
-                CoreEditWrite::NotLive
-            } else {
-                // The whole-value swap: content always; drift_baseline only when the
-                // caller re-baselines (None = carry forward); the embedding pair swaps
-                // with fresh-content vectors or is removed as stale.
-                let mut sets: Vec<(DbString, Value)> =
-                    vec![(key(CONTENT)?, string_value(&replacement.content)?)];
-                if let Some(baseline) = &replacement.drift_baseline {
-                    sets.push((key(DRIFT_BASELINE)?, json_value(baseline)?));
-                }
-                let mut removes: Vec<DbString> = Vec::new();
-                match &replacement.embedding {
-                    Some((embedding, model)) => {
-                        sets.push((key(EMBEDDING)?, embedding_value(embedding)?));
-                        sets.push((key(EMBEDDER_MODEL)?, embedder_model_value(model)?));
+            match probe {
+                Probe::NotLive => CoreEditWrite::NotLive,
+                Probe::Stale => CoreEditWrite::StaleContent,
+                Probe::Live { has_embedding } => {
+                    // The whole-value swap: content always; drift_baseline only when the
+                    // caller re-baselines (None = carry forward); the embedding pair swaps
+                    // with fresh-content vectors or is removed as stale.
+                    let mut sets: Vec<(DbString, Value)> =
+                        vec![(key(CONTENT)?, string_value(&replacement.content)?)];
+                    if let Some(baseline) = &replacement.drift_baseline {
+                        sets.push((key(DRIFT_BASELINE)?, json_value(baseline)?));
                     }
-                    None if has_embedding => {
-                        removes.push(key(EMBEDDING)?);
-                        removes.push(key(EMBEDDER_MODEL)?);
+                    let mut removes: Vec<DbString> = Vec::new();
+                    match &replacement.embedding {
+                        Some((embedding, model)) => {
+                            sets.push((key(EMBEDDING)?, embedding_value(embedding)?));
+                            sets.push((key(EMBEDDER_MODEL)?, embedder_model_value(model)?));
+                        }
+                        None if has_embedding => {
+                            removes.push(key(EMBEDDING)?);
+                            removes.push(key(EMBEDDER_MODEL)?);
+                        }
+                        None => {}
                     }
-                    None => {}
-                }
-                mutator.update_node(
-                    block,
-                    LabelDiff::new([], [])?,
-                    PropertyDiff::new(sets, removes)?,
-                )?;
-
-                // One immutable edge per distinct attester; duplicates in the call and
-                // re-attests of an already-voting agent collapse through the same
-                // write-when-absent discipline as fact attestation.
-                let mut recorded: Vec<NodeId> = Vec::new();
-                for attestation in attestations {
-                    if recorded.contains(&attestation.attester) {
-                        continue;
-                    }
-                    recorded.push(attestation.attester);
-                    let edge_props = attested_by_props(&attestation.edge)?;
-                    materialize::ensure_edge(
-                        &mut mutator,
-                        AttestedBy::LABEL,
+                    mutator.update_node(
                         block,
-                        attestation.attester,
-                        edge_props,
+                        LabelDiff::new([], [])?,
+                        PropertyDiff::new(sets, removes)?,
                     )?;
-                }
 
-                let ensured = audit::ensure_event(&mut mutator, audit_event, self.audit_signer())?;
-                if ensured.created {
-                    mutator.create_edge(
-                        audit_edge,
-                        ensured.node,
-                        block,
-                        PropertyMap::from_pairs(Vec::new())?,
-                    )?;
-                }
-                CoreEditWrite::Applied {
-                    audit: ensured.node,
-                    attesters_recorded: recorded.len(),
+                    // One immutable edge per distinct attester; duplicates in the call and
+                    // re-attests of an already-voting agent collapse through the same
+                    // write-when-absent discipline as fact attestation.
+                    let mut recorded: Vec<NodeId> = Vec::new();
+                    for attestation in attestations {
+                        if recorded.contains(&attestation.attester) {
+                            continue;
+                        }
+                        recorded.push(attestation.attester);
+                        let edge_props = attested_by_props(&attestation.edge)?;
+                        materialize::ensure_edge(
+                            &mut mutator,
+                            AttestedBy::LABEL,
+                            block,
+                            attestation.attester,
+                            edge_props,
+                        )?;
+                    }
+
+                    let ensured =
+                        audit::ensure_event(&mut mutator, audit_event, self.audit_signer())?;
+                    if ensured.created {
+                        mutator.create_edge(
+                            audit_edge,
+                            ensured.node,
+                            block,
+                            PropertyMap::from_pairs(Vec::new())?,
+                        )?;
+                    }
+                    CoreEditWrite::Applied {
+                        audit: ensured.node,
+                        attesters_recorded: recorded.len(),
+                    }
                 }
             }
         };

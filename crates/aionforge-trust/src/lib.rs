@@ -7,6 +7,7 @@ pub mod audit_provision;
 mod audit_rotation;
 pub mod audit_signer;
 pub mod audit_verifier;
+pub mod core_editor;
 pub mod gate;
 pub mod promoter;
 pub mod reliability;
@@ -24,6 +25,10 @@ pub use audit_provision::{AuditProvision, ProvisionError, provision_audit_signin
 pub use audit_rotation::{genesis_rotation, rotate_key};
 pub use audit_signer::{AuditSigner, KeyError, SecretSeed};
 pub use audit_verifier::{AuditStatus, AuditVerifier};
+pub use core_editor::{
+    CoreAttesterVote, CoreEditError, CoreEditOutcome, CoreEditPolicy, CoreEditReceipt,
+    CoreEditRejection, CoreEditRequest, CoreEditRule, CoreEditor,
+};
 pub use gate::{SignedWriteGate, SystemWallClock};
 pub use promoter::{
     AttestReceipt, AttestRequest, CategoryRule, DemotionOutcome, Promoter, PromotionError,
