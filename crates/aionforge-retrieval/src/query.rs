@@ -51,7 +51,8 @@ impl RecallQuery {
 ///
 /// This mode shapes only **facts**; episodes are raw turns with no validity window, so
 /// they are gated by [`RecallOptions::include_expired`] instead and surface in every
-/// mode. The supplied instant is always caller-provided — there is no ambient clock in
+/// mode. A soft-forgotten memory (a node-level `expired_at`, 05 §2) is out of every
+/// mode's default read and retained behind that same flag. The supplied instant is always caller-provided — there is no ambient clock in
 /// the retrieval path (a deterministic-recall requirement, 03 §6).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum TemporalMode {
@@ -78,7 +79,7 @@ pub struct RecallOptions {
     pub mode_override: Option<QueryClass>,
     /// Which bi-temporal slice to read facts against; defaults to
     /// [`TemporalMode::Current`] (03 §5). Orthogonal to `include_expired`, which gates
-    /// soft-forgotten episodes only.
+    /// soft-forgotten memories at the node level in every mode.
     pub temporal: TemporalMode,
     /// The most memories from a single session allowed to fill the bundle before the
     /// rest spill; spilled memories are appended only if the bundle is under-filled
