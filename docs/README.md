@@ -45,6 +45,12 @@ This is reference and guides, not planning or changelogs.
   what survives on purpose (entities, audit rows, promoted shadows, spared
   derivatives), and the honest residency boundary — compact-reclaimed rows, a WAL with
   no scheduled eviction yet, and no tombstone registry.
+- [Core memory](core-memory.md) — the always-on identity tier: one stable id per block
+  with history in the signed audit trail, the second-attester edit gate with
+  transition-bound votes (a voucher authorizes one exact replacement, never "some
+  edit"), strictest-per-axis sensitivity rules, the certified-human requirement
+  re-checked under the write lock, and namespace authority ruled before any vote is
+  weighed — attesters vouch for content, never for authority.
 
 ## Procedural and generative layers
 

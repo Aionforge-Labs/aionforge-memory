@@ -27,8 +27,8 @@ use aionforge_forget::{Eraser, Forgetter};
 use aionforge_retrieval::HybridRetriever;
 use aionforge_security::{CaptureFilter, SecurityError};
 use aionforge_trust::{
-    AttestationGate, AuditVerifier, Ed25519Verifier, Promoter, SignedWriteGate, StoreKeyResolver,
-    SystemWallClock,
+    AttestationGate, AuditVerifier, CoreEditor, Ed25519Verifier, Promoter, SignedWriteGate,
+    StoreKeyResolver, SystemWallClock,
 };
 
 use aionforge_domain::ids::Id;
@@ -63,17 +63,21 @@ pub use aionforge_retrieval::{
 };
 pub use aionforge_store::{ForgetCursor, Store, StoreConfig};
 pub use aionforge_trust::{
-    AttestReceipt, AttestRequest, AuditStatus, CategoryRule, DemotionOutcome, PromotionError,
-    PromotionOutcome, PromotionPolicy, ReliabilityError, ReliabilityPolicy, ReliabilityScorer,
+    AttestReceipt, AttestRequest, AuditStatus, CategoryRule, CoreAttesterVote, CoreEditError,
+    CoreEditOutcome, CoreEditPolicy, CoreEditReceipt, CoreEditRejection, CoreEditRequest,
+    CoreEditRule, DemotionOutcome, PromotionError, PromotionOutcome, PromotionPolicy,
+    ReliabilityError, ReliabilityPolicy, ReliabilityScorer,
 };
 
 mod audit;
+mod core_block;
 mod erase;
 mod forget_sweep;
 mod pin;
 mod reliability_sweep;
 pub use aionforge_store::{AuditCursor, MAX_AUDIT_PAGE};
 pub use audit::{AuditPage, AuditRecord, AuditVerification};
+pub use core_block::{CoreBlockCreate, CoreBlockDraft};
 pub use reliability_sweep::D1SweepReport;
 
 /// How the facade configures the capture and retrieval paths.
@@ -110,6 +114,15 @@ pub struct MemoryConfig {
     /// authorities with separate switches, so a host can run either without the other.
     /// When enabled the engine builds the eraser.
     pub erasure: ErasurePolicy,
+    /// Core-block edit strictness (05 §4, M5.T04). **Always enforced** — identity
+    /// integrity has no off-switch, unlike every optional sibling above; only the
+    /// strictness is configurable, and the default (one non-editor attester) is the
+    /// spec's floor. The host maps `aionforge-config`'s `CoreBlockConfig` into this
+    /// [`CoreEditPolicy`] field-for-field, the same indirection as the promotion
+    /// policy. The attestation gate behind it reuses `security.clock_skew_tolerance_ms`
+    /// (validated unconditionally for that reason), and the editor-provenance leg
+    /// follows `security.signed_writes`.
+    pub core_block: CoreEditPolicy,
 }
 
 /// The engine's signed-write gating posture (06 §3, M4.T03).
@@ -204,6 +217,10 @@ pub struct Memory<E> {
     forgetter: Option<Forgetter>,
     /// The right-to-erasure orchestrator, present only when erasure is enabled (05 §3).
     eraser: Option<Eraser>,
+    /// The core-block edit gate (05 §4, M5.T04). **Always constructed** — identity
+    /// integrity has no off-switch, so unlike every `Option<_>` sibling there is no
+    /// disabled state to represent; the all-default policy is the spec's floor.
+    core_editor: CoreEditor,
     /// The audit-signature verifier for the read facade (06 §6, M4.T06). `None` until audit
     /// signing is wired: PR-5g builds it from the keyring when `sign_audit_events` is enabled,
     /// alongside the signer. While `None`, every audit read maps to
@@ -248,17 +265,17 @@ impl<E: Embedder> Memory<E> {
     ) -> Result<Self, EngineError> {
         // Front-load all configuration validation, before any subsystem is constructed, so an
         // invalid policy is rejected up front and never interleaves with a side-effecting build
-        // step. `validate_promotion_skew` covers the promotion-on / signed-writes-off case that
-        // `SecurityGate::validate` (gated on `signed_writes`) does not.
+        // step. The skew window is validated unconditionally: signed writes and promotion gate
+        // on it only when enabled, but the always-on core-block attestation gate (05 §4)
+        // consumes it regardless — a zero window would silently refuse every identity edit.
         config.capture.validate().map_err(EngineError::Config)?;
         config.security.validate().map_err(EngineError::Config)?;
         config.promotion.validate().map_err(EngineError::Config)?;
         config.reliability.validate().map_err(EngineError::Config)?;
         config.forgetting.validate().map_err(EngineError::Config)?;
         config.erasure.validate().map_err(EngineError::Config)?;
-        if config.promotion.enabled {
-            validate_promotion_skew(config.security.clock_skew_tolerance_ms)?;
-        }
+        config.core_block.validate().map_err(EngineError::Config)?;
+        validate_attestation_skew(config.security.clock_skew_tolerance_ms)?;
         let embedder = Arc::new(embedder);
         let filter = CaptureFilter::with_defaults().map_err(EngineError::filter)?;
         let capturer = Capturer::new(
@@ -268,20 +285,44 @@ impl<E: Embedder> Memory<E> {
             config.capture,
             Arc::clone(&authorizer),
         );
-        // Signed writes (06 §3): when on, gate the capture path with an Ed25519 provenance gate
-        // over the store's registered agent keys. This is the single place crypto meets the
-        // capture path; the capturer itself stays crypto-free. Off ⇒ no gate, unsigned fast path.
-        let capturer = if config.security.signed_writes {
-            let gate: Arc<dyn ProvenanceGate> = Arc::new(SignedWriteGate::new(
+        // Signed writes (06 §3): when on, one Ed25519 provenance gate over the store's
+        // registered agent keys backs both consumers — the capture path and the core
+        // editor's editor leg — so the two can never disagree about what a verified
+        // write means. Off ⇒ no gate: capture takes the unsigned fast path and editor
+        // identity rests on the host-asserted principal (the behavioral single-writer
+        // rejection holds regardless; the *cryptographic* editor-exclusion guarantee
+        // requires signed writes on).
+        let signed_write_gate: Option<Arc<dyn ProvenanceGate>> =
+            config.security.signed_writes.then(|| {
+                Arc::new(SignedWriteGate::new(
+                    Ed25519Verifier,
+                    Arc::new(StoreKeyResolver::new(Arc::clone(&store))),
+                    Arc::new(SystemWallClock),
+                    config.security.clock_skew_tolerance_ms,
+                )) as Arc<dyn ProvenanceGate>
+            });
+        let capturer = match &signed_write_gate {
+            Some(gate) => capturer.with_gate(Arc::clone(gate)),
+            None => capturer,
+        };
+        // The core-block edit gate (05 §4, M5.T04): ALWAYS constructed — identity
+        // integrity has no off-switch, deliberately unlike every Option<_> sibling
+        // below. The attester gate is always active and reuses the signed-write skew
+        // knob (validated unconditionally above, since this gate consumes it no matter
+        // which optional subsystems are on). The policy was validated up front; the
+        // constructor re-validates fail-closed.
+        let core_editor = CoreEditor::new(
+            Arc::clone(&store),
+            AttestationGate::new(
                 Ed25519Verifier,
                 Arc::new(StoreKeyResolver::new(Arc::clone(&store))),
                 Arc::new(SystemWallClock),
                 config.security.clock_skew_tolerance_ms,
-            ));
-            capturer.with_gate(gate)
-        } else {
-            capturer
-        };
+            ),
+            signed_write_gate,
+            config.core_block.clone(),
+        )
+        .map_err(EngineError::Config)?;
         // Quorum promotion (06 §4): when on, build the attestation/promotion orchestrator over the
         // store's registered agent keys, reusing the signed-write skew knob. The policy and skew
         // were validated up front; the `Option<Promoter>` is the single off-switch, so the engine
@@ -377,6 +418,7 @@ impl<E: Embedder> Memory<E> {
             reliability_scorer,
             forgetter,
             eraser,
+            core_editor,
             audit_verifier,
         })
     }
@@ -768,14 +810,16 @@ impl<E: Embedder + 'static> Memory<E> {
     }
 }
 
-/// Validate the clock-skew tolerance the attestation gate reuses when promotion is on (06 §4),
-/// mirroring the signed-write bound. When signed writes are also on, [`SecurityGate::validate`]
-/// has already checked it; this covers promotion-on-but-signed-writes-off so a zero or oversized
-/// window is a configuration error, not a silent lockout.
-fn validate_promotion_skew(tolerance_ms: u64) -> Result<(), EngineError> {
+/// Validate the clock-skew tolerance, unconditionally. Signed writes and promotion
+/// consult the window only when enabled (and [`SecurityGate::validate`] covers the
+/// signed-writes case), but the core-block attestation gate (05 §4) is always on and
+/// always consumes it — a zero window would silently refuse every identity edit (skew
+/// is always >= 0), so it is a configuration error, not a silent lockout.
+fn validate_attestation_skew(tolerance_ms: u64) -> Result<(), EngineError> {
     if tolerance_ms == 0 {
         return Err(EngineError::Config(
-            "security.clock_skew_tolerance_ms must be greater than zero when promotion is on"
+            "security.clock_skew_tolerance_ms must be greater than zero (the always-on \
+             core-block edit gate consumes it)"
                 .to_string(),
         ));
     }
@@ -819,6 +863,12 @@ pub enum EngineError {
     /// The optional attestation/quorum-promotion path refused an attestation or failed (06 §4).
     #[error("attestation or promotion failed")]
     Promotion(#[from] PromotionError),
+
+    /// The always-on core-block edit path failed: a store read/write or a
+    /// key-resolution backend fault (05 §4). Gate refusals are never errors — they are
+    /// the typed [`CoreEditOutcome`] variants.
+    #[error("core-block edit failed")]
+    CoreEdit(#[from] CoreEditError),
 
     /// The optional trust-scoring path failed (a store read or an off-cursor cache write, 06 §5).
     #[error("reliability scoring failed")]

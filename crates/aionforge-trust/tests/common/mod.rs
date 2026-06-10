@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 
+use aionforge_domain::authz::{AuthorizationError, Authorizer, Principal, VisibleSet};
 use aionforge_domain::blocks::{Identity, Stats};
 use aionforge_domain::gate::WallClock;
 use aionforge_domain::ids::{ContentHash, Id};
@@ -175,4 +176,32 @@ pub fn core_edit_rows(store: &Store) -> Vec<AuditEvent> {
         .audit_by_kind(AuditKind::CoreEdit, None, 20)
         .expect("audit")
         .events
+}
+
+/// A permissive namespace authority for gate-focused suites: the core-editor tests
+/// exercise attestation, not authorization, so writes are always allowed and reads see
+/// the principal's normal visible set. The authorization leg has its own coverage with
+/// the real default policy.
+#[derive(Debug)]
+pub struct AllowAll;
+
+impl Authorizer for AllowAll {
+    fn authorize_write(
+        &self,
+        _principal: &Principal,
+        _target: &aionforge_domain::namespace::Namespace,
+    ) -> Result<(), AuthorizationError> {
+        Ok(())
+    }
+
+    fn visible_namespaces(&self, principal: &Principal) -> VisibleSet {
+        VisibleSet::new(
+            principal.private(),
+            principal
+                .teams
+                .iter()
+                .map(|team| aionforge_domain::namespace::Namespace::Team(team.clone()))
+                .collect(),
+        )
+    }
 }

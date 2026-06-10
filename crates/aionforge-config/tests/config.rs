@@ -12,8 +12,8 @@ use std::path::Path;
 
 use aionforge_config::{Config, ConfigError, default_config_path};
 
-use figment::Jail;
-use figment::providers::{Format, Toml};
+use figment::providers::{Format, Serialized, Toml};
+use figment::{Figment, Jail};
 use secrecy::ExposeSecret;
 
 #[test]
@@ -162,25 +162,19 @@ fn a_disabled_embedder_skips_endpoint_validation() {
 }
 
 #[test]
-fn signed_writes_bound_the_clock_skew_tolerance() {
-    // Off by default: the tolerance is inert and never validated.
+fn the_clock_skew_tolerance_is_bounded_unconditionally() {
+    // The always-on core-block edit gate consumes the window regardless of the
+    // signed-writes switch (05 §4), so a zero tolerance is a config error even with
+    // every optional subsystem off — it would silently refuse every identity edit.
     let mut config = Config::default();
     config.security.signed_writes = false;
     config.security.clock_skew_tolerance_ms = 0;
-    config
-        .validate()
-        .expect("an off signed-writes policy ignores the tolerance");
-
-    // On: a zero window would reject every write (skew is always >= 0), so it is a config error.
-    let mut config = Config::default();
-    config.security.signed_writes = true;
-    config.security.clock_skew_tolerance_ms = 0;
     assert!(
         matches!(config.validate(), Err(ConfigError::Invalid { key, .. }) if key == "security.clock_skew_tolerance_ms"),
-        "a zero tolerance with signed writes on is rejected"
+        "a zero tolerance is rejected even with signed writes off"
     );
 
-    // On: above the five-minute ceiling is rejected.
+    // Above the five-minute ceiling is rejected.
     let mut config = Config::default();
     config.security.signed_writes = true;
     config.security.clock_skew_tolerance_ms = 300_001;
@@ -189,11 +183,53 @@ fn signed_writes_bound_the_clock_skew_tolerance() {
         "a tolerance above the ceiling is rejected"
     );
 
-    // On: the ceiling itself is allowed.
+    // The ceiling itself is allowed.
     let mut config = Config::default();
     config.security.signed_writes = true;
     config.security.clock_skew_tolerance_ms = 300_000;
     config.validate().expect("the ceiling itself is allowed");
+}
+
+#[test]
+fn the_core_block_posture_parses_from_toml_and_validates_through_config() {
+    let reviewer = "0197b0aa-3c5e-8000-8000-000000000000";
+    let figment =
+        Figment::from(Serialized::defaults(Config::default())).merge(Toml::string(&format!(
+            r#"
+                [core_block]
+                redline_requires_human = true
+                human_attester_ids = ["{reviewer}"]
+
+                [core_block.default_rule]
+                k = 1
+
+                [core_block.rules.pii]
+                k = 2
+                require_human = true
+            "#
+        )));
+    let config: Config = figment.extract().expect("extract");
+    config.validate().expect("a sound posture validates");
+    assert!(config.core_block.redline_requires_human);
+    assert_eq!(config.core_block.rules["pii"].k, 2);
+    assert_eq!(
+        config
+            .core_block
+            .human_attester_ids
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        vec![reviewer.to_string()],
+        "uuid strings land as typed ids"
+    );
+
+    // The whole-config validate runs the core-block rules: a zero k fails closed.
+    let mut config = config;
+    config.core_block.default_rule.k = 0;
+    assert!(
+        matches!(config.validate(), Err(ConfigError::Invalid { key, .. }) if key == "core_block.default_rule.k"),
+        "the offending key is named"
+    );
 }
 
 #[test]

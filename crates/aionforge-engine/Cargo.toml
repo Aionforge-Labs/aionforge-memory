@@ -25,6 +25,9 @@ thiserror = { workspace = true }
 # never reads the environment itself); same redaction/zeroize posture as the config crate.
 secrecy = { workspace = true }
 miette = { workspace = true }
+# The core-block facade authors its genesis and namespace-denied audit payloads (05 §4).
+# Already pinned at the workspace; no new versions enter the tree.
+serde_json = { workspace = true }
 
 [dev-dependencies]
 aionforge-domain = { path = "../aionforge-domain", version = "0.1.0" }
@@ -33,9 +36,6 @@ tokio = { workspace = true }
 # Test-only: sign provenance payloads with a fixed-seed keypair to exercise the signed-write
 # gate end to end (M4.T03). Already pinned at the workspace; no new versions enter the tree.
 ed25519-dalek = { workspace = true }
-# Test-only: build audit payloads and read them back in the facade tests (M4.T06). Already
-# pinned at the workspace.
-serde_json = { workspace = true }
 base64 = { workspace = true }
 
 [lints]
