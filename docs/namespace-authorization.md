@@ -98,4 +98,5 @@ the caller might name — team-shared writes are a trusted-host path, not a remo
 `Memory::new` installs the default policy. A host that needs a different one — say, signature
 gating on top of namespace rules — supplies its own through `Memory::with_authorizer`. The
 `Authorizer` is the single seam every write is checked against, so a custom policy governs the
-whole capture path, not just part of it.
+whole capture path, not just part of it — and the [erasure cascade](erasure.md) too, which
+demands write authority over every namespace it would destroy in.

@@ -1,18 +1,22 @@
-//! Shared audit addressing for the M5 lifecycle transitions (05 §2).
+//! Shared audit addressing for the M5 lifecycle transitions (05 §2-§3).
 //!
-//! Forget/unforget and pin/unpin record their decisions through the same addressing
-//! discipline, lifted here so the two surfaces can never drift apart: one fresh,
-//! time-ordered id per **applied** transition, identities in the **memory's own
-//! namespace** (agent-visible through the scoped audit reads, never hidden in `System`
-//! governance forensics), and one deterministic substrate actor.
+//! Forget/unforget, pin/unpin, and the eraser's purge audit record their decisions
+//! through the same addressing discipline, lifted here so the surfaces can never drift
+//! apart: one fresh, time-ordered id per **applied** transition, identities in the
+//! **memory's own namespace** (agent-visible through the scoped audit reads, never
+//! hidden in `System` governance forensics). The actor differs by surface: the
+//! substrate actor below for the sweep-driven and manual lifecycle flips, the real
+//! erasing principal for a purge.
 
 use aionforge_domain::blocks::Identity;
 use aionforge_domain::ids::Id;
 use aionforge_domain::namespace::Namespace;
 use aionforge_domain::time::Timestamp;
 
-/// The deterministic substrate actor recorded on lifecycle audits — sweep-driven and
-/// manual alike, until a caller principal is plumbed through the facade.
+/// The deterministic substrate actor recorded on forget/unforget and pin/unpin audits,
+/// sweep-driven and manual alike — those surfaces take no principal. The erasure path
+/// is the one that does, and its purge audit names `principal.agent_id` instead:
+/// destruction on an agent's say-so is attributed to the agent, not the substrate.
 pub(crate) fn substrate_actor() -> Id {
     Id::from_content_hash(b"aionforge/forgetter-v1")
 }

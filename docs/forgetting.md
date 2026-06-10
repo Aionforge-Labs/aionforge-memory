@@ -47,8 +47,8 @@ Three graph-side exemptions run cheapest-first in the orchestrator before the ax
 - **Promotion lineage.** A node with a `PROMOTED_TO`/`DEMOTED_FROM` edge in either
   direction belongs to governance — a re-promotion would silently clear a soft-forget
   and a demotion would overwrite one, so lineage nodes are excluded outright.
-- **Attestation.** An attested memory is refused entirely until the M5.T03 erasure
-  cascade owns that edge.
+- **Attestation.** An attested memory is refused entirely; removing one is the
+  [erasure cascade](erasure.md)'s job, the explicit escalation this refusal defers to.
 
 The fourth graph probe is not an exemption but the "unreferenced" axis itself, one
 conjunct of the strict AND: it reads live incoming edges from a protecting allowlist

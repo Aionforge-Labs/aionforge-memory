@@ -39,6 +39,12 @@ This is reference and guides, not planning or changelogs.
   always-available audited pin/unpin (a stay, not a vault), the decision-basis audit
   trail in the memory's own namespace, and the single retrieval gate with
   `include_expired` as the one retention flag.
+- [Erasure](erasure.md) — the one destructive path: the fixed-point `DERIVED_FROM`
+  cascade under the multi-parent survival rule, caps that refuse whole, write authority
+  demanded over every namespace the cascade spans, the principal-attributed purge audit,
+  what survives on purpose (entities, audit rows, promoted shadows, spared
+  derivatives), and the honest residency boundary — compact-reclaimed rows, a WAL with
+  no scheduled eviction yet, and no tombstone registry.
 
 ## Procedural and generative layers
 

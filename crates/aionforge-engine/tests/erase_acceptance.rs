@@ -20,13 +20,14 @@ use aionforge_domain::blocks::{Identity, Stats};
 use aionforge_domain::embedding::Embedding;
 use aionforge_domain::ids::{ContentHash, Id};
 use aionforge_domain::namespace::Namespace;
+use aionforge_domain::nodes::associative::Note;
 use aionforge_domain::nodes::episodic::{ConsolidationState, Episode, Role};
-use aionforge_domain::nodes::forensic::AuditKind;
+use aionforge_domain::nodes::forensic::{AuditEvent, AuditKind};
 use aionforge_domain::nodes::semantic::{Fact, FactStatus};
 use aionforge_domain::time::Timestamp;
 use aionforge_domain::value::ObjectValue;
 use aionforge_engine::{ErasurePolicy, Memory, MemoryConfig, PointErase};
-use aionforge_store::{BoundQuery, Store, Value};
+use aionforge_store::{BoundQuery, DistilledNoteWrite, FactKey, MaterializedNote, Store, Value};
 use common::{DIM, FakeEmbedder, migrated_store, ts};
 
 fn fake_embedding() -> Embedding {
@@ -248,4 +249,136 @@ fn global_ground_is_not_erasable_under_the_default_policy() {
         }
     );
     assert!(is_live(&store, &f.identity.id, "Fact"));
+}
+
+fn note(content: &str, namespace: Namespace) -> Note {
+    Note {
+        identity: identity_in(namespace),
+        stats: stats(),
+        content: content.to_string(),
+        context: None,
+        keywords: Vec::new(),
+        embedding: None,
+        embedder_model: None,
+        derived_from_episode: None,
+    }
+}
+
+fn key_of(f: &Fact) -> FactKey {
+    FactKey {
+        subject_id: f.subject_id,
+        predicate: f.predicate.clone(),
+        object: f.object.clone(),
+    }
+}
+
+fn distill_audit(seed: &[u8], namespace: Namespace) -> AuditEvent {
+    AuditEvent {
+        identity: Identity {
+            id: Id::from_content_hash(seed),
+            ingested_at: now(),
+            namespace,
+            expired_at: None,
+        },
+        kind: AuditKind::Distill,
+        subject_id: Id::from_content_hash(b"subject"),
+        actor_id: Id::from_content_hash(b"distiller"),
+        payload: serde_json::json!({"outcome": "written"}),
+        signature: String::new(),
+        occurred_at: now(),
+    }
+}
+
+/// The spec acceptance chain (05 §3): a three-tier Episode -> Fact -> Note cascade
+/// through the engine facade, with a multi-parent sibling note spared, the distill
+/// audit rows surviving their subjects, and the dead rows physically reclaimed by
+/// `Store::compact` — the documented durable boundary.
+#[test]
+fn the_episode_fact_note_chain_erases_and_compact_reclaims_it() {
+    let store = migrated_store();
+    let memory = memory(&store, erasure_on());
+    let principal = principal();
+    let own_ns = own_namespace(&principal);
+
+    let e = episode("the source episode", own_ns.clone());
+    let doomed_fact = fact("the derived claim", own_ns.clone());
+    let surviving_fact = fact("the independent claim", own_ns.clone());
+    store.insert_episode(&e).expect("insert");
+    store.insert_fact(&doomed_fact).expect("insert");
+    store.insert_fact(&surviving_fact).expect("insert");
+    derived_fact_edge(&store, &doomed_fact.identity.id, &e.identity.id);
+
+    // Two notes through the real distillation write path: one grounded only in the
+    // doomed fact (cascades with it), one grounded in both facts (spared by the
+    // multi-parent survival rule — still standing on the independent claim).
+    let cascading = note("summary of the derived claim", own_ns.clone());
+    let spared = note("summary of both claims", own_ns.clone());
+    let written = vec![
+        DistilledNoteWrite {
+            note: MaterializedNote {
+                note: cascading.clone(),
+                source_facts: vec![key_of(&doomed_fact)],
+            },
+            audit: distill_audit(b"distill-cascading", own_ns.clone()),
+        },
+        DistilledNoteWrite {
+            note: MaterializedNote {
+                note: spared.clone(),
+                source_facts: vec![key_of(&doomed_fact), key_of(&surviving_fact)],
+            },
+            audit: distill_audit(b"distill-spared", own_ns.clone()),
+        },
+    ];
+    store
+        .materialize_distilled_notes(&written, &[], &now())
+        .expect("materialize notes");
+
+    let outcome = memory
+        .erase(&principal, &e.identity.id, &now())
+        .expect("erase");
+    let PointErase::Erased(report) = outcome else {
+        panic!("expected Erased, got {outcome:?}");
+    };
+    assert_eq!(report.cascade_depth, 2, "episode -> fact -> note");
+    assert_eq!(report.purged_nodes, 3);
+    assert!(report.purged_node_ids.contains(&cascading.identity.id));
+    assert_eq!(
+        report.spared_multiparent,
+        vec![spared.identity.id],
+        "the multi-parent note is spared and named"
+    );
+    assert!(!is_live(&store, &e.identity.id, "Episode"));
+    assert!(!is_live(&store, &doomed_fact.identity.id, "Fact"));
+    assert!(!is_live(&store, &cascading.identity.id, "Note"));
+    assert!(is_live(&store, &surviving_fact.identity.id, "Fact"));
+    assert!(is_live(&store, &spared.identity.id, "Note"));
+
+    // Audit rows are never closure members: both distill audits survive the purge of
+    // the note they produced (their AUDIT edges severed by the deletion), and the
+    // purge row joins them.
+    assert_eq!(
+        store
+            .audit_by_kind(AuditKind::Distill, None, 10)
+            .expect("audit")
+            .events
+            .len(),
+        2
+    );
+    assert_eq!(
+        store
+            .audit_by_kind(AuditKind::Purge, None, 10)
+            .expect("audit")
+            .events
+            .len(),
+        1
+    );
+
+    // The durable boundary: compaction physically reclaims the dead rows the report's
+    // residual_retention honestly said were still resident.
+    assert!(report.residual_retention.live_until_compact);
+    let compacted = store.compact().expect("compact");
+    assert!(
+        compacted.reclaimed_nodes >= 3,
+        "the cascade's rows are physically gone: {compacted:?}"
+    );
 }
