@@ -6,7 +6,7 @@
 use aionforge_domain::blocks::{Identity, Stats};
 use aionforge_domain::edges::AttestedBy;
 use aionforge_domain::embedding::{EmbedderModel, Embedding};
-use aionforge_domain::ids::Id;
+use aionforge_domain::ids::{ContentHash, Id};
 use aionforge_domain::namespace::Namespace;
 use aionforge_domain::nodes::agent::{Agent, AgentStatus, TrustScores};
 use aionforge_domain::nodes::core::{BlockKind, CoreBlock};
@@ -115,6 +115,10 @@ fn replacement(content: &str) -> CoreBlockReplacement {
     }
 }
 
+fn hash(content: &str) -> ContentHash {
+    ContentHash::of(content.as_bytes())
+}
+
 fn block_node(store: &Store, id: &Id) -> NodeId {
     store
         .memory_by_id(id, &["CoreBlock"])
@@ -159,6 +163,7 @@ fn an_edit_swaps_content_in_place_on_the_same_stable_node() {
     let outcome = store
         .edit_core_block(
             node,
+            &hash("I respond tersely."),
             &replacement("I respond thoroughly, with sources."),
             &[CoreAttestation {
                 attester,
@@ -223,6 +228,7 @@ fn the_drift_baseline_updates_only_when_the_caller_rebaselines() {
     store
         .edit_core_block(
             node,
+            &hash("I cite sources."),
             &rebaseline,
             &[CoreAttestation {
                 attester,
@@ -263,6 +269,7 @@ fn a_stale_embedding_is_removed_rather_than_served() {
     store
         .edit_core_block(
             node,
+            &hash("I avoid speculation."),
             &replacement("I label speculation clearly when asked for it."),
             &[CoreAttestation {
                 attester,
@@ -291,6 +298,7 @@ fn a_stale_embedding_is_removed_rather_than_served() {
     store
         .edit_core_block(
             node,
+            &hash("I label speculation clearly when asked for it."),
             &with_vector,
             &[CoreAttestation {
                 attester,
@@ -320,6 +328,7 @@ fn duplicate_attestations_collapse_to_one_recorded_vote() {
     let outcome = store
         .edit_core_block(
             node,
+            &hash("I am candid about uncertainty."),
             &replacement("I am candid about uncertainty, with calibration."),
             &[
                 CoreAttestation {
@@ -369,6 +378,7 @@ fn editing_a_retired_or_purged_block_is_the_typed_not_live() {
     let outcome = store
         .edit_core_block(
             retired_node,
+            &hash("an already-retired stance"),
             &replacement("must not apply"),
             &[CoreAttestation {
                 attester,
@@ -404,6 +414,7 @@ fn editing_a_retired_or_purged_block_is_the_typed_not_live() {
     let outcome = store
         .edit_core_block(
             doomed_node,
+            &hash("a purged identity"),
             &replacement("must not apply"),
             &[CoreAttestation {
                 attester,
@@ -421,5 +432,89 @@ fn editing_a_retired_or_purged_block_is_the_typed_not_live() {
             .len(),
         2,
         "only the two genesis audits exist; refused edits audit nothing"
+    );
+}
+
+#[test]
+fn a_stale_content_precondition_refuses_the_whole_edit() {
+    let store = store();
+    let b = block("the first stance", BlockKind::Persona);
+    store
+        .create_core_block(&b, &core_edit_audit(&b.identity.id, b"genesis"))
+        .expect("create");
+    let node = block_node(&store, &b.identity.id);
+    let attester = enroll_attester(&store, b"second-attester");
+
+    // Edit A lands first.
+    store
+        .edit_core_block(
+            node,
+            &hash("the first stance"),
+            &replacement("the second stance"),
+            &[CoreAttestation {
+                attester,
+                edge: vote(),
+            }],
+            &core_edit_audit(&b.identity.id, b"edit-a"),
+        )
+        .expect("edit");
+
+    // Edit B was prepared against the first stance: its attesters vouched for a
+    // transition whose predecessor no longer exists. Refused whole — applying it
+    // would record votes and a prior-hash claim against bytes that were never the
+    // actual predecessor.
+    let outcome = store
+        .edit_core_block(
+            node,
+            &hash("the first stance"),
+            &replacement("a competing third stance"),
+            &[CoreAttestation {
+                attester,
+                edge: vote(),
+            }],
+            &core_edit_audit(&b.identity.id, b"edit-b"),
+        )
+        .expect("call");
+    assert_eq!(outcome, CoreEditWrite::StaleContent);
+    assert_eq!(
+        store
+            .core_block_by_id(&b.identity.id)
+            .expect("read")
+            .expect("present")
+            .content,
+        "the second stance",
+        "the refused edit touched nothing"
+    );
+    assert_eq!(
+        store
+            .audit_by_kind(AuditKind::CoreEdit, None, 10)
+            .expect("audit")
+            .events
+            .len(),
+        2,
+        "genesis and edit A only; the stale edit audited nothing"
+    );
+}
+
+#[test]
+fn a_duplicate_id_create_fails_the_commit() {
+    let store = store();
+    let b = block("one identity, one node", BlockKind::Persona);
+    store
+        .create_core_block(&b, &core_edit_audit(&b.identity.id, b"genesis"))
+        .expect("create");
+
+    let err = store
+        .create_core_block(&b, &core_edit_audit(&b.identity.id, b"genesis-again"))
+        .expect_err("UNIQUE id rejects the duplicate at commit");
+    let message = err.to_string();
+    assert!(
+        message.to_lowercase().contains("unique") || message.to_lowercase().contains("duplicate"),
+        "the failure names the constraint: {message}"
+    );
+    assert_eq!(
+        store.live_core_blocks().expect("scan").len(),
+        1,
+        "the failed commit left exactly the original"
     );
 }
