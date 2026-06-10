@@ -1,4 +1,4 @@
-//! Active-forgetting configuration (05 §3, M5.T02).
+//! Active-forgetting configuration (05 §2, M5.T02).
 //!
 //! Its own module because the soft-forget posture is a coherent unit: the master
 //! off-switch, the floors a sweep candidate is measured against, and the conservative
@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::ConfigError;
 
-/// Active-forgetting posture (05 §3, M5.T02): whether the soft-forget sweep runs at all,
+/// Active-forgetting posture (05 §2, M5.T02): whether the soft-forget sweep runs at all,
 /// and the floors a candidate must sit below on *every* axis before it is forgettable.
 ///
 /// Off by default. When disabled the engine builds no forgetter and every forget surface

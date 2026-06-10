@@ -63,7 +63,7 @@ pub struct Config {
     /// importance with elapsed time since last access (05 §2). Off by default.
     pub decay: DecayConfig,
     /// Active-forgetting posture: the floors and guards for the soft-forget sweep
-    /// (05 §3). Off by default.
+    /// (05 §2). Off by default.
     pub forgetting: ForgettingConfig,
 }
 
