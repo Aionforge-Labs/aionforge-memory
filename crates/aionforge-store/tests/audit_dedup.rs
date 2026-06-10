@@ -196,6 +196,91 @@ fn the_retry_budget_count_is_invariant_to_signature_status() {
     );
 }
 
+/// A deterministic stand-in for the substrate audit signer (the real one is Ed25519 in
+/// aionforge-trust): object-safe, content-derived output, no crypto.
+#[derive(Debug)]
+struct FakeSigner;
+impl aionforge_domain::verify::AuditEventSigner for FakeSigner {
+    fn sign(&self, event: &AuditEvent) -> String {
+        format!("fake-sig|{}", event.identity.id)
+    }
+}
+
+#[test]
+fn an_installed_signer_stamps_blank_audit_writes_at_commit() {
+    // The 5g chokepoint contract: the signer lives on the Store and the write funnel
+    // stamps every blank-signature event at commit time — no author site opts in or out.
+    let store = store();
+    store
+        .install_audit_signer(std::sync::Arc::new(FakeSigner))
+        .expect("first install");
+    let event = content_addressed_audit("signed-at-commit", "");
+
+    let node = store.commit_audit(&event).expect("commit");
+    assert_eq!(
+        stored_signature(&store, node),
+        format!("fake-sig|{}", event.identity.id),
+        "the blank event was stamped inside the commit, not by the author"
+    );
+
+    // The author's verbatim replay re-signs deterministically (the trait contract) and
+    // dedups into the same row — sign-before-probe plus the latch keep it a no-op.
+    let replay = store.commit_audit(&event).expect("replay");
+    assert_eq!(node, replay, "the replay reuses the row");
+    assert_eq!(rows_with_id(&store, &event.identity.id), 1);
+
+    // Install-once is structural: a second signer is refused loudly, so two signers can
+    // never share one store's life.
+    assert!(
+        store
+            .install_audit_signer(std::sync::Arc::new(FakeSigner))
+            .is_err(),
+        "a second install must be refused"
+    );
+}
+
+#[test]
+fn an_installed_signer_heals_a_pre_placed_blank_shadow() {
+    // The end-to-end shadow heal: a blank copy lands while signing is off (or is
+    // attacker-pre-placed), signing is then enabled, and the author's deterministic
+    // re-emit upgrades the stored row through the latch — same node, one row.
+    let store = store();
+    let event = content_addressed_audit("healed-shadow", "");
+    let first = store.commit_audit(&event).expect("blank shadow lands");
+
+    store
+        .install_audit_signer(std::sync::Arc::new(FakeSigner))
+        .expect("first install");
+    let second = store.commit_audit(&event).expect("signed re-emit");
+
+    assert_eq!(first, second, "the heal reuses the row");
+    assert_eq!(rows_with_id(&store, &event.identity.id), 1);
+    assert_eq!(
+        stored_signature(&store, first),
+        format!("fake-sig|{}", event.identity.id),
+        "the shadow row now carries the commit-time signature"
+    );
+}
+
+#[test]
+fn an_already_signed_event_passes_through_an_installed_signer() {
+    // An author-signed event (KeyRotation is signed by a SPECIFIC key, possibly the
+    // outgoing one during rotation) must reach the store byte-identical: the commit-time
+    // stamp covers only blank signatures, it never re-signs.
+    let store = store();
+    store
+        .install_audit_signer(std::sync::Arc::new(FakeSigner))
+        .expect("first install");
+    let event = content_addressed_audit("author-signed", "b3V0Z29pbmc=");
+
+    let node = store.commit_audit(&event).expect("commit");
+    assert_eq!(
+        stored_signature(&store, node),
+        "b3V0Z29pbmc=",
+        "the author's signature survives — the stamp never replaces"
+    );
+}
+
 #[test]
 fn recovery_refuses_a_pre_latch_immutable_signature_schema() {
     // A store whose persisted DDL predates the latch declares `AuditEvent.signature`

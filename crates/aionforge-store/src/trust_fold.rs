@@ -214,7 +214,7 @@ impl Store {
         let mut txn = self.graph().begin_write();
         let id = {
             let mut mutator = txn.mutator();
-            let ensured = audit::ensure_event(&mut mutator, event)?;
+            let ensured = audit::ensure_event(&mut mutator, event, self.audit_signer())?;
             if ensured.created {
                 // Wire AUDIT -> the agent subject so the M4.T06 by-subject walk reaches it.
                 // The agent should exist; if it somehow does not, the by-subject_id index read

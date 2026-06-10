@@ -35,7 +35,11 @@ impl Store {
     ) -> Result<CaptureWriteIds, StoreError> {
         let (episode_labels, episode_props) = episode::to_node(episode)?;
         let (provenance_labels, provenance_props) = provenance::to_node(provenance)?;
-        let (audit_labels, audit_props) = audit::to_node(audit)?;
+        // Capture audits are fresh-id appends (no dedup funnel), but they sign through the
+        // same commit-time stamp as every funneled author, so an enabled signer covers all
+        // capture-channel events too.
+        let audit = audit::signed_copy(audit, self.audit_signer());
+        let (audit_labels, audit_props) = audit::to_node(audit.as_ref())?;
         let has_provenance = db_string(HasProvenance::LABEL)?;
         let audit_edge = db_string(Audit::LABEL)?;
 
@@ -95,7 +99,7 @@ impl Store {
             // retry — e.g. a refused attestation re-sent verbatim — never trips the `id` UNIQUE
             // constraint and surfaces a spurious store error. `ensure_event` also reconciles the
             // stored signature with the incoming copy's (the funnel for every audit author).
-            audit::ensure_event(&mut mutator, audit)?.node
+            audit::ensure_event(&mut mutator, audit, self.audit_signer())?.node
         };
         txn.commit()?;
         Ok(id)

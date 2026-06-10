@@ -334,7 +334,7 @@ impl Store {
 
             // Materialize the derived facts/entities/edges before the flip, so they land
             // in the same commit. Dedup makes a re-run a no-op.
-            materialize_into(&mut mutator, node_id, artifacts, now)?;
+            materialize_into(&mut mutator, node_id, artifacts, now, self.audit_signer())?;
 
             // Resolve the cursor node id (Copy) before mutating, releasing the borrow.
             let cursor_node = cursor_node_id(mutator.read())?;
@@ -396,7 +396,8 @@ impl Store {
             // The audit id is content-derived (keyed on episode + attempt), and `AuditEvent.id`
             // is UNIQUE, so the write must dedup: a re-recorded attempt reuses the node and
             // edge rather than colliding on the constraint (mirrors the materialize audit path).
-            let audit_node = audit::ensure_event(&mut mutator, audit_event)?.node;
+            let audit_node =
+                audit::ensure_event(&mut mutator, audit_event, self.audit_signer())?.node;
             ensure_edge(
                 &mut mutator,
                 Audit::LABEL,

@@ -299,7 +299,7 @@ impl Store {
                     mutator.create_node(ledger_labels, ledger_props)?;
                 }
             }
-            let ensured = audit::ensure_event(&mut mutator, audit)?;
+            let ensured = audit::ensure_event(&mut mutator, audit, self.audit_signer())?;
             if ensured.created {
                 mutator.create_edge(
                     audit_edge,
@@ -403,7 +403,7 @@ impl Store {
                     mutator.create_node(ledger_labels, ledger_props)?;
                 }
             }
-            let demote = audit::ensure_event(&mut mutator, demote_audit)?;
+            let demote = audit::ensure_event(&mut mutator, demote_audit, self.audit_signer())?;
             if demote.created {
                 mutator.create_edge(
                     audit_edge.clone(),
@@ -412,7 +412,8 @@ impl Store {
                     PropertyMap::from_pairs(Vec::new())?,
                 )?;
             }
-            let quarantine = audit::ensure_event(&mut mutator, quarantine_audit)?;
+            let quarantine =
+                audit::ensure_event(&mut mutator, quarantine_audit, self.audit_signer())?;
             if quarantine.created {
                 mutator.create_edge(
                     audit_edge,

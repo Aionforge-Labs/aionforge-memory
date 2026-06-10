@@ -4,9 +4,12 @@
 //! is an intentionally open `JSON` shape (02 §6.4), round-tripped as a native JSON
 //! value; `kind` serializes to its `snake_case` spec string.
 
+use std::borrow::Cow;
+
 use aionforge_domain::blocks::Identity;
 use aionforge_domain::ids::Id;
 use aionforge_domain::nodes::forensic::AuditEvent;
+use aionforge_domain::verify::AuditEventSigner;
 use selene_core::{
     DbString, LabelDiff, LabelSet, NodeId, PropertyDiff, PropertyMap, Value, db_string,
 };
@@ -149,6 +152,27 @@ fn signature_action(stored: &str, incoming: &str) -> SignatureAction {
     }
 }
 
+/// Stamp a blank-signature event at commit time, when a signer is installed (M4.T06 PR-5g).
+///
+/// An already-signed event passes through untouched — the author signed it (KeyRotation is
+/// signed by a SPECIFIC key, possibly the outgoing one) and the latch never replaces a
+/// signature. Signing happens BEFORE the dedup probe so the latch's blank -> signed heal
+/// covers a pre-placed shadow row automatically; `AuditEventSigner` is deterministic by
+/// trait contract, so a crash-replay re-signs identical bytes and the dedup stays a no-op.
+pub(crate) fn signed_copy<'e>(
+    event: &'e AuditEvent,
+    signer: Option<&dyn AuditEventSigner>,
+) -> Cow<'e, AuditEvent> {
+    match signer {
+        Some(signer) if event.signature.is_empty() => {
+            let mut copy = event.clone();
+            copy.signature = signer.sign(&copy);
+            Cow::Owned(copy)
+        }
+        _ => Cow::Borrowed(event),
+    }
+}
+
 /// The stored `signature` property of an existing audit node.
 fn stored_signature(snapshot: &SeleneGraph, node: NodeId) -> Result<String, StoreError> {
     let props = snapshot
@@ -175,7 +199,10 @@ fn stored_signature(snapshot: &SeleneGraph, node: NodeId) -> Result<String, Stor
 pub(crate) fn ensure_event(
     mutator: &mut Mutator<'_, '_>,
     event: &AuditEvent,
+    signer: Option<&dyn AuditEventSigner>,
 ) -> Result<EnsuredAudit, StoreError> {
+    let event = signed_copy(event, signer);
+    let event = event.as_ref();
     match find_existing(mutator.read(), &event.identity.id)? {
         Some(node) => {
             let stored = stored_signature(mutator.read(), node)?;
