@@ -63,6 +63,21 @@ a loss-tolerant recompute. The retrieval re-rank only *orders* by importance and
 drops a candidate, so eligibility is consumed by the M5.T02 soft-expire sweep, not by
 recall.
 
+## The forget-eligibility seam
+
+The sweep side of that seam is the pure `forget_eligible` predicate (05 §3, M5.T02): a
+strict AND across the pure axes — unpinned, decayed importance below the sweep's floor,
+trust below the trust floor, unreferenced, and at least a minimum age — where any single
+axis can only *spare* a candidate, never doom one on its own. The pin is double-enforced:
+the predicate checks it explicitly, and the shared eligibility rule absorbs it through
+the pin override, so no misconfigured floor can forget a pin. Non-finite importance or
+trust scalars spare rather than doom — the sweep never destroys on a value the
+arithmetic cannot vouch for. The graph-side axes (kind scoping, attestation, promotion
+lineage, and the reference probe itself) belong to the forgetting orchestrator, not to
+these pure functions; soft-forget is also the only revision channel that writes a bare
+`expired_at` with the status untouched, which is what keeps it distinguishable from
+supersession, contradiction, and reliability demotion at read time.
+
 ## The caller's clock
 
 There is no ambient clock in the retrieval path (03 §6). The importance and recency
