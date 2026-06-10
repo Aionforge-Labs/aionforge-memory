@@ -244,15 +244,19 @@ impl Store {
         // Doomed members also surrender their namespace, deduplicated in encounter
         // order — every closure member carries the shared identity block (memories and
         // provenance records alike), so a missing namespace is a decode failure, not a
-        // skippable gap.
+        // skippable gap. One property fetch per node serves both the id and the
+        // namespace.
         let namespace_key = db_string("namespace")?;
         let mut node_ids: Vec<Id> = Vec::with_capacity(doomed.len());
         let mut namespaces: Vec<Namespace> = Vec::new();
         for &node in &doomed {
-            node_ids.push(id_of(node)?);
             let props = snapshot.node_properties(node).ok_or_else(|| {
                 StoreError::invariant("closure member has no properties".to_string())
             })?;
+            let value = props.get(&id_key).ok_or_else(|| {
+                StoreError::decode("closure member missing required property `id`".to_string())
+            })?;
+            node_ids.push(as_id(value)?);
             let value = props.get(&namespace_key).ok_or_else(|| {
                 StoreError::decode(
                     "closure member missing required property `namespace`".to_string(),
