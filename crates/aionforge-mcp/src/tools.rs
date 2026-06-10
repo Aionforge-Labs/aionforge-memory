@@ -152,11 +152,18 @@ pub async fn capture_tool<E: Embedder>(
 /// Run the `search` tool: recall under the viewer's authorization and render a
 /// compact (or verbose) result. Errors are returned as `ERR_*` strings.
 ///
+/// `now` is the host boundary's wall clock, injected by the handler exactly as for a
+/// capture: the substrate keeps no ambient clock, so the importance and recency
+/// re-ranks exist only because this surface stamps the recall instant onto the query's
+/// options (05 §2, M5.T01). The clock shapes ranking only — a recall stays read-only,
+/// and the decayed importance it computes is never written back.
+///
 /// # Errors
 /// Returns a structured `ERR_*` message string on a bad parameter or a search failure.
 pub async fn search_tool<E: Embedder>(
     memory: &Memory<E>,
     params: SearchToolParams,
+    now: &Timestamp,
 ) -> Result<String, String> {
     // A reader is an agent: recall scopes to the global space, the reader's own private
     // namespace, and the teams the host asserts. A non-agent viewer has no reader identity,
@@ -178,8 +185,10 @@ pub async fn search_tool<E: Embedder>(
     let limit = params.limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT);
     let verbose = params.verbose.unwrap_or(false);
 
+    let mut query = RecallQuery::new(params.query, principal, limit);
+    query.options.now = Some(now.clone());
     let bundle = memory
-        .search(RecallQuery::new(params.query, principal, limit))
+        .search(query)
         .await
         .map_err(|error| format!("ERR_SEARCH: {error}"))?;
     // The compact rendering lives next to the full rendered view in the retrieval crate

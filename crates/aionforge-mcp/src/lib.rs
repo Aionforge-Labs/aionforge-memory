@@ -67,7 +67,13 @@ impl<E: Embedder + 'static> AionforgeMcp<E> {
         description = "Search memories. Returns compact one-line hits (id, score, snippet); pass verbose for per-hit detail."
     )]
     async fn search(&self, params: Parameters<SearchToolParams>) -> Result<String, String> {
-        search_tool(&self.memory, params.0).await
+        // The host boundary owns the wall clock, mirroring `capture`: stamping the recall
+        // instant here keeps the substrate free of an ambient clock while making the
+        // importance and recency re-ranks available to every MCP search — each query class
+        // still decides whether it weights them; the quote class keeps both off (05 §2,
+        // M5.T01).
+        let now = jiff::Zoned::now();
+        search_tool(&self.memory, params.0, &now).await
     }
 }
 

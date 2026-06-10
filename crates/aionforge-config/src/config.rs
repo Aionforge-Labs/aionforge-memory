@@ -362,6 +362,11 @@ impl Default for ReliabilityConfig {
 /// how fast per tier. The defaults are deliberately conservative (a half-life of days for
 /// episodic memory, a year for semantic), because aggressive forgetting risks losing
 /// rarely-but-critically-needed facts; pinned memories ignore decay entirely.
+///
+/// The host maps these knobs into the retrieval crate's `RetrieverConfig` — the
+/// half-lives carried as `f64` seconds — the same host-side indirection as
+/// [`ReliabilityConfig`] into the engine's reliability policy, so neither the engine nor
+/// the retrieval crate takes a config dependency.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DecayConfig {

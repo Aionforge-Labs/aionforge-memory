@@ -11,7 +11,7 @@ use aionforge_domain::contracts::Embedder;
 use aionforge_domain::embedding::{EmbedderModel, Embedding};
 use aionforge_domain::ids::Id;
 use aionforge_domain::time::Timestamp;
-use aionforge_engine::{Memory, MemoryConfig};
+use aionforge_engine::{Memory, MemoryConfig, RetrieverConfig};
 use aionforge_mcp::{CaptureToolParams, SearchToolParams, capture_tool, search_tool};
 
 #[derive(Clone)]
@@ -150,6 +150,7 @@ async fn search_tool_returns_compact_hits() {
             limit: None,
             verbose: None,
         },
+        &now(),
     )
     .await
     .expect("search");
@@ -194,6 +195,7 @@ async fn search_tool_escapes_tag_breakout_in_snippets() {
             limit: None,
             verbose: None,
         },
+        &now(),
     )
     .await
     .expect("search");
@@ -233,6 +235,7 @@ async fn search_tool_enforces_namespace_authorization() {
             limit: None,
             verbose: None,
         },
+        &now(),
     )
     .await
     .expect("search as alice");
@@ -249,6 +252,7 @@ async fn search_tool_enforces_namespace_authorization() {
             limit: None,
             verbose: None,
         },
+        &now(),
     )
     .await
     .expect("search as bob");
@@ -302,6 +306,7 @@ async fn search_tool_widens_to_a_team_only_when_the_host_asserts_membership() {
             limit: None,
             verbose: None,
         },
+        &now(),
     )
     .await
     .expect("search without team");
@@ -320,6 +325,7 @@ async fn search_tool_widens_to_a_team_only_when_the_host_asserts_membership() {
             limit: None,
             verbose: None,
         },
+        &now(),
     )
     .await
     .expect("search with team");
@@ -350,6 +356,7 @@ async fn search_tool_verbose_adds_per_hit_detail() {
             limit: None,
             verbose: Some(true),
         },
+        &now(),
     )
     .await
     .expect("search");
@@ -408,6 +415,97 @@ async fn capture_tool_rejects_a_bad_captured_at() {
 }
 
 #[tokio::test]
+async fn search_tool_threads_the_host_clock_into_the_importance_and_recency_reranks() {
+    let memory = memory();
+    let agent = Id::generate();
+    capture_tool(
+        &memory,
+        capture_params("a graph note", &agent.to_string()),
+        &now(),
+    )
+    .await
+    .expect("capture");
+
+    let out = search_tool(
+        &memory,
+        SearchToolParams {
+            query: "graph".to_string(),
+            viewer: format!("agent:{agent}"),
+            teams: Vec::new(),
+            limit: None,
+            verbose: Some(true),
+        },
+        &now(),
+    )
+    .await
+    .expect("search");
+
+    // The importance and recency re-ranks run only when the handler-stamped instant
+    // reaches `RecallOptions::now` (05 §2): their signals appearing in the per-hit
+    // contributions proves the clock threaded through the whole recall path, not just
+    // into the tool's parameter list.
+    assert!(
+        out.contains("importance#"),
+        "importance re-rank ran on the clocked search: {out}"
+    );
+    assert!(
+        out.contains("recency#"),
+        "recency re-rank ran on the clocked search: {out}"
+    );
+}
+
+#[tokio::test]
+async fn clocked_search_with_decay_on_is_deterministic_for_a_fixed_instant() {
+    // Decay enabled with a short episodic half-life, so the recall a day after capture
+    // computes a meaningfully sunk effective importance.
+    let config = MemoryConfig {
+        retriever: RetrieverConfig {
+            decay_enabled: true,
+            episodic_half_life_secs: 3_600.0,
+            semantic_half_life_secs: 3_600.0,
+            ..RetrieverConfig::default()
+        },
+        ..MemoryConfig::default()
+    };
+    let memory =
+        Arc::new(Memory::open_in_memory(FakeEmbedder::new(), &now(), config).expect("open memory"));
+    let agent = Id::generate();
+    capture_tool(
+        &memory,
+        capture_params("a graph note", &agent.to_string()),
+        &now(),
+    )
+    .await
+    .expect("capture");
+
+    let later: Timestamp = "2026-06-07T09:30:00-05:00[America/Chicago]"
+        .parse()
+        .expect("valid zoned datetime");
+    let params = || SearchToolParams {
+        query: "graph".to_string(),
+        viewer: format!("agent:{agent}"),
+        teams: Vec::new(),
+        limit: None,
+        verbose: Some(true),
+    };
+    let first = search_tool(&memory, params(), &later)
+        .await
+        .expect("first clocked search");
+    let second = search_tool(&memory, params(), &later)
+        .await
+        .expect("second clocked search");
+
+    // Decay is a pure read-time function of the supplied instant (§13.7): a recall never
+    // writes the decayed value back, so repeating the same query at the same instant is
+    // byte-identical end to end.
+    assert!(first.starts_with("hits: 1 "), "{first}");
+    assert_eq!(
+        first, second,
+        "a clocked recall is repeatable and read-only"
+    );
+}
+
+#[tokio::test]
 async fn search_tool_rejects_a_bad_viewer() {
     let memory = memory();
     let err = search_tool(
@@ -419,6 +517,7 @@ async fn search_tool_rejects_a_bad_viewer() {
             limit: None,
             verbose: None,
         },
+        &now(),
     )
     .await
     .expect_err("should reject");
