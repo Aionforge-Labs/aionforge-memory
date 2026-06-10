@@ -7,7 +7,7 @@
 //! separate authorities), and the engine's injected namespace authority. Erasure is
 //! the one principal-driven surface on the forgetting side — the sweep and the point
 //! forget are substrate maintenance, but an erase destroys on an agent's say-so — so
-//! the caller supplies the [`Principal`](aionforge_domain::authz::Principal), the
+//! the caller supplies the [`Principal`], the
 //! [`Authorizer`](aionforge_domain::authz::Authorizer) rules on every namespace the
 //! cascade spans, and the purge audit names that principal as its actor.
 
