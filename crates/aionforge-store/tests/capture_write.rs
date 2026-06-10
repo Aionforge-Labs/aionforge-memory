@@ -73,6 +73,42 @@ fn provenance(subject: &Id, writer: &Id) -> ProvenanceRecord {
     }
 }
 
+/// A deterministic stand-in for the substrate audit signer (no crypto) — the capture
+/// append signs through the same commit-time stamp as the funneled authors (M4.T06 PR-5g1).
+#[derive(Debug)]
+struct FakeSigner;
+impl aionforge_domain::verify::AuditEventSigner for FakeSigner {
+    fn sign(&self, event: &AuditEvent) -> String {
+        format!("fake-sig|{}", event.identity.id)
+    }
+}
+
+#[test]
+fn commit_capture_stamps_the_blank_capture_audit_when_a_signer_is_installed() {
+    // commit_capture is the fresh-id append path (no dedup funnel), so it carries its own
+    // signed_copy stamp — prove the stored capture audit comes back signed, and that the
+    // AUDIT edge target is that signed node (read back through the returned id).
+    let store = store();
+    store
+        .install_audit_signer(std::sync::Arc::new(FakeSigner))
+        .expect("first install");
+    let ep = episode("a capture that must be signed");
+    let pv = provenance(&ep.identity.id, &ep.agent_id);
+    let au = audit(&ep.identity.id, &ep.agent_id);
+    assert!(au.signature.is_empty(), "the author writes blank");
+
+    let ids = store.commit_capture(&ep, &pv, &au).expect("commit capture");
+    let stored = store
+        .audit_event_by_node_id(ids.audit)
+        .expect("read back")
+        .expect("audit exists");
+    assert_eq!(
+        stored.signature,
+        format!("fake-sig|{}", au.identity.id),
+        "the capture audit was stamped at commit time"
+    );
+}
+
 fn audit(subject: &Id, actor: &Id) -> AuditEvent {
     AuditEvent {
         identity: Identity {

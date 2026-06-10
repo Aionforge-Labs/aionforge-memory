@@ -84,7 +84,7 @@ impl Store {
             // Content-addressed dedup against the in-txn working graph (committed state plus
             // this txn's writes), under the write lock — so a concurrent re-attest cannot probe
             // the same id and both create a second audit. Mirrors the consolidation audit dedup.
-            let ensured = audit::ensure_event(&mut mutator, audit)?;
+            let ensured = audit::ensure_event(&mut mutator, audit, self.audit_signer())?;
             if ensured.created {
                 mutator.create_edge(
                     audit_edge,

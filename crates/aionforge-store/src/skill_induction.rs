@@ -68,6 +68,7 @@ pub(crate) fn materialize_induced_skills(
     writes: &[InducedSkillWrite],
     episode_node_id: NodeId,
     now: &Timestamp,
+    signer: Option<&dyn aionforge_domain::verify::AuditEventSigner>,
 ) -> Result<(), StoreError> {
     // Fail closed: one name must map to one body within a single episode's output. (One episode
     // induces at most one skill today, so this only guards a future multi-induction pass.)
@@ -89,8 +90,13 @@ pub(crate) fn materialize_induced_skills(
         if skill_node_id_in(mutator.read(), &write.skill.identity.id)?.is_some() {
             continue;
         }
-        let skill_node =
-            write_skill_into(mutator, &write.skill, write.deprecate_prior, &write.audits)?;
+        let skill_node = write_skill_into(
+            mutator,
+            &write.skill,
+            write.deprecate_prior,
+            &write.audits,
+            signer,
+        )?;
         // Provenance: the induced skill derives from the episode it was induced from.
         ensure_edge(
             mutator,

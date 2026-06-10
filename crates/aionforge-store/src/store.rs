@@ -42,6 +42,16 @@ use crate::{agent, entity, episode, fact};
 pub struct Store {
     graph: SharedGraph,
     config: StoreConfig,
+    /// The substrate audit-event signer (06 §6, M4.T06). Empty (the default) leaves every
+    /// audit write's signature exactly as the author built it — byte-identical to the
+    /// pre-signing store. Once installed, the audit write funnel (`audit::ensure_event`)
+    /// and the capture append stamp each blank-signature event at commit time, so no
+    /// author site can forget to sign: the funnel is the only door. A `OnceLock` because
+    /// the installer (the engine, when `sign_audit_events` is enabled) only holds
+    /// `Arc<Store>` at that point — and because install-once makes a mid-life signer swap
+    /// (two signers across one store's life, a determinism hazard) structurally impossible.
+    audit_signer:
+        std::sync::OnceLock<std::sync::Arc<dyn aionforge_domain::verify::AuditEventSigner>>,
 }
 
 impl std::fmt::Debug for Store {
@@ -52,6 +62,28 @@ impl std::fmt::Debug for Store {
 }
 
 impl Store {
+    /// Install the substrate audit-event signer (M4.T06 PR-5g), once per store life.
+    /// Every subsequent audit write whose signature is blank is stamped at commit time
+    /// inside the write funnel. Takes `&self` so the engine can install through its
+    /// `Arc<Store>` at the point it reads `sign_audit_events`.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] if a signer is already installed — two signers across one
+    /// store's life would break the deterministic re-sign story, so this fails loudly.
+    pub fn install_audit_signer(
+        &self,
+        signer: std::sync::Arc<dyn aionforge_domain::verify::AuditEventSigner>,
+    ) -> Result<(), StoreError> {
+        self.audit_signer.set(signer).map_err(|_| {
+            StoreError::invariant("an audit signer is already installed on this store".to_string())
+        })
+    }
+
+    /// The installed audit signer, if audit signing is enabled.
+    pub(crate) fn audit_signer(&self) -> Option<&dyn aionforge_domain::verify::AuditEventSigner> {
+        self.audit_signer.get().map(std::sync::Arc::as_ref)
+    }
+
     /// Open an in-memory store with no persistence and no schema applied yet.
     ///
     /// The graph is closed but bound to an empty type, so it accepts catalog DDL but
@@ -80,7 +112,11 @@ impl Store {
             .bound_to(empty_graph_type()?)?
             .with_provider(candidate_state_provider()?)
             .build()?;
-        Ok(Self { graph, config })
+        Ok(Self {
+            graph,
+            config,
+            audit_signer: std::sync::OnceLock::new(),
+        })
     }
 
     /// Open a WAL-backed store at `dir`, with no schema applied yet.
@@ -108,7 +144,11 @@ impl Store {
             .bound_to(empty_graph_type()?)?
             .with_provider(candidate_state_provider()?)
             .build()?;
-        Ok(Self { graph, config })
+        Ok(Self {
+            graph,
+            config,
+            audit_signer: std::sync::OnceLock::new(),
+        })
     }
 
     /// Open a WAL-backed store at `dir` with the full schema already applied.
@@ -153,7 +193,11 @@ impl Store {
             empty_graph_type()?,
             vec![candidate_state_provider()?],
         )?;
-        let store = Self { graph, config };
+        let store = Self {
+            graph,
+            config,
+            audit_signer: std::sync::OnceLock::new(),
+        };
         store.dimension_consistency_check(config.embedding_dimension)?;
         store.audit_signature_latch_check()?;
         Ok(store)

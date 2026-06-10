@@ -258,6 +258,7 @@ pub(crate) fn write_skill_into(
     skill: &Skill,
     deprecate_prior: Option<NodeId>,
     audits: &[AuditEvent],
+    signer: Option<&dyn aionforge_domain::verify::AuditEventSigner>,
 ) -> Result<NodeId, StoreError> {
     let (labels, props) = to_node(skill)?;
     let audit_label = db_string(Audit::LABEL)?;
@@ -279,7 +280,7 @@ pub(crate) fn write_skill_into(
         // The caller's skill-level probe means a fresh version's audits are normally fresh
         // too; the funnel still applies so a pre-placed copy of a content-addressed audit id
         // heals (signature reconciled, node reused) instead of tripping the UNIQUE constraint.
-        let audit_node = crate::audit::ensure_event(mutator, event)?.node;
+        let audit_node = crate::audit::ensure_event(mutator, event, signer)?.node;
         mutator.create_edge(
             audit_label.clone(),
             audit_node,
@@ -387,7 +388,13 @@ impl Store {
         let mut txn = self.graph().begin_write();
         let skill_node = {
             let mut mutator = txn.mutator();
-            write_skill_into(&mut mutator, skill, deprecate_prior, audits)?
+            write_skill_into(
+                &mut mutator,
+                skill,
+                deprecate_prior,
+                audits,
+                self.audit_signer(),
+            )?
         };
         txn.commit()?;
         Ok(skill_node)

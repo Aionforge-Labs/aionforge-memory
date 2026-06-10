@@ -175,6 +175,7 @@ pub(crate) fn materialize_into(
     episode_node_id: NodeId,
     artifacts: &ConsolidationArtifacts,
     now: &Timestamp,
+    signer: Option<&dyn aionforge_domain::verify::AuditEventSigner>,
 ) -> Result<(), StoreError> {
     if artifacts.is_empty() {
         return Ok(());
@@ -354,6 +355,7 @@ pub(crate) fn materialize_into(
         &artifacts.induced_skills,
         episode_node_id,
         now,
+        signer,
     )?;
 
     // 4. Audit the pass's decisions (forensic): node + AUDIT edge to episode. Audit ids are
@@ -361,7 +363,7 @@ pub(crate) fn materialize_into(
     //    the same episode reuses the existing audit node and `ensure_edge` adds no second edge,
     //    making the whole audit set idempotent like the facts and notes (04 §3).
     for event in &artifacts.audit_events {
-        let audit_node = audit::ensure_event(mutator, event)?.node;
+        let audit_node = audit::ensure_event(mutator, event, signer)?.node;
         ensure_edge(
             mutator,
             Audit::LABEL,

@@ -117,7 +117,9 @@ impl Store {
 
             // Provenance for each written note: audit node (deduped by id), then `AUDIT -> Note`.
             for (write, note_node) in written.iter().zip(note_nodes) {
-                let audit_node = crate::audit::ensure_event(&mut mutator, &write.audit)?.node;
+                let audit_node =
+                    crate::audit::ensure_event(&mut mutator, &write.audit, self.audit_signer())?
+                        .node;
                 ensure_edge(
                     &mut mutator,
                     Audit::LABEL,
@@ -129,7 +131,8 @@ impl Store {
 
             // Calls that produced no note: audit recorded anyway, anchored on the subject entity.
             for event in declined {
-                let audit_node = crate::audit::ensure_event(&mut mutator, event)?.node;
+                let audit_node =
+                    crate::audit::ensure_event(&mut mutator, event, self.audit_signer())?.node;
                 match entity_node_by_id(mutator.read(), &event.subject_id)? {
                     Some(subject_node) => ensure_edge(
                         &mut mutator,
