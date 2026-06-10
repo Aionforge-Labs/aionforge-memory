@@ -46,6 +46,7 @@
 
 mod config;
 mod error;
+mod forgetting;
 mod load;
 
 pub use config::{
@@ -54,4 +55,5 @@ pub use config::{
     endpoint_transport_is_allowed,
 };
 pub use error::ConfigError;
+pub use forgetting::ForgettingConfig;
 pub use load::default_config_path;
