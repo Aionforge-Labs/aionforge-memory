@@ -29,6 +29,10 @@ This is reference and guides, not planning or changelogs.
 - [The merge model (CRDTs)](crdt-model.md) — the formal companion to concurrent merge: which CRDT
   each memory type stands in for (add-wins set, multi-value register, last-write-wins stats), why
   convergence here is just merge determinism, and why the logical clock is derived, not stored.
+- [Decay and importance scoring](decay-and-importance.md) — how relevance ages: per-tier
+  exponential half-lives over a pure, never-written-back effective importance, the pin that
+  never decays out of eligibility, the caller-supplied clock (the MCP server stamps it; the
+  substrate reads none), and the importance/recency re-ranks in three-factor relevance.
 
 ## Procedural and generative layers
 
