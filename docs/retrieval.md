@@ -38,7 +38,8 @@ both work in — and resolve to a stable domain id only at the bundle boundary.
 All seven signals ship. `Support` and `Graph` are the additive search signals below;
 `Trust`, `Importance`, and `Recency` are *re-ranks* — they order only the candidates the
 search signals already surfaced (trust by the reliability-folded stored trust, importance
-by the effective decayed importance, recency by the ingestion instant) and can never widen
+by the effective decayed importance — see [Decay and importance
+scoring](decay-and-importance.md) — recency by the ingestion instant) and can never widen
 a recall. The importance and recency re-ranks run only when the caller supplies a clock on
 the query's options; there is no ambient clock in the retrieval path. The MCP server is
 such a caller: its `search` handler stamps the host's wall clock onto every recall, exactly
