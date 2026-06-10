@@ -49,6 +49,7 @@ fn a_vote_for_one_transition_does_not_authorize_another() {
     let outcome = core
         .edit(
             &principal,
+            &AllowAll,
             &request(&b, "I need not disclose conflicts.", vec![reviewed]),
         )
         .expect("call");
@@ -96,6 +97,7 @@ fn a_k_of_two_needs_two_distinct_verified_attesters() {
     let outcome = core
         .edit(
             &principal,
+            &AllowAll,
             &request(
                 &b,
                 "I never paste credentials.",
@@ -118,6 +120,7 @@ fn a_k_of_two_needs_two_distinct_verified_attesters() {
     let outcome = core
         .edit(
             &principal,
+            &AllowAll,
             &request(
                 &b,
                 "I never paste credentials.",
@@ -168,6 +171,7 @@ fn multi_axis_strictness_is_enforced_through_the_gate() {
     let outcome = core
         .edit(
             &principal,
+            &AllowAll,
             &request(
                 &b,
                 revision,
@@ -188,6 +192,7 @@ fn multi_axis_strictness_is_enforced_through_the_gate() {
     let outcome = core
         .edit(
             &principal,
+            &AllowAll,
             &request(
                 &b,
                 revision,
@@ -207,6 +212,7 @@ fn multi_axis_strictness_is_enforced_through_the_gate() {
     let outcome = core
         .edit(
             &principal,
+            &AllowAll,
             &request(
                 &b,
                 revision,
@@ -256,6 +262,7 @@ fn every_rejection_reason_is_audited_with_the_refused_transition() {
     let outcome = signed
         .edit(
             &principal,
+            &AllowAll,
             &request(
                 &unsigned_block,
                 "revised stance one",
@@ -287,6 +294,7 @@ fn every_rejection_reason_is_audited_with_the_refused_transition() {
     let outcome = core
         .edit(
             &principal,
+            &AllowAll,
             &request(
                 &forged_block,
                 "revised stance two",
@@ -308,6 +316,7 @@ fn every_rejection_reason_is_audited_with_the_refused_transition() {
     let outcome = core
         .edit(
             &principal,
+            &AllowAll,
             &request(&alone_block, "revised stance three", vec![]),
         )
         .expect("call");
@@ -320,6 +329,7 @@ fn every_rejection_reason_is_audited_with_the_refused_transition() {
     let outcome = core
         .edit(
             &principal,
+            &AllowAll,
             &request(
                 &human_block,
                 "revised stance four",
@@ -411,7 +421,11 @@ fn a_purged_block_is_not_found_through_the_gate() {
 
     let core = editor(&store, CoreEditPolicy::default(), false);
     let outcome = core
-        .edit(&principal, &request(&b, "must not apply", vec![vote]))
+        .edit(
+            &principal,
+            &AllowAll,
+            &request(&b, "must not apply", vec![vote]),
+        )
         .expect("call");
     assert_eq!(outcome, CoreEditOutcome::NotFound);
 }
@@ -439,10 +453,12 @@ fn an_exact_replay_of_a_noop_edit_converges_to_one_audit_row() {
             &attester_key,
         )],
     );
-    let CoreEditOutcome::Applied(first) = core.edit(&principal, &replay).expect("call") else {
+    let CoreEditOutcome::Applied(first) = core.edit(&principal, &AllowAll, &replay).expect("call")
+    else {
         panic!("first apply");
     };
-    let CoreEditOutcome::Applied(second) = core.edit(&principal, &replay).expect("call") else {
+    let CoreEditOutcome::Applied(second) = core.edit(&principal, &AllowAll, &replay).expect("call")
+    else {
         panic!("replayed apply");
     };
     assert_eq!(first.audit_id, second.audit_id, "one verdict, one row");
@@ -454,4 +470,63 @@ fn an_exact_replay_of_a_noop_edit_converges_to_one_audit_row() {
         .filter(|row| row.payload["outcome"] == "applied")
         .collect();
     assert_eq!(applied.len(), 1, "the replayed verdict wrote no second row");
+}
+
+#[test]
+fn an_editor_without_namespace_authority_is_refused_no_matter_the_votes() {
+    use aionforge_domain::authz::DefaultAuthorizer;
+    use aionforge_domain::namespace::Namespace;
+
+    let store = store();
+    let (outsider_id, _) = enroll(&store, 1, AgentStatus::Active);
+    let (attester_id, attester_key) = enroll(&store, 2, AgentStatus::Active);
+    let outsider = Principal::agent(outsider_id);
+    // The block lives in "identity-owner"'s private namespace; the outsider brings a
+    // perfectly valid attester vote anyway.
+    let b = block("someone else's identity", BlockKind::Persona, None);
+    genesis(&store, &b);
+    let core = editor(&store, CoreEditPolicy::default(), false);
+
+    let outcome = core
+        .edit(
+            &outsider,
+            &DefaultAuthorizer,
+            &request(
+                &b,
+                "rewritten by an outsider",
+                vec![vote_for(
+                    &b,
+                    "rewritten by an outsider",
+                    &attester_id,
+                    &attester_key,
+                )],
+            ),
+        )
+        .expect("call");
+    assert_eq!(
+        outcome,
+        CoreEditOutcome::Unauthorized {
+            namespace: Namespace::Agent("identity-owner".to_string()),
+        },
+        "attesters vouch for content, never for authority"
+    );
+    assert_eq!(
+        store
+            .core_block_by_id(&b.identity.id)
+            .expect("read")
+            .expect("present")
+            .content,
+        "someone else's identity"
+    );
+
+    // The attempt is on the record under the one cross-namespace kind, in `system`.
+    let rows = store
+        .audit_by_kind(AuditKind::NamespaceDenied, None, 10)
+        .expect("audit")
+        .events;
+    assert_eq!(rows.len(), 1, "the denial is audited");
+    assert_eq!(rows[0].subject_id, b.identity.id);
+    assert_eq!(rows[0].actor_id, outsider_id);
+    assert_eq!(rows[0].payload["surface"], "core_block_edit");
+    assert_eq!(rows[0].identity.namespace, Namespace::System);
 }

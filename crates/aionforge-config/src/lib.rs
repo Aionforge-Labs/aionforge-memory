@@ -42,9 +42,14 @@
 //!
 //! [security]
 //! signed_writes = true
+//!
+//! [core_block]
+//! redline_requires_human = true
+//! human_attester_ids = ["0197b0aa-3c5e-8000-8000-000000000000"]
 //! ```
 
 mod config;
+mod core_block;
 mod error;
 mod forgetting;
 mod load;
@@ -54,6 +59,7 @@ pub use config::{
     PromotionConfig, ReliabilityConfig, RetrievalConfig, SecurityConfig,
     endpoint_transport_is_allowed,
 };
+pub use core_block::{CoreBlockConfig, CoreEditRuleConfig};
 pub use error::ConfigError;
 pub use forgetting::ForgettingConfig;
 pub use load::default_config_path;

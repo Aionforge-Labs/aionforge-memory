@@ -7,6 +7,7 @@ use aionforge_store::{DEFAULT_EMBEDDING_DIMENSION, StoreConfig, default_data_dir
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 
+use crate::core_block::CoreBlockConfig;
 use crate::error::ConfigError;
 use crate::forgetting::ForgettingConfig;
 
@@ -65,6 +66,11 @@ pub struct Config {
     /// Active-forgetting posture: the floors and guards for the soft-forget sweep
     /// (05 §2). Off by default.
     pub forgetting: ForgettingConfig,
+    /// Core-block edit strictness (05 §4): the second-attester requirement for
+    /// identity-tier edits. **Always on** — unlike its siblings there is no master
+    /// switch, only strictness; the all-default posture is the spec's floor (one
+    /// non-editor attester), not an off state.
+    pub core_block: CoreBlockConfig,
 }
 
 /// On-disk state configuration.
@@ -191,9 +197,11 @@ impl Default for RetrievalConfig {
 pub struct SecurityConfig {
     /// Whether writes must be signed. Off by default, on for production (§8.4).
     pub signed_writes: bool,
-    /// The clock-skew tolerance in milliseconds for signed writes (06 §3): a write whose
-    /// timestamp deviates from the substrate clock by more than this is rejected (replay/storm
-    /// mitigation). Only consulted when `signed_writes` is on; bounded to
+    /// The clock-skew tolerance in milliseconds for signed verifications (06 §3): a
+    /// signature whose timestamp deviates from the substrate clock by more than this is
+    /// rejected (replay/storm mitigation). Consulted by signed writes and promotion when
+    /// they are on, and **always** by the core-block edit gate (05 §4, which has no off
+    /// switch) — so it is validated unconditionally, bounded to
     /// `MAX_CLOCK_SKEW_TOLERANCE_MS`.
     pub clock_skew_tolerance_ms: u64,
     /// Whether capture-side redaction of configured patterns is on.
@@ -598,21 +606,21 @@ impl Config {
                 "must be greater than zero",
             ));
         }
-        if self.security.signed_writes {
-            if self.security.clock_skew_tolerance_ms == 0 {
-                // A zero window rejects every signed write (skew is always >= 0), so it is a
-                // configuration error, not a silent lockout.
-                return Err(ConfigError::invalid(
-                    "security.clock_skew_tolerance_ms",
-                    "must be greater than zero when signed writes are on",
-                ));
-            }
-            if self.security.clock_skew_tolerance_ms > MAX_CLOCK_SKEW_TOLERANCE_MS {
-                return Err(ConfigError::invalid(
-                    "security.clock_skew_tolerance_ms",
-                    "must be at most 300000 (five minutes)",
-                ));
-            }
+        // The skew window is validated unconditionally: signed writes and promotion gate
+        // on it only when enabled, but the core-block edit gate (05 §4) is always on and
+        // always consumes it — a zero window would silently refuse every identity edit
+        // (skew is always >= 0), so it is a configuration error, not a silent lockout.
+        if self.security.clock_skew_tolerance_ms == 0 {
+            return Err(ConfigError::invalid(
+                "security.clock_skew_tolerance_ms",
+                "must be greater than zero (the always-on core-block edit gate consumes it)",
+            ));
+        }
+        if self.security.clock_skew_tolerance_ms > MAX_CLOCK_SKEW_TOLERANCE_MS {
+            return Err(ConfigError::invalid(
+                "security.clock_skew_tolerance_ms",
+                "must be at most 300000 (five minutes)",
+            ));
         }
         if self.promotion.enabled {
             // Priors first: the reachability check inside `validate_promotion_rule` divides by
@@ -720,6 +728,7 @@ impl Config {
             }
         }
         self.forgetting.validate()?;
+        self.core_block.validate()?;
         Ok(())
     }
 }

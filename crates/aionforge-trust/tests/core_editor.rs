@@ -39,6 +39,7 @@ fn a_single_writer_self_edit_is_rejected_and_audited() {
     let outcome = core
         .edit(
             &principal,
+            &AllowAll,
             &request(&b, "I act in my own interest.", vec![self_vote]),
         )
         .expect("call");
@@ -79,6 +80,7 @@ fn an_attested_edit_succeeds_and_is_audited() {
     let outcome = core
         .edit(
             &principal,
+            &AllowAll,
             &request(
                 &b,
                 "I respond thoroughly.",
@@ -158,6 +160,7 @@ fn sensitive_blocks_can_require_an_active_human_attester() {
     let outcome = core
         .edit(
             &principal,
+            &AllowAll,
             &request(
                 &b,
                 "I never expose user PII, ever.",
@@ -179,6 +182,7 @@ fn sensitive_blocks_can_require_an_active_human_attester() {
     let outcome = core
         .edit(
             &principal,
+            &AllowAll,
             &request(
                 &b,
                 "I never expose user PII, ever.",
@@ -200,6 +204,7 @@ fn sensitive_blocks_can_require_an_active_human_attester() {
     let outcome = core
         .edit(
             &principal,
+            &AllowAll,
             &request(
                 &b,
                 "I never expose user PII, ever.",
@@ -272,6 +277,7 @@ fn a_forged_vote_refuses_the_whole_edit() {
     let outcome = core
         .edit(
             &principal,
+            &AllowAll,
             &request(
                 &b,
                 "I repeat claims.",
@@ -330,13 +336,13 @@ fn a_stale_precondition_is_the_typed_stale_content() {
         )],
     );
     assert!(matches!(
-        core.edit(&principal, &first).expect("call"),
+        core.edit(&principal, &AllowAll, &first).expect("call"),
         CoreEditOutcome::Applied(_)
     ));
 
     // The same request again: its precondition named content that is no longer there.
     assert_eq!(
-        core.edit(&principal, &first).expect("call"),
+        core.edit(&principal, &AllowAll, &first).expect("call"),
         CoreEditOutcome::StaleContent
     );
 }
@@ -358,7 +364,7 @@ fn the_editor_provenance_leg_binds_the_edit_to_the_editors_key() {
         vec![vote_for(&b, "I am flexible.", &attester_id, &attester_key)],
     );
     assert_eq!(
-        core.edit(&principal, &unsigned).expect("call"),
+        core.edit(&principal, &AllowAll, &unsigned).expect("call"),
         CoreEditOutcome::Rejected(CoreEditRejection::EditorUnverified)
     );
 
@@ -367,7 +373,7 @@ fn the_editor_provenance_leg_binds_the_edit_to_the_editors_key() {
     let mut signed = unsigned;
     signed.editor_signature = Some(BASE64.encode(editor_key.sign(&payload).to_bytes()));
     assert!(matches!(
-        core.edit(&principal, &signed).expect("call"),
+        core.edit(&principal, &AllowAll, &signed).expect("call"),
         CoreEditOutcome::Applied(_)
     ));
 }

@@ -35,7 +35,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use aionforge_domain::authz::Principal;
+use aionforge_domain::authz::{AuthorizationError, Authorizer, Principal};
 use aionforge_domain::blocks::Identity;
 use aionforge_domain::edges::AttestedBy;
 use aionforge_domain::embedding::{EmbedderModel, Embedding};
@@ -226,6 +226,15 @@ pub enum CoreEditOutcome {
     /// The block exists but is retired (`expired_at` set); a retired identity is not
     /// edited back to life.
     Retired,
+    /// The namespace authority refused the editor's write to the block's namespace
+    /// (06 §1: authorization gates every write — attesters vouch for content, they do
+    /// not extend write authority over someone else's identity). Audited as a
+    /// `namespace_denied` row in the `system` namespace, like every cross-namespace
+    /// write attempt; nothing was written.
+    Unauthorized {
+        /// The namespace the principal may not write.
+        namespace: Namespace,
+    },
     /// The block's content is no longer what the edit was prepared against — a
     /// concurrent edit landed first. Nothing was written; re-read and re-collect.
     StaleContent,
@@ -295,6 +304,12 @@ impl CoreEditor {
     /// Gate and apply one attested whole-value edit (05 §4). Every refusal is typed
     /// and decided before the store write; every gate rejection is audited.
     ///
+    /// The injected `authorizer` rules on the editor's write authority over the
+    /// block's namespace before any signature is weighed (06 §1, mirroring the
+    /// eraser): the attestation quorum vouches for *content*, never for *authority*,
+    /// so an agent outside the namespace cannot edit its identity no matter how many
+    /// attesters it brings.
+    ///
     /// # Errors
     /// Returns [`CoreEditError`] if a store read/write fails or key resolution hits a
     /// backend fault. Security refusals are never errors — they are the typed
@@ -302,6 +317,7 @@ impl CoreEditor {
     pub fn edit(
         &self,
         principal: &Principal,
+        authorizer: &dyn Authorizer,
         request: &CoreEditRequest,
     ) -> Result<CoreEditOutcome, CoreEditError> {
         let Some(block) = self.store.core_block_by_id(&request.block_id)? else {
@@ -309,6 +325,18 @@ impl CoreEditor {
         };
         if block.identity.expired_at.is_some() {
             return Ok(CoreEditOutcome::Retired);
+        }
+        if let Err(denied) = authorizer.authorize_write(principal, &block.identity.namespace) {
+            self.store.commit_audit(&namespace_denied_audit(
+                principal,
+                &block.identity.id,
+                "core_block_edit",
+                &denied,
+                &request.at,
+            ))?;
+            return Ok(CoreEditOutcome::Unauthorized {
+                namespace: block.identity.namespace.clone(),
+            });
         }
         let prior_hash = ContentHash::of(block.content.as_bytes());
         if prior_hash != request.expected_prior {
@@ -614,5 +642,33 @@ fn namespace_identity(id: Id, namespace: Namespace, now: &Timestamp) -> Identity
         ingested_at: now.clone(),
         namespace,
         expired_at: None,
+    }
+}
+
+/// The `namespace_denied` audit for a refused core-block write (06 §1, 07 §T9),
+/// mirroring the capture path's shape: recorded in the `system` namespace under the
+/// one queryable kind every cross-namespace write attempt shares, with the agent, the
+/// reason, and which core-block surface refused it. The subject is the block — unlike
+/// a refused capture, the target exists.
+fn namespace_denied_audit(
+    principal: &Principal,
+    subject_id: &Id,
+    surface: &str,
+    denial: &AuthorizationError,
+    at: &Timestamp,
+) -> AuditEvent {
+    AuditEvent {
+        identity: namespace_identity(Id::generate(), Namespace::System, at),
+        kind: AuditKind::NamespaceDenied,
+        subject_id: *subject_id,
+        actor_id: principal.agent_id,
+        payload: serde_json::json!({
+            "requested_namespace": denial.target,
+            "reason": denial.reason.as_str(),
+            "agent": denial.agent,
+            "surface": surface,
+        }),
+        signature: String::new(),
+        occurred_at: at.clone(),
     }
 }

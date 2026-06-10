@@ -74,11 +74,13 @@ dependencies = [
 name = "aionforge-config"
 version = "0.1.0"
 dependencies = [
+ "aionforge-domain",
  "aionforge-store",
  "figment",
  "miette",
  "secrecy",
  "serde",
+ "serde_json",
  "thiserror",
 ]
 
