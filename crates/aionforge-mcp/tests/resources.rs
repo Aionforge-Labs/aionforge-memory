@@ -123,11 +123,27 @@ async fn mcp_transport_lists_client_policy_resources() -> TestResult {
     let manifest = read_text_resource(&client, TOOL_MANIFEST_RESOURCE_URI).await?;
     let manifest: serde_json::Value = serde_json::from_str(&manifest)?;
     assert_eq!(manifest["schema"], "aionforge.mcp_tools.v1");
-    assert_eq!(manifest["server"]["resource_count"].as_u64(), Some(8));
+    assert_eq!(
+        manifest["server"]["resource_count"].as_u64(),
+        Some(uris.len() as u64)
+    );
     assert_eq!(
         manifest["policy"]["read_like_approval"],
         "allow_without_prompt"
     );
+    let manifest_tools: BTreeSet<String> = manifest["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .map(|tool| tool["name"].as_str().expect("tool name").to_string())
+        .collect();
+    let listed_tools: BTreeSet<String> = client
+        .list_all_tools()
+        .await?
+        .into_iter()
+        .map(|tool| tool.name.to_string())
+        .collect();
+    assert_eq!(manifest_tools, listed_tools);
     assert!(
         manifest["tools"]
             .as_array()
