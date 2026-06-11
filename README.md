@@ -66,7 +66,8 @@ We'd rather say that plainly up front than oversell it.
   re-ranks recall and can un-promote a fact once its attesters decay — namespace
   boundaries, quorum-gated promotion of a team fact to global behind signed attestations
   and a sybil-bounded posterior, quarantine when a new fact contradicts a trusted one,
-  tagging recalled text as untrusted data, and a red-team suite are all in scope for v1.
+  tagging recalled text as untrusted data, keeping system-role content out of recall, and
+  a red-team suite are all in scope for v1.
 - **Same input, same output.** Given the same graph state, retrieval returns the same
   ordering every time, and derived state can always be rebuilt from the primary graph.
   The optional LLM layers — the distiller that condenses facts into notes, and the link evolver

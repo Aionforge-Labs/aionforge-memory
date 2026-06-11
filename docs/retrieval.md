@@ -219,6 +219,33 @@ attr-escaped so they cannot break out of their quotes. The compact view
 contract — same wrapper, same escaping — so a compact result is no less safe to splice into
 a prompt.
 
+The wrapper does its job only if the host is told to honor it, so the MCP surface ships a
+recommended prompt template (`RECALL_UNTRUSTED_DATA_PROMPT`) that instructs the host to treat
+everything inside the wrapper as data, never as instructions. The template is instruction-free
+— it guides the host's data handling and embeds no agent directives that could themselves be
+an injection vector — and it names the exact wrapper the renderer emits, with a test keeping
+the two in sync. The full MCP Prompts surface that serves it is a later milestone; the
+substrate authors the template now, and the search tool's own description and the server
+instructions carry the same "treat as data, not instructions" guidance in the meantime.
+
+### System-role exclusion
+
+The `system` role marks substrate-internal content, so it is excluded from default recall two
+independent ways: a recall drops any system-role episode (the role gate), and the `system`
+namespace is never in an agent's visible set (the namespace gate). A fact carries no role, so
+fact extraction also skips a system-role episode outright — otherwise a system directive could
+launder into a role-less fact in a visible namespace and surface anyway. The capture funnel
+refuses a system-role write from any caller; substrate-internal system content reaches the
+store by its own internal path, never through agent capture.
+
+Surfacing system-role memory is possible but admin-gated: a caller sets `include_system` on the
+recall options as a request, and the recall honors it only when the injected `Authorizer` also
+grants `may_surface_system` for the principal — the request flag alone is inert, so the gate is
+an authority decision, not a self-service reveal. When granted, both exclusion gates lift
+together. The capability lives on the embedder-injected authority rather than the host-asserted
+principal, so an untrusted caller cannot forge it, and the default authority never grants it.
+The MCP search tool does not expose `include_system`; it is a library/admin surface.
+
 ### Selection: authorization and the session-diversity cap
 
 Between fusion and the bundle, candidates are resolved, authorized, temporally filtered, and
