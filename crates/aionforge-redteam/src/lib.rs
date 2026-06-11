@@ -61,7 +61,11 @@ impl ProbeReport {
     ) -> Self {
         let attack_success_rate = rate(attack_successes, attempts);
         let naive_success_rate = rate(naive_successes, attempts);
-        let status = if attack_success_rate <= ceiling {
+        let status = if attempts > 0
+            && ceiling.is_finite()
+            && ceiling >= 0.0
+            && attack_success_rate <= ceiling
+        {
             ProbeStatus::Passed
         } else {
             ProbeStatus::Failed
@@ -118,6 +122,14 @@ mod tests {
     #[test]
     fn m6t04_zero_ceiling_fails_on_any_success() {
         let report = ProbeReport::rate("M6.T04", "sample", 2, 1, 2, M6_T04_ATTACK_SUCCESS_CEILING);
+
+        assert!(!report.passed());
+        assert_eq!(report.status, ProbeStatus::Failed);
+    }
+
+    #[test]
+    fn an_empty_probe_does_not_pass() {
+        let report = ProbeReport::rate("M6.T04", "empty", 0, 0, 0, M6_T04_ATTACK_SUCCESS_CEILING);
 
         assert!(!report.passed());
         assert_eq!(report.status, ProbeStatus::Failed);

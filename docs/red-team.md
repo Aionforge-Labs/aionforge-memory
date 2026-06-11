@@ -21,7 +21,8 @@ The M6.T04 structural ceiling is zero. A raw wrapper breakout, query-only write 
 reflection, or skill-to-global promotion is a security failure, not a number to tune.
 The report still carries a naive-baseline count over the same denominator so the
 release gate can show how far the substrate is from the raw-splice baseline without
-shipping a vulnerable implementation.
+shipping a vulnerable implementation. An empty probe is a failed probe; a report has to
+measure at least one attempt before it can pass.
 
 Later probes add to the same crate rather than inventing separate report formats:
 M6.T05 should add effect-size reports for subliminal-trait transfer, M6.T06 should
