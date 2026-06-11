@@ -6,9 +6,12 @@
   Long-term memory for AI agents, built on selene-db.
 </p>
 
-> **Status: pre-alpha.** The design is settled and the build is underway, milestone
-> by milestone. Schema, APIs, and surfaces will still move around. Nothing here is
-> released yet.
+> **Status: pre-release.** The build is done through the security and surfaces
+> milestones: the library API, MCP server, CLI, TUI, and Docker image all work, the
+> red-team suite gates CI, and the project's own development memory runs through its
+> own MCP server. What's deliberately not done yet: retrieval-quality benchmarks
+> (deferred until there's real usage to measure against) and a tagged release.
+> Schema and APIs can still move.
 
 Aionforge Memory gives AI agents a real long-term memory: one that remembers across
 sessions, keeps its facts straight over time, and can be shared safely between
@@ -31,6 +34,22 @@ OpenCode). There's also a read-only [ratatui](https://ratatui.rs) terminal UI fo
 watching what the memory is doing, plus a single CLI binary. It runs on macOS and
 Linux, natively or in Docker.
 
+## The MCP surface
+
+The server speaks Streamable HTTP (bearer-token or OAuth-fronted) and stdio, and is
+built for agents that count tokens. Eight tools — `capture`, `search`, `forget`,
+`unforget`, `consolidate`, `consolidation_status`, `audit_history`, `server_status` —
+each annotated with MCP safety hints so a harness knows what's read-only and what
+mutates. Replies are single receipt lines, not JSON essays: a capture comes back as
+`[capture] <id> verdict=new redactions=0 flags=0 emb=embedded ns=agent:…` and a
+search header tells you the query class and embedder health before the first hit.
+Recalled memories arrive wrapped in a `<recalled-memory-context>` envelope marked as
+third-party data, never instructions, and the server publishes its own setup: read
+`aionforge://client/claude-code/mcp.json` (or the Codex / Cursor / OpenCode
+equivalents) from the server and paste the config. Search supports a `verbose` mode
+that shows *why* each hit ranked — which of the lexical, dense, graph, recency,
+importance, and trust signals put it there.
+
 ## What it is, and what it isn't
 
 This is retrieval memory, not learning. It makes an agent recall better, stay
@@ -40,7 +59,16 @@ it does not train or fine-tune anything. It runs no inference of its own either;
 embeddings (and optional extraction or reranking) come from an OpenAI-compatible
 endpoint you point it at.
 
-We'd rather say that plainly up front than oversell it.
+Several subsystems ship off by default and turn on per deployment: forgetting,
+read-time importance decay, cross-namespace promotion, and the LLM-backed
+distillation tier are all config-gated, so a fresh store does exactly what the
+capture and retrieval docs say and nothing more until you ask.
+
+We'd rather say that plainly up front than oversell it. We also use it: this
+repository's own development memory — decisions, conventions, open bugs, session
+logs — lives in an Aionforge store and is read and written through the same MCP
+server this README describes. Several of the capture-path guards exist because the
+agent doing that work hit their absence in practice the same day.
 
 ## How it's built
 
@@ -55,19 +83,27 @@ We'd rather say that plainly up front than oversell it.
   true and when we learned them. A correction supersedes the old fact instead of
   overwriting it. Hard deletion is its own deliberate, audited path.
 - **Writes split into two lanes.** Capture is fast, on the order of milliseconds, so
-  it never blocks the agent. The slower work (pulling out facts, resolving entities,
-  summarizing, and — only when turned on — inducing a reusable skill from a procedure an
-  agent keeps repeating) happens in the background.
+  it never blocks the agent. It still earns its keep on the way in: secrets are
+  redacted, known prompt-injection phrases are stripped (and a capture hollowed out
+  to nothing but residue is refused outright), duplicates dedup on the cleaned
+  content, and a writer that knows its capture replaces an earlier memory can say so
+  with a validated `supersedes` hint. The slower work (pulling out facts, resolving
+  entities, honoring that hint, summarizing, and — only when turned on — inducing a
+  reusable skill from a procedure an agent keeps repeating) happens in the background.
 - **Retrieval picks its strategy per query.** Lexical, dense, graph, recency, and
   trust signals get rank-fused, and graph expansion only kicks in for the queries it
   actually helps.
-- **Security isn't a later milestone.** Provenance, optional Ed25519 signed writes,
-  per-writer trust folded from an audit log of how each agent's facts held up — which
-  re-ranks recall and can un-promote a fact once its attesters decay — namespace
-  boundaries, quorum-gated promotion of a team fact to global behind signed attestations
-  and a sybil-bounded posterior, quarantine when a new fact contradicts a trusted one,
-  tagging recalled text as untrusted data, keeping system-role content out of recall, and
-  a CI-gated red-team suite with structured reports are all in scope for v1.
+- **Security isn't a later milestone — it's built.** Provenance, optional Ed25519
+  signed writes, per-writer trust folded from an audit log of how each agent's facts
+  held up — which re-ranks recall and can un-promote a fact once its attesters decay —
+  namespace boundaries, quorum-gated promotion of a team fact to global behind signed
+  attestations and a sybil-bounded posterior, quarantine when a new fact contradicts a
+  trusted one, tagging recalled text as untrusted data, keeping system-role content out
+  of recall, a measured capture-time injection filter (zero false positives on the
+  benign corpus, with CI holding that line), and a red-team suite wired into the
+  release gate. The [security model](docs/security-model.md) and
+  [honest scope](docs/honest-scope.md) docs say exactly what each layer does and
+  doesn't cover.
 - **Same input, same output.** Given the same graph state, retrieval returns the same
   ordering every time, and derived state can always be rebuilt from the primary graph.
   The optional LLM layers — the distiller that condenses facts into notes, and the link evolver
