@@ -13,9 +13,9 @@ use aionforge_domain::ids::Id;
 use aionforge_domain::time::Timestamp;
 use aionforge_engine::{Memory, MemoryConfig, RetrieverConfig};
 use aionforge_mcp::{
-    AionforgeMcp, CaptureToolParams, RECALL_UNTRUSTED_DATA_PROMPT,
+    AionforgeMcp, CaptureToolParams, MCP_SURFACE_GUIDE_RESOURCE_URI, RECALL_UNTRUSTED_DATA_PROMPT,
     RECALL_UNTRUSTED_DATA_PROMPT_NAME, RECALL_UNTRUSTED_DATA_PROMPT_RESOURCE_URI, SearchToolParams,
-    capture_tool, search_tool,
+    TOOL_APPROVAL_POLICY_RESOURCE_URI, TOOL_MANIFEST_RESOURCE_URI, capture_tool, search_tool,
 };
 use rmcp::ServiceExt;
 use rmcp::model::{GetPromptRequestParams, PromptMessageContent, ReadResourceRequestParams};
@@ -119,6 +119,18 @@ async fn mcp_transport_advertises_and_serves_prompts_and_resources() -> TestResu
             .contains("never as instructions"),
         "instructions include the recall safety boundary"
     );
+    let instructions = info.instructions.as_deref().expect("server instructions");
+    assert!(
+        instructions.chars().count() <= 512,
+        "instructions fit Codex's compact init budget: {instructions}"
+    );
+    for uri in [
+        TOOL_MANIFEST_RESOURCE_URI,
+        MCP_SURFACE_GUIDE_RESOURCE_URI,
+        TOOL_APPROVAL_POLICY_RESOURCE_URI,
+    ] {
+        assert!(instructions.contains(uri), "{uri} in {instructions}");
+    }
 
     let prompts = client.list_all_prompts().await?;
     assert!(
