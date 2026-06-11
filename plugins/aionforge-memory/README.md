@@ -24,9 +24,10 @@ For Claude Code, the plugin also ships:
 Start a local HTTP server:
 
 ```bash
+export AIONFORGE_AGENT_ID="018f0cc0-40f3-7cc4-b8b4-9ca41f88d012"
 export AIONFORGE_MCP_TOKEN="$(openssl rand -hex 32)"
 aionforge serve http --listen 127.0.0.1:3918 \
-  --bearer-token-env AIONFORGE_MCP_TOKEN
+  --bearer-token-agent-env AIONFORGE_AGENT_ID=AIONFORGE_MCP_TOKEN
 ```
 
 ## Install Notes

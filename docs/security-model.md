@@ -76,11 +76,13 @@ whole proposed transition, not just a stable subject id.
 ## MCP transport security
 
 Stdio is for private process boundaries. Streamable HTTP binds to loopback by
-default and should use a bearer token whenever it is reachable outside one
-trusted process. For remote multi-user deployments, put an OAuth verifier in
-front of the MCP service. The built-in OAuth helpers publish protected-resource
-metadata and challenges, but token validation remains the responsibility of the
-upstream verifier.
+default and should use principal-bound bearer tokens whenever it is reachable
+outside one trusted process. For remote multi-user deployments, put an OAuth
+verifier in front of the MCP service. The built-in OAuth helpers publish
+protected-resource metadata and challenges, but token validation remains the
+responsibility of the upstream verifier. If that verifier forwards to the
+`aionforge` CLI server, it should replace inbound `Authorization` with a
+configured internal principal-bound bearer token.
 
 Client approval policy still matters. Read-like tools can usually be preapproved
 for a trusted local agent; mutating tools (`capture`, `consolidate`, `forget`,

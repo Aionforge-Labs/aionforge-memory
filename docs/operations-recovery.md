@@ -47,10 +47,11 @@ provider inventory, embedder dimension consistency, consolidation lag, and graph
 Start the MCP server from the same single binary:
 
 ```bash
+AIONFORGE_AGENT_ID=018f0cc0-40f3-7cc4-b8b4-9ca41f88d012 \
 AIONFORGE_MCP_TOKEN=change-me \
   aionforge --config /etc/aionforge/config.toml \
   serve http --listen 127.0.0.1:3918 \
-  --bearer-token-env AIONFORGE_MCP_TOKEN
+  --bearer-token-agent-env AIONFORGE_AGENT_ID=AIONFORGE_MCP_TOKEN
 ```
 
 ## Recovery validation

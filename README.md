@@ -145,12 +145,13 @@ Run over stdio for a local client process:
 aionforge serve stdio
 ```
 
-Run over HTTP with a bearer token:
+Run over HTTP with a bearer token bound to one agent id:
 
 ```bash
+export AIONFORGE_AGENT_ID="018f0cc0-40f3-7cc4-b8b4-9ca41f88d012"
 export AIONFORGE_MCP_TOKEN="$(openssl rand -hex 32)"
 aionforge serve http --listen 127.0.0.1:3918 \
-  --bearer-token-env AIONFORGE_MCP_TOKEN
+  --bearer-token-agent-env AIONFORGE_AGENT_ID=AIONFORGE_MCP_TOKEN
 ```
 
 Then point your MCP client at `http://127.0.0.1:3918/mcp`.
@@ -169,6 +170,7 @@ Build a local image when working from source:
 ```bash
 docker build -t aionforge-memory:dev .
 docker run --rm \
+  -e AIONFORGE_AGENT_ID=018f0cc0-40f3-7cc4-b8b4-9ca41f88d012 \
   -e AIONFORGE_MCP_TOKEN=change-me \
   -p 127.0.0.1:3918:3918 \
   -v aionforge-data:/data \

@@ -4,11 +4,12 @@ use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
+use aionforge::Id;
 use aionforge_mcp::{
-    AionforgeAuthenticatedStreamableHttpService, AionforgeStreamableHttpService,
-    BearerAuthChallenge, BearerToken, OAuthProtectedResourceMetadata, STREAMABLE_HTTP_ENDPOINT,
-    StreamableHttpOptions, oauth_protected_resource_well_known_path, serve_stdio,
-    streamable_http_service, streamable_http_service_with_auth_challenge,
+    AionforgeAuthenticatedStreamableHttpService, BearerAuthChallenge, BearerToken,
+    BearerTokenCredential, BearerTokenSet, OAuthProtectedResourceMetadata,
+    STREAMABLE_HTTP_ENDPOINT, StreamableHttpOptions, oauth_protected_resource_well_known_path,
+    serve_stdio, streamable_http_service_with_auth_challenge,
 };
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full, combinators::BoxBody};
@@ -57,22 +58,8 @@ async fn serve_http(
         options = options.with_allowed_origins(args.allowed_origins);
     }
 
-    let service = match args.bearer_token_env {
-        Some(env) => {
-            let token = std::env::var(&env).map_err(|_| {
-                CliError::Serve(format!(
-                    "bearer token environment variable {env} is not set"
-                ))
-            })?;
-            HttpMcpService::Authenticated(streamable_http_service_with_auth(
-                memory,
-                options,
-                BearerToken::new(token).map_err(|error| CliError::Serve(error.to_string()))?,
-                oauth_challenge,
-            )?)
-        }
-        None => HttpMcpService::Open(streamable_http_service(memory, options)?),
-    };
+    let token_set = bearer_token_set(&args.bearer_token_agent_env)?;
+    let service = streamable_http_service_with_auth(memory, options, token_set, oauth_challenge)?;
     let service = HttpMcpRouter {
         inner: service,
         oauth_metadata,
@@ -105,14 +92,8 @@ async fn serve_http(
 }
 
 #[derive(Clone)]
-enum HttpMcpService {
-    Open(AionforgeStreamableHttpService<RuntimeEmbedder>),
-    Authenticated(AionforgeAuthenticatedStreamableHttpService<RuntimeEmbedder>),
-}
-
-#[derive(Clone)]
 struct HttpMcpRouter {
-    inner: HttpMcpService,
+    inner: AionforgeAuthenticatedStreamableHttpService<RuntimeEmbedder>,
     oauth_metadata: Option<OAuthMetadataRoute>,
 }
 
@@ -137,25 +118,78 @@ impl HttpMcpRouter {
         if request.uri().path() != STREAMABLE_HTTP_ENDPOINT {
             return Ok(not_found_response());
         }
-        match &mut self.inner {
-            HttpMcpService::Open(service) => service.call(request).await,
-            HttpMcpService::Authenticated(service) => service.call(request).await,
-        }
+        self.inner.call(request).await
     }
 }
 
 fn streamable_http_service_with_auth(
     memory: Arc<aionforge::Memory<RuntimeEmbedder>>,
     options: StreamableHttpOptions,
-    token: BearerToken,
+    tokens: BearerTokenSet,
     oauth_challenge: Option<BearerAuthChallenge>,
 ) -> Result<AionforgeAuthenticatedStreamableHttpService<RuntimeEmbedder>, CliError> {
     Ok(streamable_http_service_with_auth_challenge(
         memory,
         options,
-        token,
+        tokens,
         oauth_challenge.unwrap_or_default(),
     )?)
+}
+
+fn bearer_token_set(raw_specs: &[String]) -> Result<BearerTokenSet, CliError> {
+    bearer_token_set_with_env(raw_specs, |name| std::env::var(name))
+}
+
+fn bearer_token_set_with_env(
+    raw_specs: &[String],
+    mut env: impl FnMut(&str) -> Result<String, std::env::VarError>,
+) -> Result<BearerTokenSet, CliError> {
+    if raw_specs.is_empty() {
+        return Err(CliError::Serve(
+            "serve http requires at least one --bearer-token-agent-env AGENT_ID_ENV=TOKEN_ENV"
+                .to_string(),
+        ));
+    }
+    let mut credentials = Vec::with_capacity(raw_specs.len());
+    for (index, raw) in raw_specs.iter().enumerate() {
+        let (raw_agent_env, raw_token_env) = raw.split_once('=').ok_or_else(|| {
+            CliError::Serve(format!(
+                "--bearer-token-agent-env[{index}] must be AGENT_ID_ENV=TOKEN_ENV"
+            ))
+        })?;
+        let agent_env = raw_agent_env.trim();
+        if agent_env.is_empty() {
+            return Err(CliError::Serve(format!(
+                "--bearer-token-agent-env[{index}] agent env name cannot be blank"
+            )));
+        }
+        let token_env = raw_token_env.trim();
+        if token_env.is_empty() {
+            return Err(CliError::Serve(format!(
+                "--bearer-token-agent-env[{index}] token env name cannot be blank"
+            )));
+        }
+        let raw_agent_id = env(agent_env).map_err(|_| {
+            CliError::Serve(format!(
+                "agent id environment variable {agent_env} is not set"
+            ))
+        })?;
+        let agent_id = Id::parse(raw_agent_id.trim()).map_err(|_| {
+            CliError::Serve(format!(
+                "agent id environment variable {agent_env} must contain a UUID"
+            ))
+        })?;
+        let token = env(token_env).map_err(|_| {
+            CliError::Serve(format!(
+                "bearer token environment variable {token_env} is not set"
+            ))
+        })?;
+        credentials.push(BearerTokenCredential::agent(
+            BearerToken::new(token).map_err(|error| CliError::Serve(error.to_string()))?,
+            agent_id,
+        ));
+    }
+    Ok(BearerTokenSet::new(credentials)?)
 }
 
 fn oauth_metadata(args: &ServeArgs) -> Result<Option<OAuthMetadataRoute>, CliError> {
@@ -168,11 +202,6 @@ fn oauth_metadata(args: &ServeArgs) -> Result<Option<OAuthMetadataRoute>, CliErr
             ));
         }
         return Ok(None);
-    }
-    if args.bearer_token_env.is_none() {
-        return Err(CliError::Serve(
-            "--oauth-issuer requires --bearer-token-env".to_string(),
-        ));
     }
     let endpoint_url = endpoint_url(args)?;
     let metadata_path = oauth_protected_resource_well_known_path(STREAMABLE_HTTP_ENDPOINT);
@@ -336,7 +365,7 @@ mod tests {
         ServeArgs {
             transport: ServeTransport::Http,
             listen: "0.0.0.0:3918".parse().expect("addr"),
-            bearer_token_env: Some("AIONFORGE_MCP_TOKEN".to_string()),
+            bearer_token_agent_env: vec!["AIONFORGE_AGENT_ID=AIONFORGE_MCP_TOKEN".to_string()],
             public_url: None,
             oauth_issuers: Vec::new(),
             oauth_scopes: Vec::new(),
@@ -509,21 +538,6 @@ mod tests {
     }
 
     #[test]
-    fn oauth_metadata_requires_bearer_auth() {
-        let mut args = http_args();
-        args.bearer_token_env = None;
-        args.oauth_issuers = vec!["https://auth.example.com".to_string()];
-
-        let error = oauth_metadata(&args).expect_err("auth required");
-
-        assert!(
-            error
-                .to_string()
-                .contains("--oauth-issuer requires --bearer-token-env")
-        );
-    }
-
-    #[test]
     fn oauth_scopes_require_an_issuer() {
         let mut args = http_args();
         args.oauth_scopes = vec!["memory.read".to_string()];
@@ -535,5 +549,84 @@ mod tests {
                 .to_string()
                 .contains("--oauth-scope requires at least one --oauth-issuer")
         );
+    }
+
+    #[test]
+    fn bearer_token_set_requires_at_least_one_principal_spec() {
+        let error = bearer_token_set(&[]).expect_err("token specs required");
+
+        assert!(
+            error
+                .to_string()
+                .contains("serve http requires at least one --bearer-token-agent-env")
+        );
+    }
+
+    #[test]
+    fn bearer_token_set_rejects_malformed_principal_specs() {
+        for (spec, message) in [
+            (
+                "AIONFORGE_AGENT_ID",
+                "--bearer-token-agent-env[0] must be AGENT_ID_ENV=TOKEN_ENV",
+            ),
+            (
+                " =AIONFORGE_MCP_TOKEN",
+                "--bearer-token-agent-env[0] agent env name cannot be blank",
+            ),
+            (
+                "AIONFORGE_AGENT_ID= ",
+                "--bearer-token-agent-env[0] token env name cannot be blank",
+            ),
+        ] {
+            let error = bearer_token_set(&[spec.to_string()]).expect_err("spec rejected");
+
+            assert!(error.to_string().contains(message), "{error}");
+        }
+    }
+
+    #[test]
+    fn bearer_token_set_reports_missing_agent_env_before_token_env() {
+        let error = bearer_token_set(&[
+            "AIONFORGE_TEST_MISSING_AGENT=AIONFORGE_TEST_MISSING_TOKEN".to_string(),
+        ])
+        .expect_err("missing agent env rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("agent id environment variable AIONFORGE_TEST_MISSING_AGENT is not set")
+        );
+    }
+
+    #[test]
+    fn bearer_token_set_reads_agent_and_token_envs() {
+        let set = bearer_token_set_with_env(
+            &["AIONFORGE_TEST_AGENT_ID=AIONFORGE_TEST_AGENT_TOKEN".to_string()],
+            |name| match name {
+                "AIONFORGE_TEST_AGENT_ID" => Ok("018f0cc0-40f3-7cc4-b8b4-9ca41f88d012".to_string()),
+                "AIONFORGE_TEST_AGENT_TOKEN" => Ok("test-secret".to_string()),
+                _ => Err(std::env::VarError::NotPresent),
+            },
+        )
+        .expect("token set");
+
+        assert_eq!(set.len(), 1);
+    }
+
+    #[test]
+    fn bearer_token_set_rejects_agent_env_with_non_uuid_value() {
+        let error = bearer_token_set_with_env(
+            &["AIONFORGE_TEST_BAD_AGENT_ID=AIONFORGE_TEST_AGENT_TOKEN".to_string()],
+            |name| match name {
+                "AIONFORGE_TEST_BAD_AGENT_ID" => Ok("not-a-uuid".to_string()),
+                "AIONFORGE_TEST_AGENT_TOKEN" => Ok("test-secret".to_string()),
+                _ => Err(std::env::VarError::NotPresent),
+            },
+        )
+        .expect_err("bad agent id rejected");
+
+        assert!(error.to_string().contains(
+            "agent id environment variable AIONFORGE_TEST_BAD_AGENT_ID must contain a UUID"
+        ));
     }
 }
