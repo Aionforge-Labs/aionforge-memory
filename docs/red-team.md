@@ -53,4 +53,5 @@ M6.T06 adds three probes over real engine behavior:
   the query text or private content.
 
 The M6.T06 attack-success ceiling is zero and the audit-coverage floor is `1.0`.
-M8.T06 should aggregate these reports into the single release gate.
+The release gate runs these probes explicitly through the `M6 red-team probes`
+job, in addition to the aggregate workspace test matrix.

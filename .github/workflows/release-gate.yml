@@ -84,6 +84,27 @@ jobs:
           cargo nextest run --workspace --locked --all-features --profile ci
           cargo test --workspace --locked --all-features --doc
 
+  m6-redteam-probes:
+    name: M6 red-team probes
+    runs-on: ubuntu-latest
+    env:
+      # Match the aggregate test job's lean test profile so these probes do not
+      # run under a different compiler/debug posture than the release gate.
+      CARGO_PROFILE_TEST_DEBUG: 0
+    steps:
+      - uses: actions/checkout@v4
+      - name: authenticate to the selene-db substrate
+        uses: webfactory/ssh-agent@v0.9.1
+        with:
+          ssh-private-key: ${{ secrets.SELENE_DB_DEPLOY_KEY }}
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+      - name: run binding M6 security probes
+        run: cargo nextest run -p aionforge-redteam --locked --all-features --profile ci
+
   deny:
     name: cargo-deny
     runs-on: ubuntu-latest
@@ -203,5 +224,4 @@ jobs:
           push: false
           ssh: default
 
-  # M6 red-team probe gate and M7 benchmark gates are added to this workflow as
-  # those milestones land (see _spec/plan.md). They are not yet present.
+  # M7 benchmark gates are deferred with M7 and will be added when that milestone lands.
