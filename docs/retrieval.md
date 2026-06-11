@@ -217,7 +217,10 @@ as another memory. Extracted attribute values like a fact predicate or a namespa
 attr-escaped so they cannot break out of their quotes. The compact view
 (`render_compact`, for token-thrifty callers like the MCP surface) is held to the same
 contract — same wrapper, same escaping — so a compact result is no less safe to splice into
-a prompt.
+a prompt. When `verbose=true`, the compact view also emits a trusted `explain:` header before
+the wrapper with the routed query class, embedder state, signals that ran, and the active
+weights that shaped ranking; each memory line then carries namespace, trust, and `via`
+contribution attributes so callers can see why a result surfaced.
 
 The wrapper does its job only if the host is told to honor it, so the MCP surface ships a
 recommended prompt template (`RECALL_UNTRUSTED_DATA_PROMPT`) that instructs the host to treat
