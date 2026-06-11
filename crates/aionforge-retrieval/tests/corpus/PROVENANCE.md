@@ -7,8 +7,8 @@ benchmark claim.
 
 The rows are hand-curated from recurring public engineering themes in this repository's
 own memory workflow: retrieval ranking, doctor/WAL reporting, embedder dimensions,
-multi-agent bearer tokens, plugin cache visibility, release images, and volume
-migration.
+multi-agent bearer tokens, token rotation, plugin cache visibility, release images,
+container smoke tests, public-safe repository notes, and volume migration.
 
 They are not a raw export from a memory store. Each row is rewritten as a generalized
 engineering note before commit.
