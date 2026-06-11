@@ -51,6 +51,10 @@ docker run --rm \
   aionforge-memory:dev
 ```
 
+On Apple silicon Macs running macOS 26, use the same HTTP endpoint shape with
+Apple's `container` runtime. The commands and local lifecycle helper live in
+[Apple container](apple-container.md).
+
 Default HTTP posture:
 
 - Allowed hosts: `localhost`, `127.0.0.1`, and `::1`.
