@@ -59,6 +59,38 @@ validate_skill() {
   require_grep "$file" "^license: MIT OR Apache-2.0$" "skill license"
 }
 
+validate_command() {
+  name="$1"
+  file="$plugin_dir/commands/$name.md"
+  require_file "$file"
+  [ -f "$file" ] || return
+
+  first_line="$(sed -n '1p' "$file")"
+  if [ "$first_line" != "---" ]; then
+    fail "$file must start with YAML frontmatter"
+  fi
+
+  require_grep "$file" "^description: .+" "command description $name"
+  require_grep "$file" "^argument-hint: .+" "command argument hint $name"
+}
+
+validate_agent() {
+  name="$1"
+  file="$plugin_dir/agents/$name.md"
+  require_file "$file"
+  [ -f "$file" ] || return
+
+  first_line="$(sed -n '1p' "$file")"
+  if [ "$first_line" != "---" ]; then
+    fail "$file must start with YAML frontmatter"
+  fi
+
+  require_grep "$file" "^name: $name$" "agent name $name"
+  require_grep "$file" "^description: .+" "agent description $name"
+  require_grep "$file" "^model: .+" "agent model $name"
+  require_grep "$file" "^color: .+" "agent color $name"
+}
+
 for file in \
   "$plugin_dir/.codex-plugin/plugin.json" \
   "$plugin_dir/.claude-plugin/plugin.json" \
@@ -67,6 +99,7 @@ for file in \
   "$plugin_dir/.mcp.json" \
   "$plugin_dir/claude.mcp.json" \
   "$plugin_dir/mcp.json" \
+  "$plugin_dir/settings.json" \
   ".agents/plugins/marketplace.json" \
   ".cursor-plugin/marketplace.json"
 do
@@ -79,6 +112,9 @@ validate_skill "memory-loop"
 validate_skill "memory-recall"
 validate_skill "memory-capture"
 validate_skill "memory-maintenance"
+validate_agent "aionforge-memory-steward"
+validate_command "memory-session"
+validate_command "memory-handoff"
 
 for skill in memory-loop memory-recall memory-capture memory-maintenance; do
   metadata="$plugin_dir/skills/$skill/agents/openai.yaml"
@@ -95,6 +131,7 @@ require_grep "$plugin_dir/.claude-plugin/plugin.json" '"mcpServers": "\./claude\
 require_grep "$plugin_dir/.cursor-plugin/plugin.json" '"mcpServers": "\./mcp\.json"' "Cursor MCP path"
 require_grep "$plugin_dir/plugin.json" '"mcpServers": "mcp\.json"' "Copilot MCP path"
 
+require_grep "$plugin_dir/settings.json" '"agent": "aionforge-memory-steward"' "Claude default agent setting"
 require_grep "$plugin_dir/.mcp.json" '"aionforge_memory"' "Codex MCP server id"
 require_grep "$plugin_dir/.mcp.json" '"bearer_token_env_var": "AIONFORGE_MCP_TOKEN"' "Codex bearer token env"
 reject_grep "$plugin_dir/.mcp.json" '"Authorization"' "Codex static authorization header"

@@ -21,6 +21,11 @@ approval hints.
   standing permission.
 - `memory-maintenance`: inspect backlog, audit provenance, consolidate derived
   work, forget, or restore memory.
+- Claude Code agent `aionforge-memory-steward`: keeps recall, capture, and
+  handoff in the main task loop when the plugin is enabled.
+- Claude Code commands `/aionforge-memory:memory-session` and
+  `/aionforge-memory:memory-handoff`: explicit workflows for starting a
+  memory-backed task and ending with a durable handoff.
 - Client manifests for Codex, Claude Code, Cursor, and GitHub Copilot CLI.
 - MCP config files for the local HTTP endpoint at `http://127.0.0.1:3918/mcp`.
 
@@ -53,6 +58,11 @@ Claude Code can test the package directly:
 ```bash
 claude --plugin-dir ./plugins/aionforge-memory
 ```
+
+The Claude manifest loads `skills/`, `commands/`, `agents/`, and
+`claude.mcp.json`. The plugin root `settings.json` selects
+`aionforge-memory-steward` as the default main-thread agent so ordinary Claude
+Code work starts with the memory loop available.
 
 Cursor can load the package as a local plugin from
 `~/.cursor/plugins/local/aionforge-memory`; it reads `.cursor-plugin/plugin.json`
