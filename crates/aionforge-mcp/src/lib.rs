@@ -25,9 +25,10 @@ mod tools;
 pub use http_body_limit::{DEFAULT_MAX_REQUEST_BODY_BYTES, RequestBodyLimitService};
 pub use http_transport::{
     AionforgeAuthenticatedStreamableHttpService, AionforgeStreamableHttpService,
-    BearerAuthChallenge, BearerAuthService, BearerToken,
-    OAUTH_PROTECTED_RESOURCE_WELL_KNOWN_PREFIX, OAuthProtectedResourceMetadata,
-    STREAMABLE_HTTP_ENDPOINT, StreamableHttpConfigError, StreamableHttpOptions,
+    AuthenticatedBearer, BearerAuthChallenge, BearerAuthService, BearerPrincipal, BearerToken,
+    BearerTokenCredential, BearerTokenSet, OAUTH_PROTECTED_RESOURCE_WELL_KNOWN_PREFIX,
+    OAuthProtectedResourceMetadata, STREAMABLE_HTTP_ENDPOINT, StreamableHttpConfigError,
+    StreamableHttpOptions, authenticated_bearer_from_context,
     oauth_protected_resource_well_known_path, streamable_http_config, streamable_http_service,
     streamable_http_service_with_auth, streamable_http_service_with_auth_challenge,
 };
@@ -52,6 +53,8 @@ pub use tools::{CaptureToolParams, SearchToolParams, capture_tool, search_tool};
 use std::sync::Arc;
 
 use aionforge_domain::contracts::Embedder;
+use aionforge_domain::ids::Id;
+use aionforge_domain::namespace::Namespace;
 use aionforge_engine::Memory;
 use rmcp::ErrorData as McpError;
 use rmcp::RoleServer;
@@ -142,9 +145,15 @@ impl<E: Embedder + 'static> AionforgeMcp<E> {
             open_world_hint = false
         )
     )]
-    async fn capture(&self, params: Parameters<CaptureToolParams>) -> Result<String, String> {
+    async fn capture(
+        &self,
+        params: Parameters<CaptureToolParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<String, String> {
+        let params = params.0;
+        enforce_authenticated_agent_id(&context, &params.agent_id)?;
         let now = jiff::Zoned::now();
-        capture_tool(&self.memory, params.0, &now).await
+        capture_tool(&self.memory, params, &now).await
     }
 
     #[tool(
@@ -156,14 +165,20 @@ impl<E: Embedder + 'static> AionforgeMcp<E> {
             open_world_hint = false
         )
     )]
-    async fn search(&self, params: Parameters<SearchToolParams>) -> Result<String, String> {
+    async fn search(
+        &self,
+        params: Parameters<SearchToolParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<String, String> {
         // The host boundary owns the wall clock, mirroring `capture`: stamping the recall
         // instant here keeps the substrate free of an ambient clock while making the
         // importance and recency re-ranks available to every MCP search — each query class
         // still decides whether it weights them; the quote class keeps both off (05 §2,
         // M5.T01).
+        let params = params.0;
+        enforce_authenticated_viewer(&context, &params.viewer)?;
         let now = jiff::Zoned::now();
-        search_tool(&self.memory, params.0, &now).await
+        search_tool(&self.memory, params, &now).await
     }
 
     #[tool(
@@ -216,9 +231,12 @@ impl<E: Embedder + 'static> AionforgeMcp<E> {
     async fn forget(
         &self,
         params: Parameters<MemoryLifecycleToolParams>,
+        context: RequestContext<RoleServer>,
     ) -> Result<String, String> {
+        let params = params.0;
+        enforce_authenticated_viewer(&context, &params.viewer)?;
         let now = jiff::Zoned::now();
-        forget_tool(&self.memory, params.0, &now)
+        forget_tool(&self.memory, params, &now)
     }
 
     #[tool(
@@ -233,9 +251,12 @@ impl<E: Embedder + 'static> AionforgeMcp<E> {
     async fn unforget(
         &self,
         params: Parameters<MemoryLifecycleToolParams>,
+        context: RequestContext<RoleServer>,
     ) -> Result<String, String> {
+        let params = params.0;
+        enforce_authenticated_viewer(&context, &params.viewer)?;
         let now = jiff::Zoned::now();
-        unforget_tool(&self.memory, params.0, &now)
+        unforget_tool(&self.memory, params, &now)
     }
 
     #[tool(
@@ -250,8 +271,11 @@ impl<E: Embedder + 'static> AionforgeMcp<E> {
     async fn audit_history(
         &self,
         params: Parameters<AuditHistoryToolParams>,
+        context: RequestContext<RoleServer>,
     ) -> Result<String, String> {
-        audit_history_tool(&self.memory, params.0)
+        let params = params.0;
+        enforce_authenticated_viewer(&context, &params.viewer)?;
+        audit_history_tool(&self.memory, params)
     }
 }
 
@@ -276,6 +300,48 @@ impl<E: Embedder + 'static> AionforgeMcp<E> {
         );
         PromptRouter::new().with_route(route)
     }
+}
+
+fn enforce_authenticated_agent_id(
+    context: &RequestContext<RoleServer>,
+    raw_agent_id: &str,
+) -> Result<(), String> {
+    let Some(authenticated) = authenticated_bearer_from_context(context) else {
+        return Ok(());
+    };
+    let claimed = Id::parse(raw_agent_id)
+        .map_err(|_| "ERR_INVALID_AGENT_ID: agent_id must be a UUID".to_string())?;
+    if claimed != authenticated.principal().agent_id() {
+        return Err(
+            "ERR_AUTH_PRINCIPAL_MISMATCH: agent_id must match authenticated bearer principal"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn enforce_authenticated_viewer(
+    context: &RequestContext<RoleServer>,
+    raw_viewer: &str,
+) -> Result<(), String> {
+    let Some(authenticated) = authenticated_bearer_from_context(context) else {
+        return Ok(());
+    };
+    let viewer: Namespace = raw_viewer
+        .parse()
+        .map_err(|_| "ERR_INVALID_VIEWER: viewer must be agent:<id>".to_string())?;
+    let Namespace::Agent(agent_id) = viewer else {
+        return Err("ERR_INVALID_VIEWER: a reader must be an agent (agent:<id>)".to_string());
+    };
+    let claimed = Id::parse(&agent_id)
+        .map_err(|_| "ERR_INVALID_VIEWER: viewer agent id must be a UUID".to_string())?;
+    if claimed != authenticated.principal().agent_id() {
+        return Err(
+            "ERR_AUTH_PRINCIPAL_MISMATCH: viewer must match authenticated bearer principal"
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 #[tool_handler]

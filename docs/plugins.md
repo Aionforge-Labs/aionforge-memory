@@ -40,7 +40,7 @@ Recommended local setup:
 export AIONFORGE_AGENT_ID="<uuid>"
 export AIONFORGE_MCP_TOKEN="$(openssl rand -hex 32)"
 aionforge serve http --listen 127.0.0.1:3918 \
-  --bearer-token-env AIONFORGE_MCP_TOKEN
+  --bearer-token-agent-env AIONFORGE_AGENT_ID=AIONFORGE_MCP_TOKEN
 ```
 
 If a client cannot read `AIONFORGE_AGENT_ID`, put the UUID in that client's

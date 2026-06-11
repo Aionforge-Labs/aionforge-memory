@@ -76,14 +76,15 @@ For a local agent process, stdio is the smallest surface:
 aionforge --config /path/to/config.toml serve stdio
 ```
 
-For a shared local service, use Streamable HTTP with a bearer token from the
-environment:
+For a shared local service, use Streamable HTTP with a bearer token and agent id
+from the environment:
 
 ```bash
+export AIONFORGE_AGENT_ID="018f0cc0-40f3-7cc4-b8b4-9ca41f88d012"
 export AIONFORGE_MCP_TOKEN="$(openssl rand -hex 32)"
 aionforge --config /path/to/config.toml \
   serve http --listen 127.0.0.1:3918 \
-  --bearer-token-env AIONFORGE_MCP_TOKEN
+  --bearer-token-agent-env AIONFORGE_AGENT_ID=AIONFORGE_MCP_TOKEN
 ```
 
 Then configure your client with the MCP endpoint
@@ -106,6 +107,7 @@ as UID/GID `10001` in an Alpine runtime image:
 ```bash
 docker build -t aionforge-memory:dev .
 docker run --rm \
+  -e AIONFORGE_AGENT_ID=018f0cc0-40f3-7cc4-b8b4-9ca41f88d012 \
   -e AIONFORGE_MCP_TOKEN=change-me \
   -p 127.0.0.1:3918:3918 \
   -v aionforge-data:/data \

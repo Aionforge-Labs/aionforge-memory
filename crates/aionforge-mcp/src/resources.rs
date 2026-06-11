@@ -48,7 +48,7 @@ const MCP_SURFACE_GUIDE: &str = r#"Aionforge MCP Surface
 Read this once when connecting a new MCP client.
 
 Start locally with `aionforge serve stdio` or
-`aionforge serve http --listen 127.0.0.1:3918 --bearer-token-env AIONFORGE_MCP_TOKEN`.
+`aionforge serve http --listen 127.0.0.1:3918 --bearer-token-agent-env AIONFORGE_AGENT_ID=AIONFORGE_MCP_TOKEN`.
 
 Tool routing:
 - server_status: verify the connected Aionforge MCP server version, counts, transports, and tool posture.
@@ -60,6 +60,7 @@ Tool routing:
 - audit_history: principal-scoped audit page by subject, by kind, or by subject+kind.
 
 Token discipline:
+- HTTP tokens are bound to one agent id; capture.agent_id and viewer must match the authenticated bearer principal.
 - Keep default compact output for normal use; set verbose=true only for debugging.
 - Compact search <memory id="..."> is the domain memory id used by forget and audit_history; sid is only the serialization order.
 - For audit_history, omit subject_id only with kind to scan all visible subjects for that audit kind; the compact header reports subject=*.
@@ -113,14 +114,16 @@ Server posture:
 - The built-in bearer wrapper is a local/private guard, not a full OAuth verifier.
 - Put an OAuth resource-server verifier in front of /mcp for multi-user deployments.
 - Validate issuer, expiry, audience/resource, and scopes before requests reach MCP.
+- If the verifier forwards to the aionforge CLI server, replace inbound Authorization with a configured internal principal-bound bearer token.
 - Never pass inbound MCP access tokens through to downstream services.
 - Use the public MCP URL as the resource value, e.g. https://memory.example.com/mcp.
 
 Aionforge serve flags:
+- --bearer-token-agent-env AGENT_ID_ENV=TOKEN_ENV
 - --public-url https://memory.example.com/mcp
 - --oauth-issuer https://auth.example.com
 - --oauth-scope memory.read --oauth-scope memory.write
-- With --bearer-token-env, 401 responses include resource_metadata and scope.
+- With principal-bound bearer tokens, 401 responses include resource_metadata and scope.
 - Metadata is served at /.well-known/oauth-protected-resource/mcp.
 
 Client modes:
@@ -147,8 +150,8 @@ It bundles:
 
 Requirements:
 - Run the Aionforge MCP server over HTTP or stdio.
-- Set AIONFORGE_MCP_TOKEN when bearer auth is enabled.
-- Use one stable agent UUID across sessions, usually stored as AIONFORGE_AGENT_ID or in client instructions.
+- Set AIONFORGE_AGENT_ID to one stable agent UUID across sessions.
+- Set AIONFORGE_MCP_TOKEN to that agent's bearer secret when HTTP auth is enabled.
 
 Local test paths:
 - Claude Code: claude --plugin-dir ./plugins/aionforge-memory

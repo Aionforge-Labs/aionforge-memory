@@ -33,9 +33,10 @@ The single `aionforge` binary can serve the same surface directly:
 
 ```bash
 aionforge serve stdio
+AIONFORGE_AGENT_ID=018f0cc0-40f3-7cc4-b8b4-9ca41f88d012 \
 AIONFORGE_MCP_TOKEN=change-me \
   aionforge serve http --listen 127.0.0.1:3918 \
-  --bearer-token-env AIONFORGE_MCP_TOKEN
+  --bearer-token-agent-env AIONFORGE_AGENT_ID=AIONFORGE_MCP_TOKEN
 ```
 
 The Docker image defaults to the authenticated HTTP server on port `3918` and
@@ -43,6 +44,7 @@ stores state under `/data`:
 
 ```bash
 docker run --rm \
+  -e AIONFORGE_AGENT_ID=018f0cc0-40f3-7cc4-b8b4-9ca41f88d012 \
   -e AIONFORGE_MCP_TOKEN=change-me \
   -p 127.0.0.1:3918:3918 \
   -v aionforge-data:/data \
@@ -59,15 +61,20 @@ Default HTTP posture:
   `StreamableHttpOptions::max_request_body_bytes`; oversized requests return
   `413 Payload Too Large`.
 - Session mode: stateful, matching normal Streamable HTTP clients.
-- Auth: available through the bearer wrapper; required for shared or remote use.
+- Auth: the CLI requires principal-bound bearer tokens for HTTP. Each token
+  authenticates one agent id, and identity-bearing tools reject mismatched
+  `agent_id` or `viewer` values.
 
 ## OAuth Readiness
 
 The built-in bearer wrapper is a local/private deployment guard, not a complete
 OAuth resource server. For remote multi-user deployments, mount an OAuth verifier
 at the HTTP boundary that validates issuer, expiry, scope, and audience/resource
-binding before the MCP service sees the request. Do not pass inbound MCP access
-tokens through to downstream services.
+binding before the MCP service sees the request. If the verifier forwards to the
+`aionforge` CLI server, it must replace the inbound `Authorization` header with a
+configured internal principal-bound bearer token. Custom hosts can instead mount
+the library service behind the verifier. Do not pass inbound MCP access tokens
+through to downstream services.
 
 The crate exposes two small helpers for MCP OAuth 2.1 integration:
 
@@ -89,8 +96,10 @@ endpoint URL and issuer metadata so MCP clients can discover the protected
 resource:
 
 ```bash
+AIONFORGE_AGENT_ID=018f0cc0-40f3-7cc4-b8b4-9ca41f88d012 \
+AIONFORGE_MCP_TOKEN=change-me \
 aionforge serve http --listen 127.0.0.1:3918 \
-  --bearer-token-env AIONFORGE_MCP_TOKEN \
+  --bearer-token-agent-env AIONFORGE_AGENT_ID=AIONFORGE_MCP_TOKEN \
   --public-url https://memory.example.com/mcp \
   --oauth-issuer https://auth.example.com \
   --oauth-scope memory.read --oauth-scope memory.write
@@ -99,8 +108,8 @@ aionforge serve http --listen 127.0.0.1:3918 \
 That serves RFC 9728 protected-resource metadata at
 `/.well-known/oauth-protected-resource/mcp` and advertises that metadata URL in
 the 401 `WWW-Authenticate` challenge. Token validation is still the job of the
-upstream OAuth verifier; the built-in bearer wrapper only checks the bearer value
-that reaches the MCP service.
+upstream OAuth verifier; the built-in bearer wrapper checks the bearer value that
+reaches the MCP service and binds it to the configured agent id.
 
 Static bearer and OAuth modes should not be mixed in client config. A static
 `Authorization` header is appropriate for loopback/private deployments. For

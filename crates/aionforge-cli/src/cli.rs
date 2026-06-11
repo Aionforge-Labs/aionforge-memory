@@ -76,9 +76,9 @@ pub(crate) struct ServeArgs {
     /// Address for Streamable HTTP. Ignored for stdio.
     #[arg(long, default_value = "127.0.0.1:3918")]
     pub(crate) listen: SocketAddr,
-    /// Environment variable containing the HTTP bearer token. Ignored for stdio.
-    #[arg(long, value_name = "ENV")]
-    pub(crate) bearer_token_env: Option<String>,
+    /// Principal-bound bearer token in AGENT_ID_ENV=TOKEN_ENV form. Repeat for each HTTP agent.
+    #[arg(long = "bearer-token-agent-env", value_name = "AGENT_ID_ENV=TOKEN_ENV")]
+    pub(crate) bearer_token_agent_env: Vec<String>,
     /// Public MCP endpoint URL used in OAuth resource metadata. Ignored for stdio.
     #[arg(long, value_name = "URL")]
     pub(crate) public_url: Option<String>,
@@ -171,8 +171,8 @@ mod tests {
             "http",
             "--listen",
             "127.0.0.1:4927",
-            "--bearer-token-env",
-            "AIONFORGE_MCP_TOKEN",
+            "--bearer-token-agent-env",
+            "AIONFORGE_AGENT_ID=AIONFORGE_MCP_TOKEN",
             "--allowed-host",
             "localhost",
             "--allowed-origin",
@@ -199,8 +199,8 @@ mod tests {
             "127.0.0.1:4927".parse::<SocketAddr>().expect("addr")
         );
         assert_eq!(
-            args.bearer_token_env.as_deref(),
-            Some("AIONFORGE_MCP_TOKEN")
+            args.bearer_token_agent_env,
+            vec!["AIONFORGE_AGENT_ID=AIONFORGE_MCP_TOKEN"]
         );
         assert_eq!(args.allowed_hosts, vec!["localhost"]);
         assert_eq!(args.allowed_origins, vec!["http://localhost:3000"]);
