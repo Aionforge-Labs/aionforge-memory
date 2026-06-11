@@ -85,7 +85,7 @@ pub use aionforge_store::{ConsolidatingModel, NoteLineage, WriterFamilySet};
 pub use audit::{AuditPage, AuditRecord, AuditVerification};
 pub use core_block::{CoreBlockCreate, CoreBlockDraft};
 pub use drift_sweep::BaselineComputation;
-pub use guard::{ConsolidationGuardPolicy, GuardMode};
+pub use guard::{ConsolidationGuardPolicy, GuardMode, StartupWarning};
 pub use reliability_sweep::D1SweepReport;
 
 /// How the facade configures the capture and retrieval paths.
@@ -254,6 +254,10 @@ pub struct Memory<E> {
     /// core editor it has no disabled state; the facade applies it to every
     /// inference-calling consolidation rule (`distill`, `evolve_links`).
     consolidation_guard: ConsolidationGuardPolicy,
+    /// Conditions surfaced at construction for the host to log (07 §3, M6.T01):
+    /// today only the single-family deployment warning. Audited at construction;
+    /// read via [`Memory::startup_warnings`].
+    startup_warnings: Vec<StartupWarning>,
 }
 
 impl<E: Embedder> Memory<E> {
@@ -450,6 +454,16 @@ impl<E: Embedder> Memory<E> {
             config.retriever,
             Arc::clone(&authorizer),
         );
+        // The single-family startup check (07 §3, M6.T01): a typed warning the host
+        // logs, plus an audit row — `now` is the caller's clock, so no ambient time.
+        let startup_warnings = guard::single_family_check(
+            &store,
+            config
+                .consolidation_guard
+                .declared_consolidator_family
+                .as_deref(),
+            now,
+        )?;
         Ok(Self {
             store,
             embedder,
@@ -463,6 +477,7 @@ impl<E: Embedder> Memory<E> {
             drift_detector,
             core_editor,
             audit_verifier,
+            startup_warnings,
             consolidation_guard: config.consolidation_guard,
         })
     }
@@ -514,6 +529,16 @@ impl<E: Embedder> Memory<E> {
     /// Returns [`EngineError::Retrieval`] if a search fails or the deadline is exceeded.
     pub async fn search(&self, query: RecallQuery) -> Result<RecallBundle, EngineError> {
         Ok(self.retriever.recall(query).await?)
+    }
+
+    /// Conditions surfaced at construction for the host to log (07 §3, M6.T01) —
+    /// the engine has no logging dependency, so the host (CLI, MCP server) renders
+    /// these. Today: [`StartupWarning::SingleFamilyDeployment`] when every enrolled
+    /// agent declares the configured consolidating family. Each warning was also
+    /// written as a `subliminal_guard_warning` audit row at construction.
+    #[must_use]
+    pub fn startup_warnings(&self) -> &[StartupWarning] {
+        &self.startup_warnings
     }
 
     /// The shared store, for lifecycle and inspection.

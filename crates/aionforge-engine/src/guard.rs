@@ -12,6 +12,16 @@
 //! field-for-field — the engine takes no config dependency, the same indirection
 //! as every policy sibling — and the engine re-validates its own copy.
 
+use aionforge_domain::blocks::Identity;
+use aionforge_domain::ids::Id;
+use aionforge_domain::namespace::Namespace;
+use aionforge_domain::nodes::forensic::{AuditEvent, AuditKind};
+use aionforge_domain::time::Timestamp;
+use aionforge_security::{FamilyVerdict, family_verdict};
+use aionforge_store::Store;
+
+use crate::EngineError;
+
 pub use aionforge_security::GuardMode;
 
 /// Cross-family guard posture (07 §3, M6.T01): what a fired guard does, and the
@@ -49,6 +59,88 @@ impl ConsolidationGuardPolicy {
             );
         }
         Ok(())
+    }
+}
+
+/// A condition the constructor surfaces for the host to log — the engine has no
+/// logging dependency, so emission is the host's job via
+/// [`Memory::startup_warnings`](crate::Memory::startup_warnings). Each warning is
+/// also written as an audit row at construction (the constructor receives `now`,
+/// so no ambient clock is involved).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StartupWarning {
+    /// Every enrolled agent declares the consolidating model's family (07 §3): the
+    /// deployment writes and condenses with one base model, the exact posture the
+    /// subliminal-trait guard exists to flag. The per-call guard will refuse (or
+    /// warn through, per mode) every cluster this deployment distills.
+    SingleFamilyDeployment {
+        /// The declared consolidating family the agents all match.
+        family: String,
+    },
+}
+
+/// The single-family startup check (07 §3, M6.T01 design Q7): when a consolidating
+/// family is declared and **every** enrolled agent's family compares `Same` against
+/// it, the deployment is single-family — surface the typed warning and write the
+/// audit row. Best-effort by design: no declared family (or no enrolled agents yet)
+/// skips the check, and the per-call guard remains the enforcement either way.
+pub(crate) fn single_family_check(
+    store: &Store,
+    declared: Option<&str>,
+    now: &Timestamp,
+) -> Result<Vec<StartupWarning>, EngineError> {
+    let Some(declared) = declared else {
+        return Ok(Vec::new());
+    };
+    let families = store.distinct_agent_families()?;
+    let single_family = !families.is_empty()
+        && families
+            .iter()
+            .all(|family| family_verdict(family, declared) == FamilyVerdict::Same);
+    if !single_family {
+        return Ok(Vec::new());
+    }
+    store.commit_audit(&startup_guard_audit(declared, &families, now))?;
+    Ok(vec![StartupWarning::SingleFamilyDeployment {
+        family: declared.to_string(),
+    }])
+}
+
+/// The deterministic actor (and subject) the startup check writes under: the guard
+/// itself, not any one agent — a deployment-level finding has no per-node subject.
+fn guard_actor() -> Id {
+    Id::from_content_hash(b"aionforge/cross-family-guard-v1")
+}
+
+/// The `subliminal_guard_warning` audit row for a single-family deployment. Its id
+/// is content-addressed over the declared family and the agent-family set — never
+/// the instant — so every restart of the same deployment dedups to one row, and a
+/// changed fleet records a new finding.
+fn startup_guard_audit(declared: &str, families: &[String], now: &Timestamp) -> AuditEvent {
+    let key = format!(
+        "audit|subliminal_guard|startup|{declared}|{}",
+        families.join(",")
+    );
+    let actor = guard_actor();
+    AuditEvent {
+        identity: Identity {
+            id: Id::from_content_hash(key.as_bytes()),
+            ingested_at: now.clone(),
+            namespace: Namespace::Global,
+            expired_at: None,
+        },
+        kind: AuditKind::SubliminalGuardWarning,
+        subject_id: actor,
+        actor_id: actor,
+        payload: serde_json::json!({
+            "action": "startup",
+            "rule": "startup",
+            "reason": "single_family_deployment",
+            "consolidator_family": declared,
+            "writer_families": families,
+        }),
+        signature: String::new(),
+        occurred_at: now.clone(),
     }
 }
 
