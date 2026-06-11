@@ -9,6 +9,12 @@ This plugin packages the Aionforge Memory MCP configuration with four small Agen
 
 The skills are plain Agent Skills under `skills/`, so clients that support the common `SKILL.md` format can use the same instructions. The plugin also includes compatibility manifests for Codex, Claude Code, Cursor, and GitHub Copilot CLI.
 
+For Claude Code, the plugin also ships:
+
+- `aionforge-memory-steward`: a default main-thread agent that keeps recall, capture, and handoff in the task loop.
+- `/aionforge-memory:memory-session`: starts a memory-backed Claude Code task.
+- `/aionforge-memory:memory-handoff`: captures a durable end-of-session handoff.
+
 ## Requirements
 
 - A running Aionforge Memory MCP server.
@@ -34,6 +40,8 @@ claude --plugin-dir ./plugins/aionforge-memory
 ```
 
 The Claude manifest points to `claude.mcp.json`, which keeps Claude's static-header MCP shape separate from the Codex config.
+
+When the plugin is enabled in Claude Code, `settings.json` selects the `aionforge-memory-steward` agent by default. Run `/reload-plugins` after local edits, then check `/agents` and `/help` to confirm the agent and commands are loaded.
 
 Cursor can load it as a local plugin by symlinking or copying this directory into `~/.cursor/plugins/local/aionforge-memory`. Cursor reads `.cursor-plugin/plugin.json` and `mcp.json`.
 

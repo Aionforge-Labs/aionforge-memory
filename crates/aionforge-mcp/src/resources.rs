@@ -141,6 +141,8 @@ It bundles:
 - skills/memory-recall: search durable memory before planning, coding, review, debugging, release, or support work.
 - skills/memory-capture: capture decisions, project facts, validation results, corrections, and handoffs.
 - skills/memory-maintenance: inspect backlog, audit provenance, consolidate derived work, forget, or restore memory.
+- Claude Code agent aionforge-memory-steward: keeps recall, capture, and handoff in the main task loop.
+- Claude Code commands /aionforge-memory:memory-session and /aionforge-memory:memory-handoff.
 - MCP configs for Codex, Claude Code, Cursor, and GitHub Copilot CLI.
 
 Requirements:

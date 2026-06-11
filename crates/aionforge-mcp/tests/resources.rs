@@ -272,6 +272,8 @@ async fn mcp_transport_lists_client_policy_resources() -> TestResult {
     assert!(plugin.contains("memory-recall"));
     assert!(plugin.contains("memory-capture"));
     assert!(plugin.contains("memory-maintenance"));
+    assert!(plugin.contains("aionforge-memory-steward"));
+    assert!(plugin.contains("memory-session"));
 
     client.cancel().await?;
     server_handle.await??;
