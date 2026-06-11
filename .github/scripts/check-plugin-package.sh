@@ -43,6 +43,20 @@ validate_json() {
   fi
 }
 
+validate_toml() {
+  file="$1"
+  if ! python3 - "$file" <<'PY'
+import pathlib
+import sys
+import tomllib
+
+tomllib.loads(pathlib.Path(sys.argv[1]).read_text())
+PY
+  then
+    fail "invalid TOML: $file"
+  fi
+}
+
 validate_skill() {
   name="$1"
   file="$plugin_dir/skills/$name/SKILL.md"
@@ -107,6 +121,9 @@ do
   [ -f "$file" ] && validate_json "$file"
 done
 
+require_file "$plugin_dir/codex.plugin-policy.example.toml"
+[ -f "$plugin_dir/codex.plugin-policy.example.toml" ] && validate_toml "$plugin_dir/codex.plugin-policy.example.toml"
+
 require_file "$plugin_dir/README.md"
 validate_skill "memory-loop"
 validate_skill "memory-recall"
@@ -127,6 +144,10 @@ done
 
 require_grep "$plugin_dir/.codex-plugin/plugin.json" '"skills": "\./skills/"' "Codex skills path"
 require_grep "$plugin_dir/.codex-plugin/plugin.json" '"mcpServers": "\./\.mcp\.json"' "Codex MCP path"
+require_grep "$plugin_dir/codex.plugin-policy.example.toml" '\[plugins\."aionforge-memory@aionforge-plugins"\.mcp_servers\.aionforge_memory\]' "Codex plugin MCP policy"
+require_grep "$plugin_dir/codex.plugin-policy.example.toml" 'default_tools_approval_mode = "prompt"' "Codex default plugin approval mode"
+require_grep "$plugin_dir/codex.plugin-policy.example.toml" '\.tools\.search\]' "Codex search tool policy"
+require_grep "$plugin_dir/codex.plugin-policy.example.toml" '\.tools\.capture\]' "Codex capture tool policy"
 require_grep "$plugin_dir/.claude-plugin/plugin.json" '"mcpServers": "\./claude\.mcp\.json"' "Claude MCP path"
 require_grep "$plugin_dir/.cursor-plugin/plugin.json" '"mcpServers": "\./mcp\.json"' "Cursor MCP path"
 require_grep "$plugin_dir/plugin.json" '"mcpServers": "mcp\.json"' "Copilot MCP path"

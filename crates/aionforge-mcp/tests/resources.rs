@@ -21,7 +21,7 @@ use rmcp::model::ReadResourceRequestParams;
 type TestError = Box<dyn std::error::Error + Send + Sync>;
 type TestResult<T = ()> = Result<T, TestError>;
 
-const TOTAL_STATIC_RESOURCE_BUDGET_BYTES: usize = 14_500;
+const TOTAL_STATIC_RESOURCE_BUDGET_BYTES: usize = 16_500;
 
 const RESOURCE_BODY_BUDGETS: &[(&str, usize)] = &[
     (TOOL_MANIFEST_RESOURCE_URI, 4_096),
@@ -29,8 +29,8 @@ const RESOURCE_BODY_BUDGETS: &[(&str, usize)] = &[
     (MCP_SURFACE_GUIDE_RESOURCE_URI, 1_800),
     (TOOL_APPROVAL_POLICY_RESOURCE_URI, 1_600),
     (CLIENT_OAUTH_GUIDE_RESOURCE_URI, 2_000),
-    (PLUGIN_PACKAGE_GUIDE_RESOURCE_URI, 2_000),
-    (CODEX_CONFIG_RESOURCE_URI, 2_000),
+    (PLUGIN_PACKAGE_GUIDE_RESOURCE_URI, 2_300),
+    (CODEX_CONFIG_RESOURCE_URI, 3_800),
     (CLAUDE_CODE_CONFIG_RESOURCE_URI, 512),
     (OPENCODE_CONFIG_RESOURCE_URI, 1_024),
     (CURSOR_CONFIG_RESOURCE_URI, 512),
@@ -251,6 +251,11 @@ async fn mcp_transport_lists_client_policy_resources() -> TestResult {
 
     let codex = read_text_resource(&client, CODEX_CONFIG_RESOURCE_URI).await?;
     assert!(codex.contains("[mcp_servers.aionforge_memory]"));
+    assert!(
+        codex.contains(
+            "[plugins.\"aionforge-memory@aionforge-plugins\".mcp_servers.aionforge_memory]"
+        )
+    );
     assert!(codex.contains("\"server_status\""));
     assert!(codex.contains("bearer_token_env_var = \"AIONFORGE_MCP_TOKEN\""));
     assert!(codex.contains("approval_mode = \"prompt\""));
@@ -274,6 +279,7 @@ async fn mcp_transport_lists_client_policy_resources() -> TestResult {
     assert!(plugin.contains("memory-maintenance"));
     assert!(plugin.contains("aionforge-memory-steward"));
     assert!(plugin.contains("memory-session"));
+    assert!(plugin.contains("codex.plugin-policy.example.toml"));
 
     client.cancel().await?;
     server_handle.await??;

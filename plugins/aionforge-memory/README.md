@@ -33,6 +33,8 @@ aionforge serve http --listen 127.0.0.1:3918 \
 
 Codex can discover this repo plugin through `.agents/plugins/marketplace.json`. The Codex manifest is at `.codex-plugin/plugin.json` and points to `.mcp.json`, which uses the `aionforge_memory` server id and Codex's `bearer_token_env_var` auth field.
 
+After installing the plugin, use `codex plugin list` to confirm the marketplace-qualified plugin id. The repo marketplace id is `aionforge-memory@aionforge-plugins`. For a safer default tool posture, copy the policy shape from `codex.plugin-policy.example.toml` into `~/.codex/config.toml`: read-like tools are approved, and mutating tools stay prompted.
+
 Claude Code can test the plugin directly:
 
 ```bash
