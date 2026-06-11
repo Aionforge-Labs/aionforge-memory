@@ -84,6 +84,7 @@ Recommended client posture:
 - Ask before consolidate because it mutates derived memory, even though runs are bounded and deterministic.
 - Ask before forget/unforget; require an explicit user request naming the target id.
 - Keep server HTTP on loopback unless bearer auth and network policy are configured.
+- Protocol annotations mirror this posture: read-like tools set readOnlyHint=true, all tools set openWorldHint=false, and forget sets destructiveHint=true.
 
 Error markers worth preserving in summaries:
 - ERR_CONSOLIDATE_BUSY: another foreground consolidation run is already active.
@@ -351,6 +352,10 @@ struct ToolEntryManifest {
     class: &'static str,
     approval: &'static str,
     mutates: bool,
+    read_only_hint: bool,
+    destructive_hint: bool,
+    idempotent_hint: bool,
+    open_world_hint: bool,
     default_output: &'static str,
     verbose: bool,
     errors: &'static [&'static str],
@@ -394,6 +399,10 @@ fn tool_entry_manifest(tool: &ToolSurface) -> ToolEntryManifest {
         class: tool.class.as_str(),
         approval: tool.class.approval(),
         mutates: tool.class.mutates(),
+        read_only_hint: tool.read_only_hint,
+        destructive_hint: tool.destructive_hint,
+        idempotent_hint: tool.idempotent_hint,
+        open_world_hint: tool.open_world_hint,
         default_output: tool.default_output,
         verbose: tool.verbose,
         errors: tool.errors,
@@ -453,7 +462,19 @@ mod tests {
                 .iter()
                 .any(|tool| tool["name"] == "capture"
                     && tool["class"] == "mutating"
-                    && tool["mutates"] == true)
+                    && tool["mutates"] == true
+                    && tool["read_only_hint"] == false
+                    && tool["destructive_hint"] == false)
+        );
+        assert!(
+            manifest["tools"]
+                .as_array()
+                .expect("tools")
+                .iter()
+                .any(|tool| tool["name"] == "forget"
+                    && tool["destructive_hint"] == true
+                    && tool["idempotent_hint"] == true
+                    && tool["open_world_hint"] == false)
         );
     }
 }

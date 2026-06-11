@@ -1,6 +1,6 @@
 //! Tests for compiled-in MCP resources exposed over the transport.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::sync::Arc;
 
@@ -137,13 +137,52 @@ async fn mcp_transport_lists_client_policy_resources() -> TestResult {
         .iter()
         .map(|tool| tool["name"].as_str().expect("tool name").to_string())
         .collect();
-    let listed_tools: BTreeSet<String> = client
-        .list_all_tools()
-        .await?
-        .into_iter()
+    let listed_tools = client.list_all_tools().await?;
+    let listed_tool_names: BTreeSet<String> = listed_tools
+        .iter()
         .map(|tool| tool.name.to_string())
         .collect();
-    assert_eq!(manifest_tools, listed_tools);
+    assert_eq!(manifest_tools, listed_tool_names);
+    let listed_tools_by_name: BTreeMap<String, _> = listed_tools
+        .iter()
+        .map(|tool| (tool.name.to_string(), tool))
+        .collect();
+    for manifest_tool in manifest["tools"].as_array().expect("tools") {
+        let name = manifest_tool["name"].as_str().expect("tool name");
+        let listed_tool = listed_tools_by_name.get(name).expect("listed tool");
+        let annotations = listed_tool
+            .annotations
+            .as_ref()
+            .unwrap_or_else(|| panic!("{name} has annotations"));
+        assert_eq!(
+            annotations.read_only_hint,
+            manifest_tool["read_only_hint"].as_bool()
+        );
+        assert_eq!(
+            annotations.destructive_hint,
+            manifest_tool["destructive_hint"].as_bool()
+        );
+        assert_eq!(
+            annotations.idempotent_hint,
+            manifest_tool["idempotent_hint"].as_bool()
+        );
+        assert_eq!(
+            annotations.open_world_hint,
+            manifest_tool["open_world_hint"].as_bool()
+        );
+    }
+    let read_only_tool_names: BTreeSet<String> = listed_tools
+        .iter()
+        .filter(|tool| {
+            tool.annotations
+                .as_ref()
+                .and_then(|annotations| annotations.read_only_hint)
+                .unwrap_or(false)
+        })
+        .map(|tool| tool.name.to_string())
+        .collect();
+    assert!(read_only_tool_names.contains("search"));
+    assert!(!read_only_tool_names.contains("capture"));
     assert!(
         manifest["tools"]
             .as_array()
@@ -151,7 +190,9 @@ async fn mcp_transport_lists_client_policy_resources() -> TestResult {
             .iter()
             .any(|tool| tool["name"] == "server_status"
                 && tool["class"] == "read_like"
-                && tool["approval"] == "allow_without_prompt")
+                && tool["approval"] == "allow_without_prompt"
+                && tool["read_only_hint"] == true
+                && tool["open_world_hint"] == false)
     );
     assert!(
         manifest["tools"]
@@ -161,6 +202,8 @@ async fn mcp_transport_lists_client_policy_resources() -> TestResult {
             .any(|tool| tool["name"] == "forget"
                 && tool["class"] == "mutating"
                 && tool["approval"] == "ask_user"
+                && tool["destructive_hint"] == true
+                && tool["idempotent_hint"] == true
                 && tool["errors"]
                     .as_array()
                     .expect("errors")

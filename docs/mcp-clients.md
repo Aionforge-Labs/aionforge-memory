@@ -190,9 +190,13 @@ the server boundary.
 
 `aionforge://manifest/tools.json` is the lowest-token machine-readable contract
 for agents. It lists the server version, tool classes, recommended approval
-posture, compact output shape, and stable `ERR_*` markers. The other compact
-resources intentionally mirror this section; keep them short because they are
-meant for agent context, not exhaustive documentation.
+posture, MCP tool annotation hints, compact output shape, and stable `ERR_*`
+markers. The server sets `readOnlyHint=true` for read-like tools,
+`openWorldHint=false` for the local memory surface, and `destructiveHint=true`
+for `forget`; treat those as client-routing hints and keep the approval policy as
+the enforcement rule. The other compact resources intentionally mirror this
+section; keep them short because they are meant for agent context, not exhaustive
+documentation.
 
 ## Deferred
 
