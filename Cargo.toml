@@ -116,27 +116,27 @@ wiremock = "0.6"
 # Object-safe async traits for the consolidation pass seam (M2.T03).
 async-trait = "0.1"
 
-# --- selene-db substrate (private repo; git dep tracking the `development` branch). ---
-# selene-db is private and under active development, so we track its `development`
-# branch over SSH (not a path dep into the other agent's working tree). The source is
-# the branch, but Cargo.lock pins the exact commit — builds stay reproducible and CI
+# --- selene-db substrate (public git dep tracking the `development` branch). ---
+# selene-db is public and under active development, so we track its `development`
+# branch over HTTPS (not a path dep into a sibling working tree). The source is
+# the branch, but Cargo.lock pins the exact commit: builds stay reproducible and CI
 # runs `--locked`. `cargo update` pulls newer `development` commits on demand, and the
 # nightly workflow runs that update on a schedule so we never silently fall behind.
-# `cargo build` fetches with the system git binary + your SSH key (.cargo/config.toml).
+# `cargo build` fetches with the system git binary (.cargo/config.toml).
 # For tight co-development against a local checkout, use the commented `[patch]` below.
 # A `version` accompanies the git source so the dep is not a bare `*` wildcard (the
 # `bans.wildcards = "deny"` gate). The `"1"` requirement is a sanity floor against the
 # selene 1.x line; Cargo.lock still pins the exact `development` commit that builds.
-selene-core = { git = "ssh://git@github.com/Aionforge-Labs/selene-db.git", branch = "development", version = "1" }
-selene-graph = { git = "ssh://git@github.com/Aionforge-Labs/selene-db.git", branch = "development", version = "1" }
-selene-persist = { git = "ssh://git@github.com/Aionforge-Labs/selene-db.git", branch = "development", version = "1" }
-selene-gql = { git = "ssh://git@github.com/Aionforge-Labs/selene-db.git", branch = "development", version = "1" }
-selene-algorithms = { git = "ssh://git@github.com/Aionforge-Labs/selene-db.git", branch = "development", version = "1" }
+selene-core = { git = "https://github.com/Aionforge-Labs/selene-db.git", branch = "development", version = "1" }
+selene-graph = { git = "https://github.com/Aionforge-Labs/selene-db.git", branch = "development", version = "1" }
+selene-persist = { git = "https://github.com/Aionforge-Labs/selene-db.git", branch = "development", version = "1" }
+selene-gql = { git = "https://github.com/Aionforge-Labs/selene-db.git", branch = "development", version = "1" }
+selene-algorithms = { git = "https://github.com/Aionforge-Labs/selene-db.git", branch = "development", version = "1" }
 
 # Co-development escape hatch: to build against a local selene-db checkout instead of
 # the fetched branch, uncomment and point these at your sibling checkout. Do not
 # commit the uncommented form.
-# [patch."ssh://git@github.com/Aionforge-Labs/selene-db.git"]
+# [patch."https://github.com/Aionforge-Labs/selene-db.git"]
 # selene-core = { path = "../selene-db/crates/selene-core" }
 # selene-graph = { path = "../selene-db/crates/selene-graph" }
 # selene-persist = { path = "../selene-db/crates/selene-persist" }

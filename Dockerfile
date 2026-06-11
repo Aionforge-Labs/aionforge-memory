@@ -3,16 +3,15 @@
 FROM rust:1.95.0-alpine3.23 AS builder
 
 ENV CARGO_NET_GIT_FETCH_WITH_CLI=true
-ENV GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=accept-new"
 
 WORKDIR /workspace
 
 # hadolint ignore=DL3018
-RUN apk add --no-cache ca-certificates git openssh-client
+RUN apk add --no-cache ca-certificates git
 
 COPY . .
 
-RUN --mount=type=ssh,required=true cargo build --locked --release -p aionforge-cli
+RUN cargo build --locked --release -p aionforge-cli
 
 FROM scratch AS binary-artifact
 

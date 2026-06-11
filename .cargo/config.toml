@@ -1,7 +1,6 @@
-# Fetch git dependencies with the system `git` binary so cargo uses the developer's
-# SSH key and credential helper. The selene-db substrate is a private repo pinned as
-# a git dependency (see the root Cargo.toml); libgit2's built-in SSH auth is
-# unreliable for private repos, so we shell out to git for the fetch. No secrets live
-# here; this is safe to commit.
+# Fetch git dependencies with the system `git` binary so Cargo uses the same
+# credential helper, proxy, and certificate settings as the developer's shell.
+# The selene-db substrate is a public git dependency pinned in Cargo.lock; no
+# secrets live here.
 [net]
 git-fetch-with-cli = true

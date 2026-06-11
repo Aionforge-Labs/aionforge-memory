@@ -9,8 +9,7 @@
 #   - release.yml          on PRs into `main` (development -> main), as the pre-merge gate
 #   - release-publish.yml  on a version tag, as the pre-publish gate
 # Callers decide WHETHER to run it (e.g. skip drafts); this workflow has no
-# event-specific `if:` so every job runs whenever it is called. Callers pass
-# `secrets: inherit` so the selene-db deploy key is available.
+# event-specific `if:` so every job runs whenever it is called.
 #
 # Security: no `${{ github.event.* }}` in any `run:` (confined to if:/with:/env:).
 
@@ -47,10 +46,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - name: authenticate to the selene-db substrate
-        uses: webfactory/ssh-agent@v0.9.1
-        with:
-          ssh-private-key: ${{ secrets.SELENE_DB_DEPLOY_KEY }}
       - uses: dtolnay/rust-toolchain@1.95.0
         with:
           components: clippy
@@ -70,10 +65,6 @@ jobs:
       CARGO_PROFILE_TEST_DEBUG: 0
     steps:
       - uses: actions/checkout@v4
-      - name: authenticate to the selene-db substrate
-        uses: webfactory/ssh-agent@v0.9.1
-        with:
-          ssh-private-key: ${{ secrets.SELENE_DB_DEPLOY_KEY }}
       - uses: dtolnay/rust-toolchain@1.95.0
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
@@ -89,10 +80,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: authenticate to the selene-db substrate
-        uses: webfactory/ssh-agent@v0.9.1
-        with:
-          ssh-private-key: ${{ secrets.SELENE_DB_DEPLOY_KEY }}
       - uses: dtolnay/rust-toolchain@1.95.0
       - uses: Swatinem/rust-cache@v2
       - name: cargo doc
@@ -111,10 +98,6 @@ jobs:
       CARGO_PROFILE_TEST_DEBUG: 0
     steps:
       - uses: actions/checkout@v4
-      - name: authenticate to the selene-db substrate
-        uses: webfactory/ssh-agent@v0.9.1
-        with:
-          ssh-private-key: ${{ secrets.SELENE_DB_DEPLOY_KEY }}
       - uses: dtolnay/rust-toolchain@1.95.0
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
@@ -128,12 +111,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # Run cargo-deny on the host (not the container action) so its `cargo metadata`
-      # can reach the SSH agent to fetch the selene-db git dependency.
-      - name: authenticate to the selene-db substrate
-        uses: webfactory/ssh-agent@v0.9.1
-        with:
-          ssh-private-key: ${{ secrets.SELENE_DB_DEPLOY_KEY }}
       - uses: dtolnay/rust-toolchain@1.95.0
       - uses: taiki-e/install-action@v2
         with:
@@ -145,10 +122,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: authenticate to the selene-db substrate
-        uses: webfactory/ssh-agent@v0.9.1
-        with:
-          ssh-private-key: ${{ secrets.SELENE_DB_DEPLOY_KEY }}
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-audit
@@ -164,10 +137,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: authenticate to the selene-db substrate
-        uses: webfactory/ssh-agent@v0.9.1
-        with:
-          ssh-private-key: ${{ secrets.SELENE_DB_DEPLOY_KEY }}
       - uses: dtolnay/rust-toolchain@1.95.0
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
@@ -234,12 +203,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # The Dockerfile (when it lands) must fetch the selene-db git dependency with a
-      # BuildKit SSH mount (docker build --ssh); this loads the deploy key for that.
-      - name: authenticate to the selene-db substrate
-        uses: webfactory/ssh-agent@v0.9.1
-        with:
-          ssh-private-key: ${{ secrets.SELENE_DB_DEPLOY_KEY }}
       - uses: hadolint/hadolint-action@v3.1.0
         with:
           dockerfile: Dockerfile
@@ -247,6 +210,5 @@ jobs:
         with:
           context: .
           push: false
-          ssh: default
 
   # M7 benchmark gates are deferred with M7 and will be added when that milestone lands.
