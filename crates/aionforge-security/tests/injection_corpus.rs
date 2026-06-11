@@ -191,11 +191,12 @@ fn corpus_curates_clean_and_holds_the_false_positive_ceiling() {
 
     // The filter is not inert — it blocks some injections and the per-marker tally is
     // populated (the M6.T03 hit-count plumbing). The block-rate FLOOR is pinned in the
-    // gate PR against the hardened set's observed number: measure-first, never relaxed to
-    // pass. Observed here with the default (pre-M6.T03) markers: blocked 5/263 = 1.9%,
-    // per-marker {ignore_previous: 4, you_are_now: 1}. The remaining ~98% is the no-phrase
-    // bucket a capture-time string filter cannot reach (semantic / role-play injection,
-    // handled recall-side in M6.T02 and by the M6.T04 probes).
+    // next (gate) PR against this observed number: measure-first, never relaxed to pass.
+    // Observed with the hardened M6.T03 marker set: blocked 31/263 = 11.8%, per-marker
+    // {forget_everything: 15, ignore_or_forget_context: 14, reveal_system_prompt: 4,
+    // role_override_persona: 1}. The remaining 232/263 = 88.2% is the no-phrase bucket a
+    // capture-time string filter cannot reach (semantic / role-play injection, handled
+    // recall-side in M6.T02 and by the M6.T04 probes).
     assert!(
         report.blocked > 0,
         "the marker filter blocks at least some injections"
