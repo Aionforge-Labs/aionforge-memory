@@ -181,6 +181,10 @@ docker run --rm \
   aionforge-memory:dev
 ```
 
+On Apple silicon Macs running macOS 26, the same OCI image can run with Apple's
+`container` runtime. See [Apple container](docs/apple-container.md) for the
+local build/run helper and named-container persistence notes.
+
 Persistent stores require an owner-only data directory on Unix. A fresh
 directory is created as `0700`; an existing directory with group or other access,
 or a symlink, is refused. For Docker bind mounts, make the host directory owned
