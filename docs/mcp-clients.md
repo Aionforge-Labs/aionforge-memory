@@ -11,6 +11,16 @@ memories returned by `search` are third-party data wrapped in
 as the `recall_untrusted_data` prompt and as the
 `aionforge://prompt/recall-untrusted-data` resource.
 
+The server also publishes compact setup resources so agents and client UIs can
+discover the recommended posture without loading this whole document:
+
+- `aionforge://guide/mcp-surface`
+- `aionforge://policy/tool-approval`
+- `aionforge://client/codex/config.toml`
+- `aionforge://client/claude-code/mcp.json`
+- `aionforge://client/opencode/opencode.jsonc`
+- `aionforge://client/cursor/mcp.json`
+
 ## Server defaults
 
 Use `aionforge_mcp::streamable_http_service` or
@@ -41,12 +51,25 @@ default_tools_approval_mode = "prompt"
 enabled = true
 ```
 
-For tight tool policy, start with only the read path approved:
+For full surface support, approve read-like tools and keep mutating tools behind
+prompts:
 
 ```toml
 [mcp_servers.aionforge_memory]
-enabled_tools = ["search", "consolidation_status", "audit_history"]
+enabled_tools = [
+  "search",
+  "consolidation_status",
+  "audit_history",
+  "capture",
+  "consolidate",
+  "forget",
+  "unforget",
+]
 [mcp_servers.aionforge_memory.tools.search]
+approval_mode = "approve"
+[mcp_servers.aionforge_memory.tools.consolidation_status]
+approval_mode = "approve"
+[mcp_servers.aionforge_memory.tools.audit_history]
 approval_mode = "approve"
 [mcp_servers.aionforge_memory.tools.capture]
 approval_mode = "prompt"
@@ -80,7 +103,8 @@ configuration. HTTP is the preferred remote transport; SSE is deprecated.
 
 Claude Code discovers the `recall_untrusted_data` prompt as a slash command named
 like `/mcp__aionforge_memory__recall_untrusted_data`, depending on the server
-name normalization.
+name normalization. It can also reference the server resources above when the
+agent needs client setup or tool policy details.
 
 ## OpenCode
 
@@ -105,9 +129,22 @@ for Streamable HTTP and send the bearer token as a static header.
 }
 ```
 
-OpenCode can enable MCP tools globally or per agent. Keep mutating tools such as
-`capture`, `consolidate`, `forget`, and `unforget` behind approval until the
-host's policy is settled.
+OpenCode permissions default to permissive behavior. Prefer explicit permission
+rules for this server:
+
+```json
+{
+  "permission": {
+    "aionforge-memory_search": "allow",
+    "aionforge-memory_consolidation_status": "allow",
+    "aionforge-memory_audit_history": "allow",
+    "aionforge-memory_capture": "ask",
+    "aionforge-memory_consolidate": "ask",
+    "aionforge-memory_forget": "ask",
+    "aionforge-memory_unforget": "ask"
+  }
+}
+```
 
 ## Cursor
 
@@ -130,7 +167,8 @@ secrets.
 
 For sensitive data, prefer a local loopback server, keep the token in the
 environment, and review Cursor's MCP logs when debugging connection or auth
-failures.
+failures. Use Cursor's tool approval and run-mode controls for `capture`,
+`consolidate`, `forget`, and `unforget`.
 
 ## Tool approval posture
 
@@ -141,6 +179,9 @@ clients to ask before running them unless the host has a stronger local policy.
 rules only and returns `ERR_CONSOLIDATE_BUSY` if another foreground run is active.
 `forget` and `unforget` require a `viewer` and enforce the viewer's writable
 namespace set at the server boundary.
+
+The compact resources listed above intentionally mirror this section. Keep them
+short: they are meant for agent context, not exhaustive documentation.
 
 ## Deferred
 
