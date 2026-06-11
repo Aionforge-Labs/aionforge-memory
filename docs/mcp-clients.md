@@ -69,6 +69,40 @@ Default HTTP posture:
   authenticates one agent id, and identity-bearing tools reject mismatched
   `agent_id` or `viewer` values.
 
+## Multi-agent bearer tokens and rotation
+
+Use one bearer token per agent principal. Repeat `--bearer-token-agent-env` for
+each agent that should reach the HTTP server:
+
+```bash
+export AIONFORGE_CODEX_AGENT_ID=018f0cc0-40f3-7cc4-b8b4-9ca41f88d012
+export AIONFORGE_CODEX_MCP_TOKEN="$(openssl rand -hex 32)"
+export AIONFORGE_CLAUDE_AGENT_ID=018f0cc0-40f3-7cc4-b8b4-9ca41f88d013
+export AIONFORGE_CLAUDE_MCP_TOKEN="$(openssl rand -hex 32)"
+
+aionforge serve http --listen 127.0.0.1:3918 \
+  --bearer-token-agent-env AIONFORGE_CODEX_AGENT_ID=AIONFORGE_CODEX_MCP_TOKEN \
+  --bearer-token-agent-env AIONFORGE_CLAUDE_AGENT_ID=AIONFORGE_CLAUDE_MCP_TOKEN
+```
+
+The accepted token determines the authenticated principal. Tools that carry
+identity, such as `capture.agent_id` or `search.viewer`, must match that
+principal or the request is refused with `ERR_AUTH_PRINCIPAL_MISMATCH`. Do not
+reuse one token across multiple agents.
+
+Rotate a token by overlap:
+
+1. Mint a new token in a new environment variable for the same agent id.
+2. Restart the server with both old and new token bindings present. The CLI reads
+   token env vars at startup; it does not hot-reload them.
+3. Update the client or upstream verifier to use the new token.
+4. Verify with a read-only request such as `server_status` or a narrow `search`.
+5. Remove the retired token binding and restart again.
+
+For OAuth deployments, rotate the verifier's internal principal-bound bearer
+tokens the same way. Inbound MCP access tokens should be validated at the
+verifier and never passed through to the Aionforge MCP service.
+
 ## OAuth Readiness
 
 The built-in bearer wrapper is a local/private deployment guard, not a complete
