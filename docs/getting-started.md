@@ -114,6 +114,10 @@ docker run --rm \
   aionforge-memory:dev
 ```
 
+Apple silicon Macs running macOS 26 can use Apple's `container` runtime with the
+published OCI image. See [Apple container](apple-container.md) for the local run
+helper and persistence notes.
+
 For bind mounts, create the host directory as UID/GID `10001:10001` and mode
 `0700` before starting the container.
 
