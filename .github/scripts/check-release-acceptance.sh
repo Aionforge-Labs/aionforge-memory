@@ -115,11 +115,11 @@ require_grep ".github/workflows/release-publish.yml" "--verify-tag" \
 require_grep "Dockerfile" "FROM alpine:" "Alpine runtime image"
 require_grep "Dockerfile" "USER 10001:10001" "non-root runtime user"
 require_grep "Dockerfile" "chmod 700 /data" "owner-only container data dir"
-require_grep "Dockerfile" "--bearer-token-env" "authenticated HTTP default command"
+require_grep "Dockerfile" "--bearer-token-agent-env" "authenticated HTTP default command"
 require_grep "Dockerfile.release" "FROM alpine:" "release Alpine runtime image"
 require_grep "Dockerfile.release" "USER 10001:10001" "release non-root runtime user"
 require_grep "Dockerfile.release" "chmod 700 /data" "release owner-only container data dir"
-require_grep "Dockerfile.release" "--bearer-token-env" "release authenticated HTTP default command"
+require_grep "Dockerfile.release" "--bearer-token-agent-env" "release authenticated HTTP default command"
 require_grep "examples/production.toml" "signed_writes = true" \
   "production signed-write posture"
 require_grep "examples/production.toml" "sign_audit_events = true" \

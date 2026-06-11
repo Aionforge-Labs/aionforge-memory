@@ -58,6 +58,19 @@ have stamped a clock. The stamp is a separate column the reliability refold neve
 touches, the reduction is computed at rank time and never written back, and it expires
 when the comparison stops applying — no write ever un-cools a fact.
 
+## Sanitized regression corpus
+
+`crates/aionforge-retrieval/tests/corpus` carries a small project-memory regression
+corpus. The rows are hand-curated from recurring public engineering patterns in this
+repository's memory workflow, then generalized before commit. They are not a raw memory
+export and they do not make a benchmark claim.
+
+The harness in `project_corpus.rs` re-checks the fixture scrub rules before recall runs:
+no secret-shaped strings, emails, UUIDs, host-specific paths, macOS temporary-directory
+labels, home-directory labels, or local planning-note labels. The recall assertions then
+pin a few operational queries, including the disk-pressure case that should stay anchored
+on the exact lexical memory even when dense-near operational noise is present.
+
 ## RRF fusion
 
 Signals are fused by Reciprocal Rank Fusion. Each candidate's fused score is the weighted
