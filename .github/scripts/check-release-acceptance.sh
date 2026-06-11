@@ -35,6 +35,7 @@ require_file ".github/workflows/release-gate.yml"
 require_file ".github/workflows/release.yml"
 require_file ".github/workflows/release-publish.yml"
 require_file "Dockerfile"
+require_file "Dockerfile.release"
 require_file "examples/production.toml"
 require_file "docs/getting-started.md"
 require_file "docs/embedding-guide.md"
@@ -75,8 +76,8 @@ require_grep ".github/workflows/release-gate.yml" "docker image build + hadolint
   "Docker build gate"
 require_grep ".github/workflows/release-gate.yml" "docker/setup-buildx-action@v3" \
   "Docker buildx release gate setup"
-require_grep ".github/workflows/release-gate.yml" "docker/setup-qemu-action@v3" \
-  "Docker arm64 emulation release gate setup"
+require_grep ".github/workflows/release-gate.yml" "ubuntu-24.04-arm" \
+  "native arm64 Docker release gate runner"
 require_grep ".github/workflows/release-gate.yml" "check-release-acceptance.sh" \
   "M8 release acceptance gate"
 
@@ -92,7 +93,13 @@ require_grep ".github/workflows/release-publish.yml" "linux/amd64,linux/arm64" \
 require_grep ".github/workflows/release-publish.yml" "docker/setup-buildx-action@v3" \
   "multi-platform publish buildx setup"
 require_grep ".github/workflows/release-publish.yml" "docker/setup-qemu-action@v3" \
-  "multi-platform publish arm64 emulation setup"
+  "multi-platform runtime assembly arm64 emulation setup"
+require_grep ".github/workflows/release-publish.yml" "ubuntu-24.04-arm" \
+  "native arm64 Linux binary runner"
+require_grep ".github/workflows/release-publish.yml" "actions/download-artifact@v4" \
+  "GHCR runtime image reuses Linux binary artifacts"
+require_grep ".github/workflows/release-publish.yml" "Dockerfile.release" \
+  "release runtime image Dockerfile"
 require_grep ".github/workflows/release-publish.yml" "crates.io publishing is intentionally deferred" \
   "crates.io deferral note"
 require_grep ".github/workflows/release-publish.yml" "gh release create" \
@@ -105,6 +112,10 @@ require_grep "Dockerfile" "FROM alpine:" "Alpine runtime image"
 require_grep "Dockerfile" "USER 10001:10001" "non-root runtime user"
 require_grep "Dockerfile" "chmod 700 /data" "owner-only container data dir"
 require_grep "Dockerfile" "--bearer-token-env" "authenticated HTTP default command"
+require_grep "Dockerfile.release" "FROM alpine:" "release Alpine runtime image"
+require_grep "Dockerfile.release" "USER 10001:10001" "release non-root runtime user"
+require_grep "Dockerfile.release" "chmod 700 /data" "release owner-only container data dir"
+require_grep "Dockerfile.release" "--bearer-token-env" "release authenticated HTTP default command"
 require_grep "examples/production.toml" "signed_writes = true" \
   "production signed-write posture"
 require_grep "examples/production.toml" "sign_audit_events = true" \

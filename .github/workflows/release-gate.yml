@@ -3,7 +3,8 @@
 # The single source of truth for the heavyweight checks: full build, lint, tests,
 # doctests across ubuntu + macOS (spec scopes Linux + macOS only — no Windows),
 # dependency audit + license/source checks, third-party attribution currency, the
-# repository gates, and the Docker image build once a Dockerfile exists.
+# repository gates, and native-architecture Docker image builds once a Dockerfile
+# exists.
 #
 # Called by:
 #   - release.yml          on PRs into `main` (development -> main), as the pre-merge gate
@@ -197,23 +198,35 @@ jobs:
           fi
 
   docker-build:
-    name: docker image build + hadolint
+    name: docker image build + hadolint (${{ matrix.platform }})
     needs: detect
     if: needs.detect.outputs.dockerfile == 'true'
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            cache-scope: source-image-amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            cache-scope: source-image-arm64
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: hadolint/hadolint-action@v3.1.0
         with:
           dockerfile: Dockerfile
-      - uses: docker/setup-qemu-action@v3
+      - uses: hadolint/hadolint-action@v3.1.0
         with:
-          platforms: arm64
+          dockerfile: Dockerfile.release
       - uses: docker/setup-buildx-action@v3
       - uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ matrix.platform }}
           push: false
+          cache-from: type=gha,scope=${{ matrix.cache-scope }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.cache-scope }}
 
   # M7 benchmark gates are deferred with M7 and will be added when that milestone lands.

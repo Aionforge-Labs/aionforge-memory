@@ -12,7 +12,8 @@
 # crates.io publishing is intentionally deferred until the selene-db 1.x crates
 # that Aionforge depends on are available from crates.io.
 #
-# workflow_dispatch runs the gate only (a dry run); publishing requires a tag push.
+# workflow_dispatch runs the gate plus artifact/image build dry run by default;
+# publishing still requires a tag push.
 #
 # Security: no `${{ github.event.* }}` in any `run:` (confined to if:/with:/env:).
 
@@ -23,6 +24,11 @@ on:
     tags:
       - "v*.*.*"
   workflow_dispatch:
+    inputs:
+      build_artifacts:
+        description: Build release binaries and the GHCR image without publishing.
+        type: boolean
+        default: true
 
 concurrency:
   group: release-publish-${{ github.ref }}
@@ -45,21 +51,22 @@ jobs:
   linux-binaries:
     name: linux binary (${{ matrix.target }})
     needs: gate
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || inputs.build_artifacts
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-musl
             platform: linux/amd64
+            runner: ubuntu-latest
+            cache-scope: linux-binary-amd64
           - target: aarch64-unknown-linux-musl
             platform: linux/arm64
-    runs-on: ubuntu-latest
+            runner: ubuntu-24.04-arm
+            cache-scope: linux-binary-arm64
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
       - uses: docker/setup-buildx-action@v3
       - name: build Alpine binary artifact
         uses: docker/build-push-action@v6
@@ -68,6 +75,8 @@ jobs:
           target: binary-artifact
           platforms: ${{ matrix.platform }}
           outputs: type=local,dest=dist/${{ matrix.target }}
+          cache-from: type=gha,scope=${{ matrix.cache-scope }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.cache-scope }}
       - name: package binary
         run: |
           chmod +x "dist/${{ matrix.target }}/aionforge"
@@ -117,41 +126,74 @@ jobs:
 
   container-image:
     name: container image
-    needs: gate
-    if: github.event_name == 'push'
+    needs:
+      - gate
+      - linux-binaries
+    if: github.event_name == 'push' || inputs.build_artifacts
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: read
       packages: write
     steps:
       - uses: actions/checkout@v4
+      - name: download Linux binary artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: aionforge-*-unknown-linux-musl
+          path: dist/linux-artifacts
       - uses: docker/setup-qemu-action@v3
         with:
           platforms: arm64
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
+        if: github.event_name == 'push'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
-      - name: build and push Alpine runtime image
+      - name: prepare runtime image binaries
+        run: |
+          mkdir -p dist/docker/linux/amd64 dist/docker/linux/arm64
+          tar -xzf dist/linux-artifacts/aionforge-x86_64-unknown-linux-musl/aionforge-x86_64-unknown-linux-musl.tar.gz \
+            -C dist/docker/linux/amd64
+          tar -xzf dist/linux-artifacts/aionforge-aarch64-unknown-linux-musl/aionforge-aarch64-unknown-linux-musl.tar.gz \
+            -C dist/docker/linux/arm64
+          chmod +x dist/docker/linux/amd64/aionforge dist/docker/linux/arm64/aionforge
+      - name: compute runtime image metadata
+        id: image
         env:
           TAG: ${{ github.ref_name }}
         run: |
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
-          version="${TAG#v}"
-          tags=(--tag "$image:$version")
-          if [[ "$version" != *-* ]]; then
-            tags+=(--tag "$image:latest")
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            version="${TAG#v}"
+          else
+            version="dry-run"
           fi
-          docker buildx build \
-            --platform linux/amd64,linux/arm64 \
-            --push \
-            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
-            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
-            --label "org.opencontainers.image.version=$version" \
-            "${tags[@]}" \
-            .
+          {
+            echo "tags<<EOF"
+            echo "$image:$version"
+            if [[ "$version" != *-* && "$version" != "dry-run" ]]; then
+              echo "$image:latest"
+            fi
+            echo "EOF"
+            echo "version=$version"
+          } >> "$GITHUB_OUTPUT"
+      - name: build release runtime image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.release
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name == 'push' }}
+          tags: ${{ steps.image.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.image.outputs.version }}
+          cache-from: type=gha,scope=runtime-image
+          cache-to: type=gha,mode=max,scope=runtime-image
 
   publish:
     name: publish github release
@@ -160,7 +202,7 @@ jobs:
       - linux-binaries
       - macos-binaries
       - container-image
-    # Publish only on an actual tag push; a manual dispatch is a gate-only dry run.
+    # Publish only on an actual tag push; manual dispatch is a dry run.
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
