@@ -41,6 +41,25 @@ fn temp_dir(label: &str) -> PathBuf {
     dir
 }
 
+#[cfg(unix)]
+fn mode_of(path: &std::path::Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::metadata(path)
+        .expect("path exists")
+        .permissions()
+        .mode()
+        & 0o777
+}
+
+#[cfg(unix)]
+fn set_mode(path: &std::path::Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+        .expect("set directory mode");
+}
+
 /// Insert a minimal valid Fact (every required field bound; `is_pinned`/`status` ride
 /// their schema defaults where applicable).
 fn insert_fact(store: &Store, id: &str, subject: &str) {
@@ -151,6 +170,60 @@ fn superseded_by(store: &Store, from: &Id) -> (String, String) {
         }
         other => panic!("unexpected query result: {other:?}"),
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn open_persistent_creates_owner_only_data_dir() {
+    let dir = temp_dir("owner-only-dir");
+
+    let store =
+        Store::open_persistent(&dir, StoreConfig::default()).expect("open persistent store");
+    assert_eq!(mode_of(&dir), 0o700);
+    drop(store);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn open_persistent_refuses_group_or_other_accessible_data_dir() {
+    let dir = temp_dir("loose-dir");
+    std::fs::create_dir_all(&dir).expect("create loose dir");
+    set_mode(&dir, 0o755);
+
+    let error = Store::open_persistent(&dir, StoreConfig::default())
+        .expect_err("loose data directory is refused");
+    assert!(
+        error.to_string().contains("looser than 0700"),
+        "unexpected error: {error}"
+    );
+
+    set_mode(&dir, 0o700);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn recover_refuses_group_or_other_accessible_data_dir() {
+    let dir = temp_dir("loose-recover-dir");
+    let config = StoreConfig::default();
+
+    {
+        let store =
+            Store::open_persistent_migrated(&dir, config, &now()).expect("open and migrate");
+        drop(store);
+    }
+
+    set_mode(&dir, 0o755);
+    let error = Store::recover(&dir, config).expect_err("loose recovery dir is refused");
+    assert!(
+        error.to_string().contains("looser than 0700"),
+        "unexpected error: {error}"
+    );
+
+    set_mode(&dir, 0o700);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
