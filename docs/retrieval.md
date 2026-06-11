@@ -68,8 +68,9 @@ export and they do not make a benchmark claim.
 The harness in `project_corpus.rs` re-checks the fixture scrub rules before recall runs:
 no secret-shaped strings, emails, UUIDs, host-specific paths, macOS temporary-directory
 labels, home-directory labels, or local planning-note labels. The recall assertions then
-pin a few operational queries, including the disk-pressure case that should stay anchored
-on the exact lexical memory even when dense-near operational noise is present.
+pin operational queries and corpus-level exact-top / reciprocal-rank thresholds, including
+the disk-pressure case that should stay anchored on the exact lexical memory even when
+dense-near operational noise is present.
 
 ## RRF fusion
 

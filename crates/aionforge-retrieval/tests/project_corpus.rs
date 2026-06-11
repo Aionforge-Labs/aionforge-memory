@@ -26,7 +26,9 @@ const QUERIES: &str = include_str!("corpus/project_queries.jsonl");
 const SOURCE: &str = "sanitized-project-memory-pattern";
 const DIMENSION: u32 = 8;
 const T0: &str = "2026-01-01T00:00:00Z[UTC]";
-const RECALL_NOW: &str = "2026-01-14T00:00:00Z[UTC]";
+const RECALL_NOW: &str = "2026-01-21T00:00:00Z[UTC]";
+const MIN_EXACT_TOP_RATE: f64 = 1.0;
+const MIN_MEAN_RECIPROCAL_RANK: f64 = 1.0;
 
 #[derive(Debug, Clone)]
 struct MemoryRow {
@@ -44,6 +46,33 @@ struct QueryRow {
     query: String,
     embedding: String,
     expected_top: String,
+}
+
+#[derive(Debug, Default)]
+struct CorpusMetrics {
+    queries: usize,
+    exact_top: usize,
+    reciprocal_rank_sum: f64,
+}
+
+impl CorpusMetrics {
+    fn observe(&mut self, rank: Option<usize>) {
+        self.queries += 1;
+        if rank == Some(0) {
+            self.exact_top += 1;
+        }
+        if let Some(rank) = rank {
+            self.reciprocal_rank_sum += 1.0 / (rank as f64 + 1.0);
+        }
+    }
+
+    fn exact_top_rate(&self) -> f64 {
+        self.exact_top as f64 / self.queries as f64
+    }
+
+    fn mean_reciprocal_rank(&self) -> f64 {
+        self.reciprocal_rank_sum / self.queries as f64
+    }
 }
 
 #[derive(Clone)]
@@ -160,6 +189,7 @@ fn embedding_for(topic: &str) -> Result<Embedding, FakeEmbedError> {
         "backup" => [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
         "retrieval" => [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
         "container" => [0.7, 0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        "public_docs" => [0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.5, 0.0],
         _ => return Err(FakeEmbedError),
     };
     Embedding::new(vector.to_vec()).map_err(|_| FakeEmbedError)
@@ -297,38 +327,58 @@ fn assert_scrubbed(memories: &[MemoryRow], queries: &[QueryRow]) {
 async fn sanitized_project_memory_corpus_recalls_expected_operational_notes() {
     let memories = parse_memories();
     let queries = parse_queries();
-    assert_eq!(memories.len(), 10, "memory fixture count is intentional");
-    assert_eq!(queries.len(), 6, "query fixture count is intentional");
+    assert_eq!(memories.len(), 12, "memory fixture count is intentional");
+    assert_eq!(queries.len(), 11, "query fixture count is intentional");
     assert_scrubbed(&memories, &queries);
 
     let by_id: HashMap<&str, &MemoryRow> =
         memories.iter().map(|row| (row.id.as_str(), row)).collect();
+    let id_by_text: HashMap<&str, &str> = memories
+        .iter()
+        .map(|row| (row.text.as_str(), row.id.as_str()))
+        .collect();
     let retriever = HybridRetriever::new(
         store_with(&memories),
         fake_embedder(&queries),
         RetrieverConfig::default(),
     );
 
+    let mut metrics = CorpusMetrics::default();
+    let mut failures = Vec::new();
+
     for query in queries {
         let expected = by_id
             .get(query.expected_top.as_str())
             .unwrap_or_else(|| panic!("{} references a known expected row", query.id));
         let bundle = recall(&retriever, &query.query).await;
+        let returned_ids: Vec<&str> = bundle
+            .structured
+            .iter()
+            .map(|entry| {
+                id_by_text
+                    .get(entry.content())
+                    .copied()
+                    .unwrap_or("unknown")
+            })
+            .collect();
+        let rank = returned_ids
+            .iter()
+            .position(|id| *id == query.expected_top.as_str());
+        metrics.observe(rank);
+
+        if rank != Some(0) {
+            failures.push(format!(
+                "{} expected {} first for `{}`, got {:?}",
+                query.id, expected.id, query.query, returned_ids
+            ));
+        }
+
         let top = bundle
             .structured
             .first()
             .unwrap_or_else(|| panic!("{} returned at least one memory", query.id));
 
-        assert_eq!(
-            top.content(),
-            expected.text,
-            "{} should recall {} first for `{}`",
-            query.id,
-            expected.id,
-            query.query
-        );
-
-        if query.id == "pq-0001" {
+        if query.id == "pq-0001" && rank == Some(0) {
             let signals: Vec<Signal> = top
                 .contributions()
                 .iter()
@@ -347,4 +397,24 @@ async fn sanitized_project_memory_corpus_recalls_expected_operational_notes() {
             );
         }
     }
+
+    assert!(
+        failures.is_empty(),
+        "project-memory corpus regressions:\n{}",
+        failures.join("\n")
+    );
+    assert!(
+        metrics.exact_top_rate() >= MIN_EXACT_TOP_RATE,
+        "exact-top rate {:.3} fell below {:.3} over {} queries",
+        metrics.exact_top_rate(),
+        MIN_EXACT_TOP_RATE,
+        metrics.queries
+    );
+    assert!(
+        metrics.mean_reciprocal_rank() >= MIN_MEAN_RECIPROCAL_RANK,
+        "mean reciprocal rank {:.3} fell below {:.3} over {} queries",
+        metrics.mean_reciprocal_rank(),
+        MIN_MEAN_RECIPROCAL_RANK,
+        metrics.queries
+    );
 }
