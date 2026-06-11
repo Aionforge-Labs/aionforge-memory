@@ -19,7 +19,7 @@
 //! winner whichever side it is on, so a stale assertion arriving after a newer incumbent is
 //! retired into history rather than lingering as a second current value.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use aionforge_domain::ids::Id;
 use aionforge_domain::namespace::Namespace;
@@ -43,6 +43,13 @@ pub(crate) struct CurrentFact {
     pub valid_from: Timestamp,
     /// The fact's derivation/writer trust (drives the quarantine decision).
     pub trust: f64,
+    /// Whether the episode's writer-asserted supersedes hint names this fact's supporting
+    /// episode (04 §1 step 3). A hinted incumbent is supersession-eligible even when its
+    /// predicate is not in the functional registry — but only with at-least-equal trust:
+    /// the registry is owner-declared schema knowledge, the hint is just a writer claim,
+    /// so a lower-trust hint routes to the contradiction path (and its quarantine
+    /// asymmetry) instead of silently retiring a higher-trust fact.
+    pub hint_eligible: bool,
 }
 
 /// The instructions detection produced for one episode.
@@ -82,8 +89,17 @@ pub(crate) fn detect(
     // Boston for `based_in`) against an NYC incumbent: routing every retirement to the single
     // survivor means NYC and the loser each get exactly one `SUPERSEDED_BY` edge to the
     // winner, so correctness does not rest on the store absorbing redundant,
-    // differently-targeted supersessions of one incumbent.
-    let survivors = functional_survivors(new_facts, cfg);
+    // differently-targeted supersessions of one incumbent. Hinted (subject, predicate)
+    // pairs join the survivor map for the same single-edge-target reason — a hinted
+    // multi-valued pair retires its incumbents to ONE new fact, while the new sibling
+    // facts all stay current (multi-valued stays multi-valued; only `detect_intra_episode_ties`
+    // retires peers, and it remains functional-only).
+    let hinted_pairs: BTreeSet<(String, String)> = current
+        .iter()
+        .filter(|c| c.hint_eligible)
+        .map(|c| (c.key.subject_id.to_string(), c.key.predicate.clone()))
+        .collect();
+    let survivors = survivors_for(new_facts, cfg, &hinted_pairs);
 
     // New facts vs the committed current set, scoped to the same (subject, predicate).
     for materialized in new_facts {
@@ -98,7 +114,14 @@ pub(crate) fn detect(
             if incumbent.key.object == new_key.object {
                 continue; // the same triple — T04a dedup handles it, not a conflict
             }
-            if rule.functional && is_survivor {
+            // A writer-hinted incumbent supersedes like a functional slot, but only with
+            // at-least-equal trust (see `CurrentFact::hint_eligible`): the hint widens
+            // WHICH pairs are compared, never who wins a trust fight. A lower-trust hint
+            // against this incumbent falls through to the contradiction arm below, whose
+            // victim/quarantine rules already protect the higher-trust side.
+            let hint_supersedes =
+                incumbent.hint_eligible && materialized.fact.stats.trust >= incumbent.trust;
+            if (rule.functional || hint_supersedes) && is_survivor {
                 // The single functional slot is settled by the K1 order (see the module
                 // doc): the winner is a pure function of the two assertions, so the same
                 // object ends up current under any consolidation order. The loser is
@@ -112,10 +135,15 @@ pub(crate) fn detect(
                     // The new assertion wins (strictly later, or the tie-winning object):
                     // it retires the incumbent. Its window closes at the new event time,
                     // which is >= the incumbent's here, so the closed window stays ordered.
+                    let reason = if rule.functional {
+                        "functional predicate superseded by a newer assertion"
+                    } else {
+                        "writer-hinted supersession of a replaced episode's fact"
+                    };
                     out.supersessions.push(Supersession {
                         old_fact: incumbent.key.clone(),
                         new_fact: new_key.clone(),
-                        reason: "functional predicate superseded by a newer assertion".to_string(),
+                        reason: reason.to_string(),
                         valid_from: captured_at.clone(),
                     });
                 } else {
@@ -133,7 +161,9 @@ pub(crate) fn detect(
                         valid_from: incumbent.valid_from.clone(),
                     });
                 }
-            } else if mutually_exclusive(&rule, &incumbent.key.object, &new_key.object) {
+            } else if mutually_exclusive(&rule, &incumbent.key.object, &new_key.object)
+                || (incumbent.hint_eligible && !hint_supersedes && !rule.functional)
+            {
                 // The contradiction's victim — the `CONTRADICTS` source, which the
                 // `current_support_facts` provider excludes from recall by edge presence
                 // (store providers.rs, `exclude_outgoing(CONTRADICTS)`), regardless of the
@@ -197,22 +227,26 @@ pub(crate) fn detect(
     out
 }
 
-/// The winning new fact id for each functional `(subject, predicate)` the episode asserts:
-/// the one whose object sorts first under [`object_order_key`]. Every fact in an episode
-/// shares the episode's `captured_at`, so the K1 order reduces here to the object order —
-/// the same rule the cross-episode comparison uses, so intra- and cross-episode survivors
-/// agree by construction. This is the single survivor every functional retirement — of an
-/// incumbent or of a losing peer — points at, so the rule lives in exactly one place and
-/// `detect` and `detect_intra_episode_ties` cannot disagree about who won.
-fn functional_survivors(
+/// The winning new fact id for each functional — or writer-hinted — `(subject, predicate)`
+/// the episode asserts: the one whose object sorts first under [`object_order_key`]. Every
+/// fact in an episode shares the episode's `captured_at`, so the K1 order reduces here to
+/// the object order — the same rule the cross-episode comparison uses, so intra- and
+/// cross-episode survivors agree by construction. This is the single survivor every
+/// retirement — of an incumbent or of a losing functional peer — points at, so the rule
+/// lives in exactly one place and `detect` and `detect_intra_episode_ties` cannot disagree
+/// about who won. Hinted pairs need a survivor for the same one-edge-per-incumbent reason,
+/// but their losing peers are NOT retired (a multi-valued predicate stays multi-valued).
+fn survivors_for(
     new_facts: &[MaterializedFact],
     cfg: &DetectionConfig,
+    hinted_pairs: &BTreeSet<(String, String)>,
 ) -> BTreeMap<(String, String), String> {
     // group -> (winning object order key, winning fact id)
     let mut survivors: BTreeMap<(String, String), (String, String)> = BTreeMap::new();
     for materialized in new_facts {
         let key = fact_key(&materialized.fact);
-        if !cfg.rule(&key.predicate).functional {
+        let group_key = (key.subject_id.to_string(), key.predicate.clone());
+        if !cfg.rule(&key.predicate).functional && !hinted_pairs.contains(&group_key) {
             continue;
         }
         let group = (key.subject_id.to_string(), key.predicate);
@@ -302,572 +336,4 @@ fn fact_key(fact: &Fact) -> FactKey {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use aionforge_domain::blocks::{Identity, Stats};
-    use aionforge_domain::edges::About;
-    use aionforge_domain::nodes::forensic::AuditKind;
-    use aionforge_domain::nodes::semantic::FactStatus;
-    use aionforge_domain::time::BiTemporal;
-
-    use crate::config::PredicateRule;
-
-    fn ts(text: &str) -> Timestamp {
-        text.parse().expect("valid zoned datetime literal")
-    }
-
-    /// 09:00 — the incumbent's `valid_from` in most cases.
-    fn t1() -> Timestamp {
-        ts("2026-06-06T09:00:00Z[UTC]")
-    }
-
-    /// 11:00 — the new episode's `captured_at` (strictly after `t1`).
-    fn t2() -> Timestamp {
-        ts("2026-06-06T11:00:00Z[UTC]")
-    }
-
-    fn ns() -> Namespace {
-        Namespace::Agent("tester".to_string())
-    }
-
-    fn stats(trust: f64) -> Stats {
-        Stats {
-            importance: 0.5,
-            trust,
-            last_access: t1(),
-            access_count_recent: 0,
-            referenced_count: 0,
-            surprise: 0.0,
-            is_pinned: false,
-        }
-    }
-
-    /// A committed current fact opened at `t1`, with the given trust.
-    fn current(subject: &Id, predicate: &str, object: ObjectValue, trust: f64) -> CurrentFact {
-        current_at(subject, predicate, object, t1(), trust)
-    }
-
-    /// A committed current fact opened at an explicit `valid_from`, with the given trust.
-    fn current_at(
-        subject: &Id,
-        predicate: &str,
-        object: ObjectValue,
-        valid_from: Timestamp,
-        trust: f64,
-    ) -> CurrentFact {
-        CurrentFact {
-            id: Id::generate(),
-            key: FactKey {
-                subject_id: *subject,
-                predicate: predicate.to_string(),
-                object,
-            },
-            valid_from,
-            trust,
-        }
-    }
-
-    /// A new materialized fact with an explicit id (so tie-break ordering is decidable).
-    fn mfact_with_id(
-        id: Id,
-        subject: &Id,
-        predicate: &str,
-        object: ObjectValue,
-    ) -> MaterializedFact {
-        MaterializedFact {
-            fact: Fact {
-                identity: Identity {
-                    id,
-                    ingested_at: t2(),
-                    namespace: ns(),
-                    expired_at: None,
-                },
-                stats: stats(0.9),
-                subject_id: *subject,
-                predicate: predicate.to_string(),
-                object,
-                confidence: 0.9,
-                status: FactStatus::Active,
-                statement: String::new(),
-                embedding: None,
-                embedder_model: None,
-                extraction: None,
-                cooled_until: None,
-            },
-            about: About {
-                temporal: BiTemporal {
-                    valid_from: t2(),
-                    valid_to: None,
-                    ingested_at: t2(),
-                    expired_at: None,
-                },
-            },
-        }
-    }
-
-    fn mfact(subject: &Id, predicate: &str, object: ObjectValue) -> MaterializedFact {
-        mfact_with_id(Id::generate(), subject, predicate, object)
-    }
-
-    /// A new materialized fact with an explicit writer trust (drives the contradiction
-    /// quarantine decision).
-    fn mfact_trust(
-        subject: &Id,
-        predicate: &str,
-        object: ObjectValue,
-        trust: f64,
-    ) -> MaterializedFact {
-        let mut materialized = mfact(subject, predicate, object);
-        materialized.fact.stats.trust = trust;
-        materialized
-    }
-
-    fn text(value: &str) -> ObjectValue {
-        ObjectValue::Text(value.to_string())
-    }
-
-    /// Run detection with the standard event/transaction times and a throwaway actor.
-    fn run(
-        current: &[CurrentFact],
-        new: &[MaterializedFact],
-        cfg: &DetectionConfig,
-    ) -> DetectionOutput {
-        detect(current, new, cfg, &ns(), &t2(), &t2(), &Id::generate())
-    }
-
-    #[test]
-    fn functional_predicate_supersedes_on_a_newer_object() {
-        let cfg = DetectionConfig::with_default_rules(); // `based_in` is functional
-        let subject = Id::generate();
-        let cur = vec![current(&subject, "based_in", text("NYC"), 0.9)];
-        let new = vec![mfact(&subject, "based_in", text("SF"))];
-
-        let out = run(&cur, &new, &cfg);
-
-        assert_eq!(out.supersessions.len(), 1, "one supersession");
-        assert!(
-            out.contradictions.is_empty(),
-            "supersession, not contradiction"
-        );
-        let s = &out.supersessions[0];
-        assert_eq!(
-            s.old_fact.object,
-            text("NYC"),
-            "the prior object is retired"
-        );
-        assert_eq!(s.new_fact.object, text("SF"), "the newer object wins");
-        assert_eq!(
-            s.valid_from,
-            t2(),
-            "the window closes at the new event time"
-        );
-    }
-
-    #[test]
-    fn multi_valued_predicate_is_additive() {
-        // `knows` is unregistered, so it is multi-valued and its objects are independent.
-        let cfg = DetectionConfig::with_default_rules();
-        let subject = Id::generate();
-        let cur = vec![current(&subject, "knows", text("Rust"), 0.9)];
-        let new = vec![mfact(&subject, "knows", text("Go"))];
-
-        let out = run(&cur, &new, &cfg);
-
-        assert!(out.supersessions.is_empty(), "additive: nothing is retired");
-        assert!(
-            out.contradictions.is_empty(),
-            "independent objects do not conflict"
-        );
-    }
-
-    #[test]
-    fn opposite_booleans_contradict_and_a_high_trust_incumbent_quarantines() {
-        let cfg = DetectionConfig::with_default_rules(); // boolean inversion is always on
-        let subject = Id::generate();
-        let cur = vec![current(&subject, "is_up", ObjectValue::Bool(true), 0.9)];
-        let new = vec![mfact(&subject, "is_up", ObjectValue::Bool(false))];
-
-        let out = run(&cur, &new, &cfg);
-
-        assert!(
-            out.supersessions.is_empty(),
-            "is_up is multi-valued, not functional"
-        );
-        assert_eq!(out.contradictions.len(), 1, "one contradiction");
-        assert!(
-            out.contradictions[0].quarantine_source,
-            "a high-trust pair quarantines the victim"
-        );
-        // The victim (the quarantined CONTRADICTS source) is the smaller object order on a
-        // trust tie: object_order_key(false) < object_order_key(true), so `false` is the
-        // victim — here that is the new fact, but by the symmetric rule, not by being new.
-        assert_eq!(
-            out.contradictions[0].source_fact.object,
-            ObjectValue::Bool(false),
-            "the smaller-object-order side is the victim"
-        );
-        assert_eq!(
-            out.audits.len(),
-            1,
-            "the quarantine raises one reconcile signal"
-        );
-        assert_eq!(out.audits[0].kind, AuditKind::Quarantine);
-    }
-
-    #[test]
-    fn a_symmetric_low_trust_contradiction_records_without_quarantine() {
-        // Both sides below the high-trust bar: the contradiction is still recorded, the victim
-        // is still chosen symmetrically (smaller object order), but neither side is quarantined
-        // — max trust does not clear the threshold.
-        let cfg = DetectionConfig::with_default_rules();
-        let subject = Id::generate();
-        let cur = vec![current(&subject, "is_up", ObjectValue::Bool(true), 0.5)];
-        let new = vec![mfact_trust(
-            &subject,
-            "is_up",
-            ObjectValue::Bool(false),
-            0.5,
-        )];
-
-        let out = run(&cur, &new, &cfg);
-
-        assert_eq!(out.contradictions.len(), 1, "still recorded");
-        assert!(
-            !out.contradictions[0].quarantine_source,
-            "below the trust threshold neither side is quarantined"
-        );
-        assert_eq!(
-            out.contradictions[0].source_fact.object,
-            ObjectValue::Bool(false),
-            "the victim is still the smaller object order, deterministically"
-        );
-        assert!(out.audits.is_empty(), "no quarantine, no reconcile signal");
-    }
-
-    #[test]
-    fn the_lower_trust_side_is_the_victim_in_either_arrival_order() {
-        // up@0.5 vs down@0.9, mutually exclusive. The lower-trust side is the victim (the
-        // quarantined CONTRADICTS source) regardless of which side is the incumbent — including
-        // the direction the old incumbent-keyed rule could never produce: a higher-trust
-        // newcomer quarantining the lower-trust incumbent, with the audit naming the incumbent.
-        let cfg = DetectionConfig::with_default_rules();
-        let subject = Id::generate();
-
-        // The low-trust `true` is the incumbent; the high-trust `false` arrives and wins.
-        let incumbent = current(&subject, "is_up", ObjectValue::Bool(true), 0.5);
-        let incumbent_id = incumbent.id;
-        let a = detect(
-            &[incumbent],
-            &[mfact_trust(
-                &subject,
-                "is_up",
-                ObjectValue::Bool(false),
-                0.9,
-            )],
-            &cfg,
-            &ns(),
-            &t2(),
-            &t2(),
-            &Id::generate(),
-        );
-        assert_eq!(a.contradictions.len(), 1);
-        assert_eq!(
-            a.contradictions[0].source_fact.object,
-            ObjectValue::Bool(true),
-            "the lower-trust incumbent is the victim/source"
-        );
-        assert_eq!(
-            a.contradictions[0].target_fact.object,
-            ObjectValue::Bool(false),
-            "the higher-trust newcomer survives as the target"
-        );
-        assert!(
-            a.contradictions[0].quarantine_source,
-            "max trust 0.9 clears the bar"
-        );
-        assert_eq!(
-            a.audits[0].subject_id, incumbent_id,
-            "the audit names the quarantined incumbent, not the new fact"
-        );
-
-        // Mirror arrival order: the high-trust `false` is the incumbent, the low-trust `true`
-        // arrives. The same low-trust `true` is the victim, so the contradiction converges.
-        let b = detect(
-            &[current(&subject, "is_up", ObjectValue::Bool(false), 0.9)],
-            &[mfact_trust(&subject, "is_up", ObjectValue::Bool(true), 0.5)],
-            &cfg,
-            &ns(),
-            &t2(),
-            &t2(),
-            &Id::generate(),
-        );
-        assert_eq!(
-            b.contradictions[0].source_fact.object,
-            ObjectValue::Bool(true),
-            "the same low-trust side is the victim in the reverse order"
-        );
-        assert_eq!(
-            a.contradictions[0].source_fact.object, b.contradictions[0].source_fact.object,
-            "the victim is identical in both arrival orders — the contradiction converges"
-        );
-    }
-
-    #[test]
-    fn a_configured_antonym_pair_contradicts_order_insensitively() {
-        let mut cfg = DetectionConfig::with_default_rules();
-        cfg.predicates.insert(
-            "status".to_string(),
-            PredicateRule {
-                functional: false,
-                contradicts: vec![(text("up"), text("down"))],
-            },
-        );
-        let subject = Id::generate();
-
-        let forward = run(
-            &[current(&subject, "status", text("up"), 0.9)],
-            &[mfact(&subject, "status", text("down"))],
-            &cfg,
-        );
-        assert_eq!(forward.contradictions.len(), 1, "up vs down contradicts");
-
-        let reverse = run(
-            &[current(&subject, "status", text("down"), 0.9)],
-            &[mfact(&subject, "status", text("up"))],
-            &cfg,
-        );
-        assert_eq!(
-            reverse.contradictions.len(),
-            1,
-            "down vs up contradicts too"
-        );
-
-        // The victim is identical regardless of which side arrived first: equal trust, so the
-        // smaller object order ('down' < 'up') is the victim in BOTH orders. This is the
-        // arrival-order-symmetry the old incumbent-keyed rule lacked.
-        assert_eq!(
-            forward.contradictions[0].source_fact.object,
-            text("down"),
-            "'down' is the victim when 'up' is the incumbent"
-        );
-        assert_eq!(
-            reverse.contradictions[0].source_fact.object,
-            text("down"),
-            "'down' is still the victim when 'down' is the incumbent"
-        );
-    }
-
-    #[test]
-    fn the_same_triple_is_dedup_not_a_conflict() {
-        let cfg = DetectionConfig::with_default_rules();
-        let subject = Id::generate();
-        let cur = vec![current(&subject, "based_in", text("NYC"), 0.9)];
-        let new = vec![mfact(&subject, "based_in", text("NYC"))];
-
-        let out = run(&cur, &new, &cfg);
-
-        assert!(
-            out.supersessions.is_empty(),
-            "an identical object is not superseded"
-        );
-        assert!(
-            out.contradictions.is_empty(),
-            "an identical object is not a conflict"
-        );
-    }
-
-    #[test]
-    fn an_intra_episode_functional_tie_keeps_the_lexicographically_smallest_object() {
-        let cfg = DetectionConfig::with_default_rules();
-        let subject = Id::generate();
-        // Two new facts for the same functional (subject, predicate) with different objects.
-        // They share the episode's captured_at, so the K1 order reduces to the object order:
-        // the survivor is the one whose object sorts first, decoupled from the (arrival-
-        // fragile) content-hash fact id the rule used to key on.
-        let nyc = mfact(&subject, "based_in", text("NYC"));
-        let sf = mfact(&subject, "based_in", text("SF"));
-
-        let out = run(&[], &[nyc.clone(), sf.clone()], &cfg);
-
-        assert_eq!(
-            out.supersessions.len(),
-            1,
-            "the tie yields one supersession"
-        );
-        let s = &out.supersessions[0];
-        assert_eq!(
-            s.new_fact.object,
-            text("NYC"),
-            "the smallest object order ('NYC' < 'SF') survives"
-        );
-        assert_eq!(s.old_fact.object, text("SF"), "the rest are retired by it");
-
-        // Swapping the input order keeps the same survivor — the tiebreak is on the object,
-        // not on input/arrival order.
-        let swapped = run(&[], &[sf, nyc], &cfg);
-        assert_eq!(swapped.supersessions.len(), 1);
-        assert_eq!(
-            swapped.supersessions[0].new_fact.object,
-            text("NYC"),
-            "survivor is independent of input order"
-        );
-    }
-
-    #[test]
-    fn detection_disabled_is_a_no_op() {
-        let mut cfg = DetectionConfig::with_default_rules();
-        cfg.enabled = false;
-        let subject = Id::generate();
-        let cur = vec![current(&subject, "based_in", text("NYC"), 0.9)];
-        let new = vec![mfact(&subject, "based_in", text("SF"))];
-
-        let out = run(&cur, &new, &cfg);
-
-        assert!(out.supersessions.is_empty());
-        assert!(out.contradictions.is_empty());
-        assert!(out.audits.is_empty());
-    }
-
-    #[test]
-    fn a_stale_assertion_is_superseded_by_a_newer_incumbent() {
-        // The incumbent opens at 11:00; the "new" fact's event time is 09:00 — older. A
-        // functional slot holds exactly one current object, so the stale assertion does not
-        // become a second current value (the old forward-only guard's divergence): it is born
-        // superseded by the newer incumbent, retained in history with a closed window.
-        let cfg = DetectionConfig::with_default_rules();
-        let subject = Id::generate();
-        let cur = vec![CurrentFact {
-            id: Id::generate(),
-            key: FactKey {
-                subject_id: subject,
-                predicate: "based_in".to_string(),
-                object: text("SF"),
-            },
-            valid_from: t2(),
-            trust: 0.9,
-        }];
-        let new = vec![mfact(&subject, "based_in", text("NYC"))];
-
-        let out = detect(&cur, &new, &cfg, &ns(), &t1(), &t1(), &Id::generate());
-
-        assert_eq!(
-            out.supersessions.len(),
-            1,
-            "the stale assertion is retired by the incumbent, not left additive"
-        );
-        let s = &out.supersessions[0];
-        assert_eq!(
-            s.old_fact.object,
-            text("NYC"),
-            "the stale new fact is the side that is superseded"
-        );
-        assert_eq!(
-            s.new_fact.object,
-            text("SF"),
-            "the newer incumbent is the survivor"
-        );
-        assert_eq!(
-            s.valid_from,
-            t2(),
-            "the stale fact's window closes at the incumbent's valid_from"
-        );
-        assert!(
-            out.contradictions.is_empty(),
-            "a functional supersession, not a contradiction"
-        );
-    }
-
-    #[test]
-    fn equal_valid_from_functional_assertions_converge_regardless_of_incumbent() {
-        // Two functional assertions with the SAME event time but different objects. Whichever
-        // one is the committed incumbent, the winner of the single slot is the same — the
-        // smaller object order — so the outcome cannot depend on which arrived first. The
-        // simultaneous-tie convergence guard at the detect level.
-        let cfg = DetectionConfig::with_default_rules();
-        let subject = Id::generate();
-
-        // SF incumbent, NYC new, both at t2. 'NYC' < 'SF', so NYC wins the slot.
-        let sf_incumbent = vec![current_at(&subject, "based_in", text("SF"), t2(), 0.9)];
-        let nyc_new = vec![mfact(&subject, "based_in", text("NYC"))];
-        let a = detect(
-            &sf_incumbent,
-            &nyc_new,
-            &cfg,
-            &ns(),
-            &t2(),
-            &t2(),
-            &Id::generate(),
-        );
-
-        // The mirror arrival order: NYC incumbent, SF new, both at t2.
-        let nyc_incumbent = vec![current_at(&subject, "based_in", text("NYC"), t2(), 0.9)];
-        let sf_new = vec![mfact(&subject, "based_in", text("SF"))];
-        let b = detect(
-            &nyc_incumbent,
-            &sf_new,
-            &cfg,
-            &ns(),
-            &t2(),
-            &t2(),
-            &Id::generate(),
-        );
-
-        // In both orders the survivor is NYC and SF is the retired side — identical current
-        // state regardless of which assertion happened to be committed first.
-        assert_eq!(a.supersessions.len(), 1, "one supersession either way");
-        assert_eq!(b.supersessions.len(), 1, "one supersession either way");
-        assert_eq!(
-            a.supersessions[0].new_fact.object,
-            text("NYC"),
-            "NYC wins when SF is the incumbent"
-        );
-        assert_eq!(
-            b.supersessions[0].new_fact.object,
-            text("NYC"),
-            "NYC still wins when NYC is the incumbent (it retires the new SF)"
-        );
-        assert_eq!(a.supersessions[0].old_fact.object, text("SF"));
-        assert_eq!(b.supersessions[0].old_fact.object, text("SF"));
-    }
-
-    #[test]
-    fn one_incumbent_is_superseded_only_by_the_surviving_new_fact() {
-        // An episode asserts two new values (SF, Boston) for one functional predicate while
-        // an NYC incumbent stands. Every retirement must route to the single survivor — the
-        // object that sorts first, 'Boston' < 'SF' — so the incumbent is retired once (not
-        // once per new fact), and the losing peer is retired by that same survivor: no retired
-        // fact points at anything but the winner.
-        let cfg = DetectionConfig::with_default_rules();
-        let subject = Id::generate();
-        let sf = mfact(&subject, "based_in", text("SF"));
-        let boston = mfact(&subject, "based_in", text("Boston"));
-        // 'Boston' sorts before 'SF', so Boston is the survivor regardless of fact ids.
-        let cur = vec![current(&subject, "based_in", text("NYC"), 0.9)];
-
-        let out = run(&cur, &[sf.clone(), boston.clone()], &cfg);
-
-        assert_eq!(
-            out.supersessions.len(),
-            2,
-            "the incumbent and the losing peer are each retired exactly once"
-        );
-        assert!(
-            out.supersessions
-                .iter()
-                .all(|s| s.new_fact.object == text("Boston")),
-            "every retirement points at the single survivor (Boston), not a losing peer: {:?}",
-            out.supersessions
-        );
-        let retired: Vec<ObjectValue> = out
-            .supersessions
-            .iter()
-            .map(|s| s.old_fact.object.clone())
-            .collect();
-        assert!(retired.contains(&text("NYC")), "the incumbent is retired");
-        assert!(retired.contains(&text("SF")), "the losing peer is retired");
-        assert!(
-            out.contradictions.is_empty(),
-            "supersession, not contradiction"
-        );
-    }
-}
+mod tests;

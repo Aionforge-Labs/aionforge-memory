@@ -492,6 +492,23 @@ impl<X, E, S> FactExtractionPass<X, E, S> {
             .iter()
             .map(|m| (m.fact.subject_id.to_string(), m.fact.predicate.clone()))
             .collect();
+        // The episode's writer-asserted supersedes hint (04 §1 step 3): resolve the hinted
+        // episode to the fact ids it SUPPORTS, so those incumbents become supersession-
+        // eligible even off the functional registry. The hint acts only through fact
+        // overlap — a hinted fact whose (subject, predicate) the new facts never touch is
+        // untouched, and a hint that resolves to no facts is a recorded no-op. The
+        // namespace guard below still applies: a hinted episode in another namespace
+        // (a trusted cross-namespace capture) contributes nothing here.
+        let hinted: HashSet<Id> = match episode.origin.as_ref().and_then(|o| o.supersedes) {
+            None => HashSet::new(),
+            Some(target) => store
+                .fact_ids_supported_by_episode(&target)
+                .map_err(|error| {
+                    PassError::Transient(format!("hinted-episode fact read failed: {error}"))
+                })?
+                .into_iter()
+                .collect(),
+        };
         let members = store
             .candidate_state_members(CandidateSet::CurrentSupportFacts)
             .map_err(|error| {
@@ -524,6 +541,7 @@ impl<X, E, S> FactExtractionPass<X, E, S> {
             };
             current.push(CurrentFact {
                 id: fact.identity.id,
+                hint_eligible: hinted.contains(&fact.identity.id),
                 key: FactKey {
                     subject_id: fact.subject_id,
                     predicate: fact.predicate,

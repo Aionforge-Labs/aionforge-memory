@@ -552,6 +552,30 @@ impl Store {
 
     /// The node ids of every fact whose subject is `subject`, from a fresh snapshot.
     ///
+    /// The domain ids of facts this episode supports, via its outgoing `SUPPORTS` edges.
+    ///
+    /// The supersedes-hint consumption probe (04 §1 step 3): consolidation resolves a
+    /// hinted episode to the facts it evidences, so the hint can widen supersession
+    /// detection to exactly those incumbents. `Episode.id` is scalar-indexed and the
+    /// traversal is one hop from a single node. Returns an empty list for a missing
+    /// episode or one that supports nothing — both mean "the hint touches no facts".
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] if the query fails or an id cannot decode.
+    pub fn fact_ids_supported_by_episode(&self, episode: &Id) -> Result<Vec<Id>, StoreError> {
+        let query = BoundQuery::new(
+            "MATCH (e:Episode)-[:SUPPORTS]->(f:Fact) WHERE e.id = $id RETURN f.id AS id",
+        )
+        .bind_uuid("id", episode)?;
+        match self.execute(&query)? {
+            QueryResult::Rows(rows) => (0..rows.row_count())
+                .filter_map(|i| rows.value(i, 0))
+                .map(as_id)
+                .collect(),
+            _ => Ok(Vec::new()),
+        }
+    }
+
     /// `Fact.subject_id` is scalar-indexed, so this is a probe, not a scan. The
     /// high-precision retrieval path (M2.T08) uses it to turn the entities a query
     /// mentions into a bounded fact candidate seed it composes with the
