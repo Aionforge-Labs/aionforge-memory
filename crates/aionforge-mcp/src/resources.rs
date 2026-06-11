@@ -160,6 +160,8 @@ Local test paths:
 - Cursor: symlink the directory into ~/.cursor/plugins/local/aionforge-memory.
 - Codex: use .agents/plugins/marketplace.json from the repo root.
 - Codex root manifest: plugin.json also points at .mcp.json, so Codex gets one authenticated aionforge_memory server.
+- Codex update: run update_plugin_cachebuster.py, then codex plugin add aionforge-memory@aionforge-plugins.
+- Confirm with codex plugin list; start a new Codex thread after reinstall so refreshed skills and MCP tools load.
 - Codex plugin policy: copy plugins/aionforge-memory/codex.plugin-policy.example.toml into config.toml if you want read-like tools approved and mutating tools prompted under plugins."aionforge-memory@aionforge-plugins".mcp_servers.aionforge_memory.
 
 Recall safety:

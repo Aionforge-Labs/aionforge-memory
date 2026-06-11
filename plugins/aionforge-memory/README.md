@@ -36,6 +36,8 @@ Codex can discover this repo plugin through `.agents/plugins/marketplace.json`. 
 
 After installing the plugin, use `codex plugin list` to confirm the marketplace-qualified plugin id. The repo marketplace id is `aionforge-memory@aionforge-plugins`. For a safer default tool posture, copy the policy shape from `codex.plugin-policy.example.toml` into `~/.codex/config.toml`: read-like tools are approved, and mutating tools stay prompted.
 
+For local plugin updates, change the Codex cachebuster rather than editing marketplace files. Run the plugin-creator `update_plugin_cachebuster.py` helper against `plugins/aionforge-memory`, reinstall with `codex plugin add aionforge-memory@aionforge-plugins`, confirm the id with `codex plugin list`, then start a new Codex thread so the refreshed skills and MCP tools load.
+
 Claude Code can test the plugin directly:
 
 ```bash

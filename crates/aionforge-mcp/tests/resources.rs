@@ -285,6 +285,8 @@ async fn mcp_transport_lists_client_policy_resources() -> TestResult {
     assert!(plugin.contains("memory-maintenance"));
     assert!(plugin.contains("aionforge-memory-steward"));
     assert!(plugin.contains("memory-session"));
+    assert!(plugin.contains("update_plugin_cachebuster.py"));
+    assert!(plugin.contains("codex plugin add aionforge-memory@aionforge-plugins"));
     assert!(plugin.contains("codex.plugin-policy.example.toml"));
 
     client.cancel().await?;

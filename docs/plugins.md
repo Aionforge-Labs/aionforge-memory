@@ -64,6 +64,24 @@ config shape when you want plugin-scoped MCP policy. It keeps read-like tools
 approved and mutating tools prompted under
 `plugins."aionforge-memory@aionforge-plugins".mcp_servers.aionforge_memory`.
 
+## Codex Update Loop
+
+During local plugin iteration, do not edit marketplace files by hand. Update the
+Codex cachebuster, reinstall from the marketplace id, then start a new Codex
+thread so the refreshed skills and MCP tools are loaded:
+
+```bash
+python3 /path/to/plugin-creator/scripts/update_plugin_cachebuster.py \
+  plugins/aionforge-memory
+codex plugin add aionforge-memory@aionforge-plugins
+codex plugin list
+```
+
+The cachebuster is the `version` suffix in
+`plugins/aionforge-memory/.codex-plugin/plugin.json`; it should change when the
+package changes. `codex plugin list` should show
+`aionforge-memory@aionforge-plugins`, matching the repo marketplace id above.
+
 Claude Code can test the package directly:
 
 ```bash
