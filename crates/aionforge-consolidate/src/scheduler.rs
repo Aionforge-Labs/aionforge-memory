@@ -22,10 +22,11 @@ use std::{sync::Arc, time::Instant};
 use aionforge_domain::blocks::Identity;
 use aionforge_domain::ids::Id;
 use aionforge_domain::namespace::Namespace;
-use aionforge_domain::nodes::episodic::{ConsolidationState, Episode};
+use aionforge_domain::nodes::episodic::{ConsolidationState, Episode, Role};
 use aionforge_domain::nodes::forensic::{AuditEvent, AuditKind};
 use aionforge_domain::time::Timestamp;
 use aionforge_store::{ConsolidationCursor, ConsolidationWorkItem, Store};
+use tracing::Instrument;
 
 use crate::clock::{Clock, SystemClock};
 use crate::config::ConsolidationConfig;
@@ -111,7 +112,18 @@ impl<C: Clock> Consolidator<C> {
     /// returned [`TickReport`].
     pub async fn tick_once(&self) -> Result<TickReport, ConsolidationError> {
         let started = Instant::now();
-        let result = self.tick_once_inner().await;
+        let span = tracing::info_span!(
+            "aionforge.consolidation.tick",
+            batch_size = self.config.batch_size as u64,
+            outcome = tracing::field::Empty,
+            error = tracing::field::Empty,
+            consolidated = tracing::field::Empty,
+            retried = tracing::field::Empty,
+            failed = tracing::field::Empty,
+            pending_after = tracing::field::Empty,
+        );
+        let result = self.tick_once_inner().instrument(span.clone()).await;
+        record_tick_span(&span, &result);
         match &result {
             Ok(report) => emit_tick_metrics(report, started.elapsed()),
             Err(error) => emit_tick_error_metrics(error, started.elapsed()),
@@ -211,6 +223,26 @@ impl<C: Clock> Consolidator<C> {
         &self,
         item: &ConsolidationWorkItem,
     ) -> Result<EpisodeOutcome, ConsolidationError> {
+        let span = tracing::info_span!(
+            "aionforge.consolidation.episode",
+            role = role_label(item.episode.role),
+            namespace = namespace_label(&item.episode.identity.namespace),
+            state = state_label(item.episode.consolidation_state),
+            outcome = tracing::field::Empty,
+            error = tracing::field::Empty,
+        );
+        let result = self
+            .process_episode_inner(item)
+            .instrument(span.clone())
+            .await;
+        record_episode_span(&span, &result);
+        result
+    }
+
+    async fn process_episode_inner(
+        &self,
+        item: &ConsolidationWorkItem,
+    ) -> Result<EpisodeOutcome, ConsolidationError> {
         let now = self.clock.now();
         let rule_versions = self.rule_versions();
 
@@ -233,15 +265,25 @@ impl<C: Clock> Consolidator<C> {
                 now: now.clone(),
                 rule_versions: &rule_versions,
             };
-            let result =
-                match tokio::time::timeout(self.config.apply_timeout, pass.apply(&cx)).await {
-                    Ok(result) => result,
-                    Err(_elapsed) => Err(PassError::Transient(format!(
-                        "pass `{}` exceeded its {:?} timeout",
-                        pass.name(),
-                        self.config.apply_timeout
-                    ))),
-                };
+            let span = tracing::info_span!(
+                "aionforge.consolidation.pass",
+                pass = pass.name(),
+                version = pass.version(),
+                outcome = tracing::field::Empty,
+                error = tracing::field::Empty,
+            );
+            let result = match tokio::time::timeout(self.config.apply_timeout, pass.apply(&cx))
+                .instrument(span.clone())
+                .await
+            {
+                Ok(result) => result,
+                Err(_elapsed) => Err(PassError::Transient(format!(
+                    "pass `{}` exceeded its {:?} timeout",
+                    pass.name(),
+                    self.config.apply_timeout
+                ))),
+            };
+            record_pass_span(&span, &result);
             match result {
                 Ok(output) => artifacts.merge(output),
                 Err(error) => return self.handle_failure(item, pass.name(), &error, &now),
@@ -355,6 +397,99 @@ fn failure_audit_id(episode_id: &Id, attempt: u32) -> Id {
 /// versions, so forensic attribution survives a restart (not a per-process random value).
 fn scheduler_actor_id(rule_versions: &serde_json::Value) -> Id {
     Id::from_content_hash(format!("consolidation-scheduler|{rule_versions}").as_bytes())
+}
+
+fn record_tick_span(span: &tracing::Span, result: &Result<TickReport, ConsolidationError>) {
+    match result {
+        Ok(report) => {
+            span.record("outcome", "success");
+            span.record("error", "none");
+            span.record("consolidated", report.consolidated as u64);
+            span.record("retried", report.retried as u64);
+            span.record("failed", report.failed as u64);
+            span.record("pending_after", report.pending_after);
+        }
+        Err(error) => {
+            span.record("outcome", "error");
+            span.record("error", consolidation_error_label(error));
+        }
+    }
+}
+
+fn record_episode_span(span: &tracing::Span, result: &Result<EpisodeOutcome, ConsolidationError>) {
+    match result {
+        Ok(outcome) => {
+            span.record("outcome", episode_outcome_label(outcome));
+            span.record("error", "none");
+        }
+        Err(error) => {
+            span.record("outcome", "error");
+            span.record("error", consolidation_error_label(error));
+        }
+    }
+}
+
+fn record_pass_span(span: &tracing::Span, result: &Result<PassOutput, PassError>) {
+    match result {
+        Ok(_) => {
+            span.record("outcome", "success");
+            span.record("error", "none");
+        }
+        Err(error) => {
+            span.record("outcome", "error");
+            span.record("error", pass_error_label(error));
+        }
+    }
+}
+
+fn episode_outcome_label(outcome: &EpisodeOutcome) -> &'static str {
+    match outcome {
+        EpisodeOutcome::Consolidated => "consolidated",
+        EpisodeOutcome::Retried => "retried",
+        EpisodeOutcome::Failed => "failed",
+    }
+}
+
+fn consolidation_error_label(error: &ConsolidationError) -> &'static str {
+    match error {
+        ConsolidationError::Store(_) => "store",
+        ConsolidationError::Timeout(_) => "timeout",
+    }
+}
+
+fn pass_error_label(error: &PassError) -> &'static str {
+    match error {
+        PassError::Transient(_) => "transient",
+        PassError::Fatal(_) => "fatal",
+    }
+}
+
+fn role_label(role: Role) -> &'static str {
+    match role {
+        Role::User => "user",
+        Role::Assistant => "assistant",
+        Role::Tool => "tool",
+        Role::System => "system",
+        Role::Event => "event",
+    }
+}
+
+fn namespace_label(namespace: &Namespace) -> &'static str {
+    match namespace {
+        Namespace::Agent(_) => "agent",
+        Namespace::Team(_) => "team",
+        Namespace::Global => "global",
+        Namespace::System => "system",
+    }
+}
+
+fn state_label(state: ConsolidationState) -> &'static str {
+    match state {
+        ConsolidationState::Raw => "raw",
+        ConsolidationState::InProgress => "in_progress",
+        ConsolidationState::Consolidated => "consolidated",
+        ConsolidationState::Failed => "failed",
+    }
 }
 
 /// Emit the lag gauges and warn when the ceiling is breached.

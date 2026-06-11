@@ -1,9 +1,32 @@
 # Observability
 
-Aionforge emits metrics through the `metrics` facade. If a host installs no recorder,
-metric calls are no-ops. Metric labels are deliberately low-cardinality: no query text,
-memory content, namespace ids, agent ids, file paths, or model names are used as labels.
+Aionforge emits metrics through the `metrics` facade and spans through the `tracing`
+facade. If a host installs no recorder or subscriber, these calls are no-ops. Metric
+labels and span fields are deliberately low-cardinality: no query text, memory
+content, namespace ids, agent ids, file paths, request ids, or model names are used.
 Use audit reads and `aionforge doctor --json` for high-detail inspection.
+
+## Tracing
+
+Trace spans cover the capture, recall, and consolidation pipeline. They use stable
+operation names and bounded fields only:
+
+| Span | Fields | Meaning |
+|---|---|---|
+| `aionforge.capture` | `role`, `namespace`, `trusted`, `signed`, `outcome`, `verdict`, `embedding`, `error` | One capture request. `namespace` is the namespace kind (`agent`, `team`, `global`, `system`), never the namespace id. |
+| `aionforge.capture.stage` | `stage` | Fixed capture stages: `filter`, `embed`, and `commit`. |
+| `aionforge.recall` | `class`, `temporal`, `sensitive`, `include_expired`, `include_system`, `mode_override`, `deadline`, `fanout`, `limit`, `outcome`, `embedder`, `error`, `returned`, `candidates_considered`, `signals_run` | One recall request. The query text and principal id are never fields. |
+| `aionforge.recall.stage` | `stage` | Fixed recall stages, currently `classify` and `assemble`. |
+| `aionforge.recall.signal` | `signal`, `fanout` | Signal-level work for `query_embed`, `lexical`, `dense`, `support`, `graph`, `trust`, `importance`, and `recency`. |
+| `aionforge.consolidation.tick` | `batch_size`, `outcome`, `error`, `consolidated`, `retried`, `failed`, `pending_after` | One foreground or background consolidation tick. |
+| `aionforge.consolidation.episode` | `role`, `namespace`, `state`, `outcome`, `error` | One episode processed inside a tick. The episode id and content are never fields. |
+| `aionforge.consolidation.pass` | `pass`, `version`, `outcome`, `error` | One enabled consolidation pass applied to one episode. Pass names are stable rule identifiers from the registered pass set. |
+
+Error fields reuse the metric vocabulary where possible: capture errors use
+`filter`, `store`, `unauthorized`, `invalid_signature`, `clock_skew`,
+`provenance_unavailable`, or `system_role_not_writable`; recall errors use `store`
+or `deadline_exceeded`; consolidation tick errors use `store` or `timeout`; pass
+errors use `transient` or `fatal`.
 
 ## Capture
 

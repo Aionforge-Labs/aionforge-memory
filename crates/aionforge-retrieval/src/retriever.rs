@@ -30,6 +30,7 @@ use aionforge_domain::time::Timestamp;
 use aionforge_store::{
     CandidateSet, ExpandDirection, ExpandEdge, NodeId, SearchKind, SetOp, Store,
 };
+use tracing::Instrument;
 
 use crate::bundle::{
     CoreBlockEntry, EpisodeEntry, FactEntry, RecallBundle, RecallExplanation, StageTimings,
@@ -46,6 +47,7 @@ use crate::signals::{
     ranking_from_hits,
 };
 use crate::temporal::{fact_passes_temporal, fact_serialization_id};
+use crate::trace;
 
 /// The serialization-id kind tag for an episode (02 §10).
 const EPISODE_KIND_TAG: &str = "episode";
@@ -140,14 +142,23 @@ impl<E: Embedder> HybridRetriever<E> {
 
     /// Run one recall.
     async fn run(&self, query: RecallQuery) -> Result<RecallBundle, RetrievalError> {
+        let span = trace::recall_span(&query);
+        let result = self.run_inner(query).instrument(span.clone()).await;
+        trace::record_recall_result(&span, &result);
+        result
+    }
+
+    async fn run_inner(&self, query: RecallQuery) -> Result<RecallBundle, RetrievalError> {
         let started = Instant::now();
         let deadline = query.options.deadline.map(|budget| started + budget);
 
         // 1. Classify (or honor an override).
-        let profile = query
-            .options
-            .mode_override
-            .map_or_else(|| route(&query.text), profile_for);
+        let profile = trace::stage_span("classify").in_scope(|| {
+            query
+                .options
+                .mode_override
+                .map_or_else(|| route(&query.text), profile_for)
+        });
         let classify_ms = started.elapsed().as_millis();
         bail_if_past(deadline)?;
 
@@ -168,7 +179,9 @@ impl<E: Embedder> HybridRetriever<E> {
         // embedding is the embedder-down signal: every dense ranking is then skipped and
         // retrieval degrades to lexical (03 §6, §8.1).
         let query_embedding: Option<Embedding> = if profile.weights.dense > 0.0 {
-            let embedding = embed_query(&self.embedder, &query.text).await;
+            let embedding = embed_query(&self.embedder, &query.text)
+                .instrument(trace::query_embed_span(fanout))
+                .await;
             embedder_available = embedding.is_some();
             embedding
         } else {
@@ -196,6 +209,7 @@ impl<E: Embedder> HybridRetriever<E> {
         };
 
         if profile.weights.lexical > 0.0 {
+            let _signal_span = trace::signal_span(Signal::Lexical, fanout).entered();
             let episodes = lexical_ranking(&self.store, SearchKind::Episode, &query.text, fanout)?;
             let facts = self.fact_lexical_ranking(&query, current_facts.as_deref(), fanout)?;
             fact_nodes.extend(facts.candidates.iter().map(|c| c.node));
@@ -206,6 +220,7 @@ impl<E: Embedder> HybridRetriever<E> {
         bail_if_past(deadline)?;
 
         if let Some(embedding) = &query_embedding {
+            let _signal_span = trace::signal_span(Signal::Dense, fanout).entered();
             let episodes = dense_ranking_for(
                 &self.store,
                 SearchKind::Episode,
@@ -260,6 +275,7 @@ impl<E: Embedder> HybridRetriever<E> {
             && let Some(roots) = derive_graph_seed(&self.store, Some(embedding))?
             && !roots.is_empty()
         {
+            let _signal_span = trace::signal_span(Signal::Support, fanout).entered();
             let facts = self.fact_support_ranking(&roots, support_set, embedding, fanout)?;
             fact_nodes.extend(facts.candidates.iter().map(|c| c.node));
             rankings.push(WeightedRanking::new(profile.weights.support, facts));
@@ -281,6 +297,7 @@ impl<E: Embedder> HybridRetriever<E> {
             && let Some(seeds) =
                 resolve_seed_entities(&self.store, &query.text, query_embedding.as_ref())?
         {
+            let _signal_span = trace::signal_span(Signal::Graph, fanout).entered();
             let episodes = graph_ranking_for(&self.store, SearchKind::Episode, &seeds, fanout)?;
             let facts = self.fact_graph_ranking(&seeds, current_facts.as_deref(), fanout)?;
             fact_nodes.extend(facts.candidates.iter().map(|c| c.node));
@@ -298,6 +315,7 @@ impl<E: Embedder> HybridRetriever<E> {
         // routes each candidate by `fact_nodes` membership exactly as before. Skipped when the class
         // gives trust no weight or no signal produced a candidate.
         if profile.weights.trust > 0.0 {
+            let _signal_span = trace::signal_span(Signal::Trust, fanout).entered();
             let (fact_trust, episode_trust) =
                 self.trust_rankings(&rankings, &fact_nodes, query.options.now.as_ref())?;
             let ran = !fact_trust.candidates.is_empty() || !episode_trust.candidates.is_empty();
@@ -320,6 +338,7 @@ impl<E: Embedder> HybridRetriever<E> {
         if let Some(now) = &query.options.now {
             let (fact_set, episode_set) = rerank::surfaced(&rankings, &fact_nodes);
             if profile.weights.importance > 0.0 {
+                let _signal_span = trace::signal_span(Signal::Importance, fanout).entered();
                 let facts =
                     rerank::importance_ranking(&self.store, &fact_set, true, now, &self.config)?;
                 let episodes = rerank::importance_ranking(
@@ -342,6 +361,7 @@ impl<E: Embedder> HybridRetriever<E> {
             }
             bail_if_past(deadline)?;
             if profile.weights.recency > 0.0 {
+                let _signal_span = trace::signal_span(Signal::Recency, fanout).entered();
                 let facts = rerank::recency_ranking(&self.store, &fact_set, true)?;
                 let episodes = rerank::recency_ranking(&self.store, &episode_set, false)?;
                 let ran = !facts.candidates.is_empty() || !episodes.candidates.is_empty();
@@ -364,6 +384,7 @@ impl<E: Embedder> HybridRetriever<E> {
         //    reader's visible set is computed once here, through the injected authority,
         //    so every candidate is gated by the same O(1) membership check (06 §1).
         let assemble_started = Instant::now();
+        let _assemble_span = trace::stage_span("assemble").entered();
         let fused = fuse(&rankings, DEFAULT_RRF_K);
         // The admin reveal (07 §4, M6.T02): system-role memories surface only when the
         // caller requests it AND the injected authority grants the capability — the request
