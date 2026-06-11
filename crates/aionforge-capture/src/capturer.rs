@@ -22,6 +22,7 @@ use aionforge_domain::namespace::Namespace;
 use aionforge_domain::nodes::episodic::{ConsolidationState, Episode, Origin, Role};
 use aionforge_domain::nodes::forensic::{AuditEvent, AuditKind, ProvenanceRecord};
 use aionforge_store::Store;
+use tracing::Instrument;
 
 use crate::config::CaptureConfig;
 use crate::error::CaptureError;
@@ -89,6 +90,24 @@ where
 
     /// Run the capture path for one request.
     async fn run(&self, request: CaptureRequest) -> Result<CaptureReceipt, CaptureError> {
+        let namespace = enforce_namespace(&request);
+        let span = tracing::info_span!(
+            "aionforge.capture",
+            role = role_label(request.role),
+            namespace = namespace_label(&namespace),
+            trusted = request.trusted,
+            signed = request.writer.signed.is_some(),
+            outcome = tracing::field::Empty,
+            verdict = tracing::field::Empty,
+            embedding = tracing::field::Empty,
+            error = tracing::field::Empty,
+        );
+        let result = self.run_inner(request).instrument(span.clone()).await;
+        record_capture_span(&span, &result);
+        result
+    }
+
+    async fn run_inner(&self, request: CaptureRequest) -> Result<CaptureReceipt, CaptureError> {
         // 0. System-role write rule (07 §4, M6.T02). The `system` role marks
         //    substrate-internal content that default recall excludes. The capture funnel is
         //    the agent-facing write path, so it refuses a system-role write outright — from
@@ -107,10 +126,12 @@ where
 
         // 1. Privacy and injection filtering. Fail closed: if the filter errors we do
         //    not fall back to writing the raw content.
-        let outcome = self
-            .filter
-            .filter(&request.content)
-            .map_err(CaptureError::filter)?;
+        let outcome =
+            tracing::info_span!("aionforge.capture.stage", stage = "filter").in_scope(|| {
+                self.filter
+                    .filter(&request.content)
+                    .map_err(CaptureError::filter)
+            })?;
 
         // 1a. Marker-tuning observability (M6.T03, 07 §5). Emit the filter's per-marker
         //     applied-hit counts as a labeled counter so an operator can watch which injection
@@ -170,7 +191,13 @@ where
 
         // 4. Embedding. Degradable: a failure leaves the episode vector-less for
         //    consolidation to embed later, never blocking capture (§8.1).
-        let (embedding, embedding_outcome) = self.embed(&outcome.cleaned).await;
+        let (embedding, embedding_outcome) = self
+            .embed(&outcome.cleaned)
+            .instrument(tracing::info_span!(
+                "aionforge.capture.stage",
+                stage = "embed"
+            ))
+            .await;
 
         // 2. Deduplication, near half. Without a vector we cannot judge similarity, so
         //    the verdict is `New`. Episodes are immutable, so a near-duplicate is still
@@ -273,7 +300,8 @@ where
         let audit_id = audit.identity.id;
 
         // Write the episode, its provenance, and the audit event as one commit.
-        self.store.commit_capture(&episode, &provenance, &audit)?;
+        tracing::info_span!("aionforge.capture.stage", stage = "commit")
+            .in_scope(|| self.store.commit_capture(&episode, &provenance, &audit))?;
 
         Ok(CaptureReceipt {
             episode_id,
@@ -428,6 +456,70 @@ fn enforce_namespace(request: &CaptureRequest) -> Namespace {
         request.namespace.clone().unwrap_or(private)
     } else {
         private
+    }
+}
+
+fn record_capture_span(span: &tracing::Span, result: &Result<CaptureReceipt, CaptureError>) {
+    match result {
+        Ok(receipt) => {
+            span.record("outcome", "success");
+            span.record("verdict", capture_verdict_label(&receipt.verdict));
+            span.record("embedding", embedding_label(&receipt.embedding));
+            span.record("error", "none");
+        }
+        Err(error) => {
+            span.record("outcome", "error");
+            span.record("verdict", "none");
+            span.record("embedding", "none");
+            span.record("error", capture_error_label(error));
+        }
+    }
+}
+
+fn role_label(role: Role) -> &'static str {
+    match role {
+        Role::User => "user",
+        Role::Assistant => "assistant",
+        Role::Tool => "tool",
+        Role::System => "system",
+        Role::Event => "event",
+    }
+}
+
+fn namespace_label(namespace: &Namespace) -> &'static str {
+    match namespace {
+        Namespace::Agent(_) => "agent",
+        Namespace::Team(_) => "team",
+        Namespace::Global => "global",
+        Namespace::System => "system",
+    }
+}
+
+fn capture_verdict_label(verdict: &CaptureVerdict) -> &'static str {
+    match verdict {
+        CaptureVerdict::New => "new",
+        CaptureVerdict::ExactDuplicate => "exact_duplicate",
+        CaptureVerdict::NearDuplicate { .. } => "near_duplicate",
+    }
+}
+
+fn embedding_label(outcome: &EmbeddingOutcome) -> &'static str {
+    match outcome {
+        EmbeddingOutcome::Embedded => "embedded",
+        EmbeddingOutcome::Skipped(_) => "skipped",
+        EmbeddingOutcome::NotRequested => "not_requested",
+    }
+}
+
+fn capture_error_label(error: &CaptureError) -> &'static str {
+    match error {
+        CaptureError::Filter(_) => "filter",
+        CaptureError::Store(_) => "store",
+        CaptureError::Unauthorized(_) => "unauthorized",
+        CaptureError::InvalidSignature => "invalid_signature",
+        CaptureError::ClockSkew { .. } => "clock_skew",
+        CaptureError::ProvenanceUnavailable(_) => "provenance_unavailable",
+        CaptureError::SystemRoleNotWritable => "system_role_not_writable",
     }
 }
 

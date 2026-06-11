@@ -20,6 +20,7 @@ mod retriever;
 mod router;
 mod signals;
 mod temporal;
+mod trace;
 
 pub use aionforge_domain::authz::Principal;
 pub use bundle::{
