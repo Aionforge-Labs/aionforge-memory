@@ -124,6 +124,16 @@ extracted ones. It produces only instructions; the store materializes the edges 
 - **Mutually-exclusive** objects (the always-on boolean inversion rule, plus any configured antonym
   pairs) raise a `Contradiction`. The lower-trust side is the victim, deterministically and
   symmetrically — never keyed on which side happened to be the incumbent.
+- A **writer-hinted** incumbent — a current fact supported by the episode the writer's validated
+  `supersedes` hint names (see [capture](capture.md)) — is supersession-eligible even off the
+  functional registry, under the same K1 order. The hint widens *which* pairs are compared, never
+  who wins a trust fight: it supersedes only with at-least-equal trust, and a lower-trust hint
+  falls through to the contradiction arm, where the quarantine asymmetry already protects the
+  higher-trust side (the registry is owner-declared schema knowledge; a hint is just a writer
+  claim). The hint acts only through fact overlap — same `(subject, predicate)`, different object —
+  so a hint whose episode shares no extracted pairs with the new content is a recorded no-op, and a
+  hinted multi-valued pair retires its incumbent to exactly one survivor while the new sibling
+  values all stay current.
 
 ### Quarantine and the reconcile signal
 
