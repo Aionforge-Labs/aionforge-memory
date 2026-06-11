@@ -46,6 +46,7 @@ fn run_with_config(
         Err(error) => return Err(error),
     };
     let report = memory.doctor_report()?;
+    let persistence = persistence.refresh_wal();
     let rendered = if args.json {
         render_json(config_path, config.data_dir(), &persistence, &report)?
     } else {
@@ -65,6 +66,7 @@ fn run_with_config(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PersistenceProbe {
+    open_mode: &'static str,
     wal_path: PathBuf,
     wal_present: bool,
     wal_size_bytes: Option<u64>,
@@ -74,20 +76,36 @@ pub(crate) struct PersistenceProbe {
 impl PersistenceProbe {
     pub(crate) fn inspect(data_dir: &Path) -> Self {
         let wal_path = data_dir.join(Store::WAL_FILE_NAME);
+        let open_mode = if wal_path.is_file() {
+            "recover"
+        } else {
+            "fresh"
+        };
+        Self::from_wal_path(wal_path, open_mode)
+    }
+
+    fn refresh_wal(&self) -> Self {
+        Self::from_wal_path(self.wal_path.clone(), self.open_mode)
+    }
+
+    fn from_wal_path(wal_path: PathBuf, open_mode: &'static str) -> Self {
         match std::fs::metadata(&wal_path) {
             Ok(metadata) => Self {
+                open_mode,
                 wal_path,
                 wal_present: true,
                 wal_size_bytes: Some(metadata.len()),
                 wal_metadata_error: None,
             },
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Self {
+                open_mode,
                 wal_path,
                 wal_present: false,
                 wal_size_bytes: None,
                 wal_metadata_error: None,
             },
             Err(error) => Self {
+                open_mode,
                 wal_path,
                 wal_present: false,
                 wal_size_bytes: None,
@@ -97,7 +115,7 @@ impl PersistenceProbe {
     }
 
     fn mode(&self) -> &'static str {
-        if self.wal_present { "recover" } else { "fresh" }
+        self.open_mode
     }
 }
 
@@ -389,7 +407,7 @@ mod tests {
         assert_eq!(value["ok"], true);
         assert_eq!(value["store_open"]["ok"], true);
         assert_eq!(value["store_open"]["mode"], "fresh");
-        assert_eq!(value["persistence"]["wal"]["present"], false);
+        assert_eq!(value["persistence"]["wal"]["present"], true);
         assert_eq!(value["store"]["ok"], true);
         assert_eq!(value["embedder"]["model"]["dimension"], 1536);
         let _ = std::fs::remove_dir_all(dir);
