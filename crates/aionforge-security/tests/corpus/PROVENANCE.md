@@ -16,8 +16,11 @@ below is a manual discipline: re-verify it when refreshing a snapshot.
 | `notinject_benign.jsonl` | [leolee99/NotInject](https://huggingface.co/datasets/leolee99/NotInject) (InjecGuard, arXiv:2410.22770) | `847ae76cf8fea5ed325429e569ae8cfef022d2e0` | MIT | 339 (all benign) |
 
 Both licenses are permissive and on the workspace `deny.toml` / `about.toml`
-allow-list. Full license text and attribution: `LICENSE-deepset`,
-`LICENSE-NotInject`. Why these two: deepset/prompt-injections is a labeled
+allow-list. Full license text and attribution live at the repo root in
+`third-party-data/deepset-prompt-injections.LICENSE.txt` and
+`third-party-data/NotInject.LICENSE.txt` — kept outside the crate so the
+`cargo-about` license harvester does not misattribute the corpus licenses to
+`aionforge-security` itself. Why these two: deepset/prompt-injections is a labeled
 published injection corpus (the block-rate set); NotInject is a benign corpus
 built specifically from trigger words that over-trigger naive guards (the
 false-positive set — the hardest test for a regex/marker filter). Both are
