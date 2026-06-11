@@ -258,8 +258,9 @@ const COMPACT_SNIPPET_CHARS: usize = 160;
 
 impl RecallBundle {
     /// Render a token-thrifty view: a one-line summary, then one line per memory
-    /// (serialization id, role, score, snippet). `verbose` adds the namespace, trust,
-    /// and per-signal contributions as attributes on each memory line.
+    /// (serialization id, role, score, snippet). `verbose` adds a trusted route/signal
+    /// explanation plus the namespace, trust, and per-signal contributions as attributes
+    /// on each memory line.
     ///
     /// Memories are listed in fused score order (most relevant first) — the order a
     /// caller wants for a ranked result, with the score shown so the ranking is
@@ -289,6 +290,19 @@ impl RecallBundle {
             out.push_str(&format!(" | +{more} more"));
         }
         out.push('\n');
+        if verbose {
+            out.push_str(&format!(
+                "explain: route={route} embedder={embedder} signals={signals} weights={weights}\n",
+                route = class_tag(explanation.class),
+                embedder = if explanation.embedder_available {
+                    "up"
+                } else {
+                    "down(dense skipped)"
+                },
+                signals = signal_list(&explanation.signals_run),
+                weights = weight_list(&explanation.weights, &explanation.signals_run),
+            ));
+        }
 
         out.push_str(RECALLED_MEMORY_CONTEXT_OPEN);
         out.push('\n');
@@ -383,6 +397,34 @@ fn signal_tag(signal: Signal) -> &'static str {
         Signal::Recency => "recency",
         Signal::Importance => "importance",
         Signal::Trust => "trust",
+    }
+}
+
+/// A stable compact list of the signals that actually ran.
+fn signal_list(signals: &[Signal]) -> String {
+    if signals.is_empty() {
+        return "none".to_string();
+    }
+
+    signals
+        .iter()
+        .map(|signal| signal_tag(*signal))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// A stable compact list of non-zero weights for the signals that ran.
+fn weight_list(weights: &SignalWeights, signals_run: &[Signal]) -> String {
+    let rendered = signals_run
+        .iter()
+        .map(|signal| (*signal, weights.weight(*signal)))
+        .filter(|(_, weight)| *weight > 0.0)
+        .map(|(signal, weight)| format!("{}:{weight:.2}", signal_tag(signal)))
+        .collect::<Vec<_>>();
+    if rendered.is_empty() {
+        "none".to_string()
+    } else {
+        rendered.join(",")
     }
 }
 
@@ -486,4 +528,85 @@ fn attr_escape(value: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn compact_test_bundle() -> RecallBundle {
+        let id = Id::generate();
+        let entry = EpisodeEntry {
+            id,
+            serialization_id: SerializationId::derive("episode", id.to_string().as_bytes()),
+            namespace: Namespace::Agent("agent-a".to_string()),
+            role: Role::User,
+            ingested_at: ts("2026-06-06T09:30:00-05:00[America/Chicago]"),
+            expired_at: None,
+            trust: 0.8,
+            score: 1.0,
+            contributions: vec![
+                Contribution {
+                    signal: Signal::Lexical,
+                    rank: 0,
+                    weight: 1.0,
+                },
+                Contribution {
+                    signal: Signal::Dense,
+                    rank: 1,
+                    weight: 1.0,
+                },
+            ],
+            content: "ranked compact memory".to_string(),
+        };
+        RecallBundle {
+            structured: vec![StructuredEntry::Episode(entry)],
+            rendered: String::new(),
+            explanation: RecallExplanation {
+                class: QueryClass::SingleHopFactual,
+                weights: SignalWeights {
+                    lexical: 1.0,
+                    dense: 1.0,
+                    support: 0.0,
+                    graph: 0.3,
+                    recency: 0.3,
+                    importance: 0.3,
+                    trust: 1.0,
+                },
+                signals_run: vec![Signal::Lexical, Signal::Dense],
+                embedder_available: true,
+                candidates_considered: 1,
+                returned: 1,
+                timings_ms: StageTimings::default(),
+            },
+        }
+    }
+
+    fn ts(text: &str) -> Timestamp {
+        text.parse().expect("valid test timestamp")
+    }
+
+    #[test]
+    fn compact_verbose_explains_route_signals_and_active_weights() {
+        let bundle = compact_test_bundle();
+        let plain = bundle.render_compact(false);
+        let verbose = bundle.render_compact(true);
+
+        assert!(
+            !plain.contains("explain:"),
+            "non-verbose compact view stays terse: {plain}"
+        );
+        assert!(
+            verbose.starts_with(
+                "hits: 1 of 1 considered | class=single_hop_factual | embedder=up\n\
+                 explain: route=single_hop_factual embedder=up signals=lexical,dense \
+                 weights=lexical:1.00,dense:1.00\n"
+            ),
+            "verbose compact view explains the route and active signals: {verbose}"
+        );
+        assert!(
+            verbose.contains("via=\"lexical#0 dense#1\""),
+            "verbose memory lines keep per-hit contributions: {verbose}"
+        );
+    }
 }
