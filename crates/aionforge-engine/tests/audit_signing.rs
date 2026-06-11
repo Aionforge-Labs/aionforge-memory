@@ -84,8 +84,23 @@ fn temp_dir(label: &str) -> PathBuf {
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("create temp dir");
+    create_temp_dir(&dir);
     dir
+}
+
+#[cfg(unix)]
+fn create_temp_dir(dir: &std::path::Path) {
+    use std::os::unix::fs::DirBuilderExt;
+
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(dir)
+        .expect("create temp dir");
+}
+
+#[cfg(not(unix))]
+fn create_temp_dir(dir: &std::path::Path) {
+    std::fs::create_dir_all(dir).expect("create temp dir");
 }
 
 fn signing_config(data_dir: &std::path::Path) -> MemoryConfig {

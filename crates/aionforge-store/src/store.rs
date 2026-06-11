@@ -136,12 +136,7 @@ impl Store {
     /// (including when another writer already holds its lock), or the graph type or
     /// provider registration fails.
     pub fn open_persistent(dir: &Path, config: StoreConfig) -> Result<Self, StoreError> {
-        std::fs::create_dir_all(dir).map_err(|err| {
-            StoreError::persist(format!(
-                "cannot create the store directory {}: {err}",
-                dir.display()
-            ))
-        })?;
+        create_locked_store_dir(dir)?;
         let graph = SharedGraph::builder(graph_id())
             .with_wal(dir.join(DEFAULT_WAL_FILE_NAME), WalConfig::default())?
             .bound_to(empty_graph_type()?)?
@@ -190,6 +185,7 @@ impl Store {
     /// type drift, a recovered vector index whose dimension disagrees with `config`,
     /// or a replayed schema that still declares `AuditEvent.signature` immutable).
     pub fn recover(dir: &Path, config: StoreConfig) -> Result<Self, StoreError> {
+        vet_locked_store_dir(dir)?;
         let graph = SharedGraph::recover_closed_with_providers(
             dir,
             graph_id(),
@@ -777,6 +773,83 @@ fn emit_open_metrics(mode: &'static str, result: &Result<Store, StoreError>, ela
         "outcome" => outcome,
     )
     .record(elapsed.as_secs_f64());
+}
+
+#[cfg(unix)]
+fn create_locked_store_dir(dir: &Path) -> Result<(), StoreError> {
+    use std::os::unix::fs::DirBuilderExt;
+
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+        .or_else(|err| {
+            if err.kind() == std::io::ErrorKind::AlreadyExists {
+                Ok(())
+            } else {
+                Err(err)
+            }
+        })
+        .map_err(|err| {
+            StoreError::persist(format!(
+                "cannot create the store directory {}: {err}",
+                dir.display()
+            ))
+        })?;
+    vet_locked_store_dir(dir)
+}
+
+#[cfg(not(unix))]
+fn create_locked_store_dir(dir: &Path) -> Result<(), StoreError> {
+    std::fs::create_dir_all(dir).map_err(|err| {
+        StoreError::persist(format!(
+            "cannot create the store directory {}: {err}",
+            dir.display()
+        ))
+    })
+}
+
+#[cfg(unix)]
+fn vet_locked_store_dir(dir: &Path) -> Result<(), StoreError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let link_meta = std::fs::symlink_metadata(dir).map_err(|err| {
+        StoreError::persist(format!(
+            "cannot inspect the store directory {}: {err}",
+            dir.display()
+        ))
+    })?;
+    if link_meta.file_type().is_symlink() {
+        return Err(StoreError::persist(format!(
+            "store directory {} is a symlink; use a real owner-only directory",
+            dir.display()
+        )));
+    }
+    let meta = std::fs::metadata(dir).map_err(|err| {
+        StoreError::persist(format!(
+            "cannot inspect the store directory {}: {err}",
+            dir.display()
+        ))
+    })?;
+    if !meta.is_dir() {
+        return Err(StoreError::persist(format!(
+            "store path {} is not a directory",
+            dir.display()
+        )));
+    }
+    let mode = meta.permissions().mode() & 0o777;
+    if mode & 0o077 != 0 {
+        return Err(StoreError::persist(format!(
+            "store directory {} has mode {mode:o}, refusing anything looser than 0700",
+            dir.display()
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn vet_locked_store_dir(_dir: &Path) -> Result<(), StoreError> {
+    Ok(())
 }
 
 /// This store's fixed graph identity. A single graph per store, so a constant id;

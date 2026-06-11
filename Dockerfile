@@ -30,6 +30,7 @@ RUN apk add --no-cache ca-certificates \
     && addgroup -S -g 10001 aionforge \
     && adduser -S -D -H -h /nonexistent -G aionforge -u 10001 aionforge \
     && mkdir -p /data \
+    && chmod 700 /data \
     && chown -R 10001:10001 /data
 
 COPY --from=builder /workspace/target/release/aionforge /usr/local/bin/aionforge
