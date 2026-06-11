@@ -128,11 +128,6 @@ jobs:
       CARGO_PROFILE_TEST_DEBUG: 0
     steps:
       - uses: actions/checkout@v4
-      # cargo fetches the selene-db git dependency over SSH; load the deploy key.
-      - name: authenticate to the selene-db substrate
-        uses: webfactory/ssh-agent@v0.9.1
-        with:
-          ssh-private-key: ${{ secrets.SELENE_DB_DEPLOY_KEY }}
       - uses: dtolnay/rust-toolchain@1.95.0
         with:
           components: clippy
@@ -161,13 +156,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # cargo-deny runs `cargo metadata`, which fetches the selene-db git dependency
-      # over SSH. Load the deploy key and run cargo-deny on the host (not the container
-      # action, which would not see the SSH agent).
-      - name: authenticate to the selene-db substrate
-        uses: webfactory/ssh-agent@v0.9.1
-        with:
-          ssh-private-key: ${{ secrets.SELENE_DB_DEPLOY_KEY }}
       - uses: dtolnay/rust-toolchain@1.95.0
       - uses: taiki-e/install-action@v2
         with:
@@ -183,10 +171,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: authenticate to the selene-db substrate
-        uses: webfactory/ssh-agent@v0.9.1
-        with:
-          ssh-private-key: ${{ secrets.SELENE_DB_DEPLOY_KEY }}
       - uses: dtolnay/rust-toolchain@1.95.0
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2

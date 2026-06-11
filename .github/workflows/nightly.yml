@@ -36,10 +36,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: authenticate to the selene-db substrate
-        uses: webfactory/ssh-agent@v0.9.1
-        with:
-          ssh-private-key: ${{ secrets.SELENE_DB_DEPLOY_KEY }}
       - uses: dtolnay/rust-toolchain@1.95.0
       - name: pull the latest substrate commit (drift)
         run: cargo update -p selene-core -p selene-graph -p selene-persist -p selene-gql -p selene-algorithms
@@ -55,10 +51,6 @@ jobs:
       CARGO_PROFILE_TEST_DEBUG: 0
     steps:
       - uses: actions/checkout@v4
-      - name: authenticate to the selene-db substrate
-        uses: webfactory/ssh-agent@v0.9.1
-        with:
-          ssh-private-key: ${{ secrets.SELENE_DB_DEPLOY_KEY }}
       - uses: dtolnay/rust-toolchain@1.95.0
         with:
           components: clippy

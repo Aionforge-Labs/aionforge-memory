@@ -7,8 +7,9 @@ follow the links in [the docs index](README.md).
 ## Build from source
 
 Aionforge Memory is a Rust workspace pinned to the toolchain in
-`rust-toolchain.toml`. It depends on the private `selene-db` repository through
-SSH, so Cargo must be able to fetch from GitHub with a key that has access.
+`rust-toolchain.toml`. It depends on the public `selene-db` repository as a git
+dependency, and `Cargo.lock` pins the exact substrate commit used by this
+workspace.
 
 ```bash
 cargo build --workspace --locked
@@ -96,7 +97,7 @@ The repository Dockerfile builds the binary with an Alpine builder and runs it
 as UID/GID `10001` in an Alpine runtime image:
 
 ```bash
-DOCKER_BUILDKIT=1 docker build --ssh default -t aionforge-memory:dev .
+docker build -t aionforge-memory:dev .
 docker run --rm \
   -e AIONFORGE_MCP_TOKEN=change-me \
   -p 127.0.0.1:3918:3918 \

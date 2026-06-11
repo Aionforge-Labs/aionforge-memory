@@ -53,10 +53,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: authenticate to the selene-db substrate
-        uses: webfactory/ssh-agent@v0.9.1
-        with:
-          ssh-private-key: ${{ secrets.SELENE_DB_DEPLOY_KEY }}
       - uses: docker/setup-buildx-action@v3
       - name: build Alpine binary artifact
         uses: docker/build-push-action@v6
@@ -65,7 +61,6 @@ jobs:
           target: binary-artifact
           platforms: ${{ matrix.platform }}
           outputs: type=local,dest=dist/${{ matrix.target }}
-          ssh: default
       - name: package binary
         run: |
           chmod +x "dist/${{ matrix.target }}/aionforge"
@@ -92,10 +87,6 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - name: authenticate to the selene-db substrate
-        uses: webfactory/ssh-agent@v0.9.1
-        with:
-          ssh-private-key: ${{ secrets.SELENE_DB_DEPLOY_KEY }}
       - uses: dtolnay/rust-toolchain@1.95.0
       - uses: Swatinem/rust-cache@v2
       - name: add release target
@@ -127,10 +118,6 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
-      - name: authenticate to the selene-db substrate
-        uses: webfactory/ssh-agent@v0.9.1
-        with:
-          ssh-private-key: ${{ secrets.SELENE_DB_DEPLOY_KEY }}
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
@@ -148,7 +135,6 @@ jobs:
             tags+=(--tag "$image:latest")
           fi
           docker buildx build \
-            --ssh default \
             --push \
             --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
             --label "org.opencontainers.image.revision=$GITHUB_SHA" \
