@@ -2,8 +2,7 @@
 
 Aionforge Memory ships a plugin package at
 [`plugins/aionforge-memory`](../plugins/aionforge-memory). It bundles four Agent
-Skills with MCP configuration for Codex, Claude Code, Cursor, and GitHub Copilot
-CLI.
+Skills with MCP configuration for Codex, Claude Code, and Cursor.
 
 The plugin is meant to make the existing MCP service easier to use. It does not
 add a second server and it does not execute stored skills from memory. The MCP
@@ -26,7 +25,7 @@ approval hints.
 - Claude Code commands `/aionforge-memory:memory-session` and
   `/aionforge-memory:memory-handoff`: explicit workflows for starting a
   memory-backed task and ending with a durable handoff.
-- Client manifests for Codex, Claude Code, Cursor, and GitHub Copilot CLI.
+- Client manifests for Codex, Claude Code, and Cursor.
 - MCP config files for the local HTTP endpoint at `http://127.0.0.1:3918/mcp`.
 
 ## Identity Setup
@@ -79,12 +78,6 @@ Code work starts with the memory loop available.
 Cursor can load the package as a local plugin from
 `~/.cursor/plugins/local/aionforge-memory`; it reads `.cursor-plugin/plugin.json`
 and `cursor.mcp.json`.
-
-GitHub Copilot CLI can install the package from the local path:
-
-```bash
-copilot plugin install ./plugins/aionforge-memory
-```
 
 ## Safety Posture
 

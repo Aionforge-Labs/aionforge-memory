@@ -7,7 +7,7 @@ This plugin packages the Aionforge Memory MCP configuration with four small Agen
 - `memory-capture`: write decisions, handoffs, project facts, validation outcomes, corrections, and failure patterns.
 - `memory-maintenance`: inspect backlog, audit provenance, consolidate derived work, forget, or restore memory.
 
-The skills are plain Agent Skills under `skills/`, so clients that support the common `SKILL.md` format can use the same instructions. The plugin also includes compatibility manifests for Codex, Claude Code, Cursor, and GitHub Copilot CLI.
+The skills are plain Agent Skills under `skills/`, so clients that support the common `SKILL.md` format can use the same instructions. The plugin also includes compatibility manifests for Codex, Claude Code, and Cursor.
 
 For Claude Code, the plugin also ships:
 
@@ -47,12 +47,6 @@ The Claude manifest points to `claude.mcp.json`, which keeps Claude's static-hea
 When the plugin is enabled in Claude Code, `settings.json` selects the `aionforge-memory-steward` agent by default. Run `/reload-plugins` after local edits, then check `/agents` and `/help` to confirm the agent and commands are loaded.
 
 Cursor can load it as a local plugin by symlinking or copying this directory into `~/.cursor/plugins/local/aionforge-memory`. Cursor reads `.cursor-plugin/plugin.json` and `cursor.mcp.json`.
-
-GitHub Copilot CLI can install from the plugin path:
-
-```bash
-copilot plugin install ./plugins/aionforge-memory
-```
 
 ## Identity
 
