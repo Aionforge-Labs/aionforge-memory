@@ -7,7 +7,8 @@
 </p>
 
 > **Status: 0.1.0 public release.** The Rust library, CLI, MCP server,
-> read-only TUI, Docker image, and red-team gates are in place. Retrieval-quality
+> read-only TUI, Docker image, and red-team gates are in place. A small
+> sanitized retrieval regression corpus is in place; broader retrieval-quality
 > benchmarks remain deferred. Expect schema and API changes before 1.0.
 
 Aionforge Memory is a Rust memory layer for agent systems. It stores episodes,
