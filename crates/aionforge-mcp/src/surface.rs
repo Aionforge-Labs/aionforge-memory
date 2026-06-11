@@ -40,6 +40,10 @@ pub(crate) struct ToolSurface {
     pub(crate) class: ToolClass,
     pub(crate) default_output: &'static str,
     pub(crate) verbose: bool,
+    pub(crate) read_only_hint: bool,
+    pub(crate) destructive_hint: bool,
+    pub(crate) idempotent_hint: bool,
+    pub(crate) open_world_hint: bool,
     pub(crate) errors: &'static [&'static str],
 }
 
@@ -49,6 +53,10 @@ pub(crate) const TOOLS: &[ToolSurface] = &[
         class: ToolClass::ReadLike,
         default_output: "one compact [server] status line",
         verbose: true,
+        read_only_hint: true,
+        destructive_hint: false,
+        idempotent_hint: true,
+        open_world_hint: false,
         errors: &[],
     },
     ToolSurface {
@@ -56,6 +64,10 @@ pub(crate) const TOOLS: &[ToolSurface] = &[
         class: ToolClass::ReadLike,
         default_output: "compact recalled-memory-context wrapper with one line per hit",
         verbose: true,
+        read_only_hint: true,
+        destructive_hint: false,
+        idempotent_hint: true,
+        open_world_hint: false,
         errors: &["ERR_INVALID_VIEWER", "ERR_SEARCH"],
     },
     ToolSurface {
@@ -63,6 +75,10 @@ pub(crate) const TOOLS: &[ToolSurface] = &[
         class: ToolClass::ReadLike,
         default_output: "one compact [consolidation] backlog line",
         verbose: true,
+        read_only_hint: true,
+        destructive_hint: false,
+        idempotent_hint: true,
+        open_world_hint: false,
         errors: &["ERR_CONSOLIDATION_STATUS"],
     },
     ToolSurface {
@@ -70,6 +86,10 @@ pub(crate) const TOOLS: &[ToolSurface] = &[
         class: ToolClass::ReadLike,
         default_output: "compact audit page with cursor",
         verbose: true,
+        read_only_hint: true,
+        destructive_hint: false,
+        idempotent_hint: true,
+        open_world_hint: false,
         errors: &[
             "ERR_INVALID_SUBJECT_ID",
             "ERR_INVALID_VIEWER",
@@ -84,6 +104,10 @@ pub(crate) const TOOLS: &[ToolSurface] = &[
         class: ToolClass::Mutating,
         default_output: "one compact [capture] receipt line",
         verbose: false,
+        read_only_hint: false,
+        destructive_hint: false,
+        idempotent_hint: false,
+        open_world_hint: false,
         errors: &[
             "ERR_INVALID_AGENT_ID",
             "ERR_INVALID_SESSION_ID",
@@ -97,6 +121,10 @@ pub(crate) const TOOLS: &[ToolSurface] = &[
         class: ToolClass::Mutating,
         default_output: "one compact [consolidate] run summary line",
         verbose: true,
+        read_only_hint: false,
+        destructive_hint: false,
+        idempotent_hint: false,
+        open_world_hint: false,
         errors: &["ERR_CONSOLIDATE_BUSY", "ERR_CONSOLIDATE"],
     },
     ToolSurface {
@@ -104,6 +132,10 @@ pub(crate) const TOOLS: &[ToolSurface] = &[
         class: ToolClass::Mutating,
         default_output: "one compact [forget] outcome line",
         verbose: false,
+        read_only_hint: false,
+        destructive_hint: true,
+        idempotent_hint: true,
+        open_world_hint: false,
         errors: &[
             "ERR_INVALID_MEMORY_ID",
             "ERR_INVALID_VIEWER",
@@ -117,6 +149,10 @@ pub(crate) const TOOLS: &[ToolSurface] = &[
         class: ToolClass::Mutating,
         default_output: "one compact [unforget] outcome line",
         verbose: false,
+        read_only_hint: false,
+        destructive_hint: false,
+        idempotent_hint: true,
+        open_world_hint: false,
         errors: &[
             "ERR_INVALID_MEMORY_ID",
             "ERR_INVALID_VIEWER",
