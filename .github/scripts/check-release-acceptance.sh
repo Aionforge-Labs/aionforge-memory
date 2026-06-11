@@ -98,6 +98,10 @@ require_grep ".github/workflows/release-publish.yml" "ubuntu-24.04-arm" \
   "native arm64 Linux binary runner"
 require_grep ".github/workflows/release-publish.yml" "actions/download-artifact@v4" \
   "GHCR runtime image reuses Linux binary artifacts"
+require_grep ".github/workflows/release-publish.yml" "DOCKER_BUILD_RECORD_UPLOAD" \
+  "release workflow disables Docker build-record artifacts"
+require_grep ".github/workflows/release-publish.yml" "pattern: aionforge-*" \
+  "release asset download filters out non-release artifacts"
 require_grep ".github/workflows/release-publish.yml" "Dockerfile.release" \
   "release runtime image Dockerfile"
 require_grep ".github/workflows/release-publish.yml" "crates.io publishing is intentionally deferred" \
