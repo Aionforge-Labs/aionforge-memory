@@ -155,6 +155,7 @@ Local test paths:
 - Cursor: symlink the directory into ~/.cursor/plugins/local/aionforge-memory.
 - Copilot CLI: copilot plugin install ./plugins/aionforge-memory
 - Codex: use .agents/plugins/marketplace.json from the repo root.
+- Codex plugin policy: copy plugins/aionforge-memory/codex.plugin-policy.example.toml into config.toml if you want read-like tools approved and mutating tools prompted under plugins."aionforge-memory@aionforge-plugins".mcp_servers.aionforge_memory.
 
 Recall safety:
 - Agents should recall before substantial work and capture generously when durable facts appear.
@@ -199,6 +200,39 @@ approval_mode = "prompt"
 [mcp_servers.aionforge_memory.tools.forget]
 approval_mode = "prompt"
 [mcp_servers.aionforge_memory.tools.unforget]
+approval_mode = "prompt"
+
+# Installed plugin MCP policy:
+[plugins."aionforge-memory@aionforge-plugins".mcp_servers.aionforge_memory]
+enabled = true
+default_tools_approval_mode = "prompt"
+enabled_tools = [
+  "search",
+  "server_status",
+  "consolidation_status",
+  "audit_history",
+  "capture",
+  "consolidate",
+  "forget",
+  "unforget",
+]
+
+[plugins."aionforge-memory@aionforge-plugins".mcp_servers.aionforge_memory.tools.server_status]
+approval_mode = "approve"
+[plugins."aionforge-memory@aionforge-plugins".mcp_servers.aionforge_memory.tools.search]
+approval_mode = "approve"
+[plugins."aionforge-memory@aionforge-plugins".mcp_servers.aionforge_memory.tools.consolidation_status]
+approval_mode = "approve"
+[plugins."aionforge-memory@aionforge-plugins".mcp_servers.aionforge_memory.tools.audit_history]
+approval_mode = "approve"
+
+[plugins."aionforge-memory@aionforge-plugins".mcp_servers.aionforge_memory.tools.capture]
+approval_mode = "prompt"
+[plugins."aionforge-memory@aionforge-plugins".mcp_servers.aionforge_memory.tools.consolidate]
+approval_mode = "prompt"
+[plugins."aionforge-memory@aionforge-plugins".mcp_servers.aionforge_memory.tools.forget]
+approval_mode = "prompt"
+[plugins."aionforge-memory@aionforge-plugins".mcp_servers.aionforge_memory.tools.unforget]
 approval_mode = "prompt"
 
 # OAuth mode for remote deployments:

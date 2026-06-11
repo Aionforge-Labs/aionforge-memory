@@ -176,6 +176,44 @@ approval_mode = "prompt"
 approval_mode = "prompt"
 ```
 
+When the MCP server comes from the installed Codex plugin rather than a
+standalone `[mcp_servers]` entry, keep policy under the plugin-scoped table:
+
+```toml
+[plugins."aionforge-memory@aionforge-plugins".mcp_servers.aionforge_memory]
+enabled = true
+default_tools_approval_mode = "prompt"
+enabled_tools = [
+  "server_status",
+  "search",
+  "consolidation_status",
+  "audit_history",
+  "capture",
+  "consolidate",
+  "forget",
+  "unforget",
+]
+[plugins."aionforge-memory@aionforge-plugins".mcp_servers.aionforge_memory.tools.server_status]
+approval_mode = "approve"
+[plugins."aionforge-memory@aionforge-plugins".mcp_servers.aionforge_memory.tools.search]
+approval_mode = "approve"
+[plugins."aionforge-memory@aionforge-plugins".mcp_servers.aionforge_memory.tools.consolidation_status]
+approval_mode = "approve"
+[plugins."aionforge-memory@aionforge-plugins".mcp_servers.aionforge_memory.tools.audit_history]
+approval_mode = "approve"
+[plugins."aionforge-memory@aionforge-plugins".mcp_servers.aionforge_memory.tools.capture]
+approval_mode = "prompt"
+[plugins."aionforge-memory@aionforge-plugins".mcp_servers.aionforge_memory.tools.consolidate]
+approval_mode = "prompt"
+[plugins."aionforge-memory@aionforge-plugins".mcp_servers.aionforge_memory.tools.forget]
+approval_mode = "prompt"
+[plugins."aionforge-memory@aionforge-plugins".mcp_servers.aionforge_memory.tools.unforget]
+approval_mode = "prompt"
+```
+
+If the marketplace name differs, replace `aionforge-plugins` with the name shown
+by `codex plugin list`.
+
 ## Claude Code
 
 Claude Code supports HTTP MCP servers through `claude mcp add` or JSON

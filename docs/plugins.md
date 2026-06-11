@@ -51,7 +51,14 @@ raw UUID for capture.
 
 Codex can discover the plugin from the repo-scoped
 `.agents/plugins/marketplace.json`. The Codex plugin manifest points to
-`.mcp.json`.
+`.mcp.json`. After installation, `codex plugin list` shows the
+marketplace-qualified plugin id. For the repo marketplace, the id is
+`aionforge-memory@aionforge-plugins`.
+
+Use `plugins/aionforge-memory/codex.plugin-policy.example.toml` as the Codex
+config shape when you want plugin-scoped MCP policy. It keeps read-like tools
+approved and mutating tools prompted under
+`plugins."aionforge-memory@aionforge-plugins".mcp_servers.aionforge_memory`.
 
 Claude Code can test the package directly:
 
