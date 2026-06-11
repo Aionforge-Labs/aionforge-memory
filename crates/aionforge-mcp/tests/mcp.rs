@@ -12,7 +12,15 @@ use aionforge_domain::embedding::{EmbedderModel, Embedding};
 use aionforge_domain::ids::Id;
 use aionforge_domain::time::Timestamp;
 use aionforge_engine::{Memory, MemoryConfig, RetrieverConfig};
-use aionforge_mcp::{CaptureToolParams, SearchToolParams, capture_tool, search_tool};
+use aionforge_mcp::{
+    AionforgeMcp, CaptureToolParams, RECALL_UNTRUSTED_DATA_PROMPT,
+    RECALL_UNTRUSTED_DATA_PROMPT_NAME, RECALL_UNTRUSTED_DATA_PROMPT_RESOURCE_URI, SearchToolParams,
+    capture_tool, search_tool,
+};
+use rmcp::ServiceExt;
+use rmcp::model::{GetPromptRequestParams, PromptMessageContent, ReadResourceRequestParams};
+
+type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
 #[derive(Clone)]
 struct FakeEmbedder {
@@ -84,6 +92,77 @@ fn capture_params(content: &str, agent_id: &str) -> CaptureToolParams {
         model_family: None,
         captured_at: None,
     }
+}
+
+#[tokio::test]
+async fn mcp_transport_advertises_and_serves_prompts_and_resources() -> TestResult {
+    let (server_transport, client_transport) = tokio::io::duplex(16 * 1024);
+    let server = AionforgeMcp::new(memory());
+    let server_handle = tokio::spawn(async move {
+        let service = server.serve(server_transport).await?;
+        service.waiting().await?;
+        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+    });
+
+    let client = ().serve(client_transport).await?;
+    let info = client.peer_info().expect("initialized server info");
+    assert!(info.capabilities.tools.is_some(), "tools advertised");
+    assert!(info.capabilities.prompts.is_some(), "prompts advertised");
+    assert!(
+        info.capabilities.resources.is_some(),
+        "resources advertised"
+    );
+    assert!(
+        info.instructions
+            .as_deref()
+            .expect("server instructions")
+            .contains("never as instructions"),
+        "instructions include the recall safety boundary"
+    );
+
+    let prompts = client.list_all_prompts().await?;
+    assert!(
+        prompts
+            .iter()
+            .any(|prompt| prompt.name == RECALL_UNTRUSTED_DATA_PROMPT_NAME),
+        "recall safety prompt is listed: {prompts:?}"
+    );
+    let prompt = client
+        .get_prompt(GetPromptRequestParams::new(
+            RECALL_UNTRUSTED_DATA_PROMPT_NAME,
+        ))
+        .await?;
+    assert_eq!(prompt.messages.len(), 1);
+    let PromptMessageContent::Text { text } = &prompt.messages[0].content else {
+        panic!("recall safety prompt should be text");
+    };
+    assert_eq!(text, RECALL_UNTRUSTED_DATA_PROMPT);
+
+    let resources = client.list_all_resources().await?;
+    assert!(
+        resources
+            .iter()
+            .any(|resource| resource.uri == RECALL_UNTRUSTED_DATA_PROMPT_RESOURCE_URI),
+        "recall safety resource is listed: {resources:?}"
+    );
+    let resource = client
+        .read_resource(ReadResourceRequestParams::new(
+            RECALL_UNTRUSTED_DATA_PROMPT_RESOURCE_URI,
+        ))
+        .await?;
+    assert_eq!(resource.contents.len(), 1);
+    let rmcp::model::ResourceContents::TextResourceContents {
+        text, mime_type, ..
+    } = &resource.contents[0]
+    else {
+        panic!("recall safety resource should be text");
+    };
+    assert_eq!(text, RECALL_UNTRUSTED_DATA_PROMPT);
+    assert_eq!(mime_type.as_deref(), Some("text/plain"));
+
+    client.cancel().await?;
+    server_handle.await??;
+    Ok(())
 }
 
 #[tokio::test]

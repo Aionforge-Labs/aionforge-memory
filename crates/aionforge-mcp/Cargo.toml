@@ -22,6 +22,7 @@ tokio = { workspace = true }
 [dev-dependencies]
 aionforge-domain = { path = "../aionforge-domain", version = "0.1.0" }
 aionforge-engine = { path = "../aionforge-engine", version = "0.1.0" }
+rmcp = { version = "1.6", features = ["client"] }
 tokio = { workspace = true }
 
 [lints]

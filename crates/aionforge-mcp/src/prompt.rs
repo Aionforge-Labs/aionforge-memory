@@ -20,6 +20,13 @@
 /// alongside it. The template references it by name so a host can recognize the boundary.
 pub const RECALL_WRAPPER_TAG: &str = aionforge_domain::RECALLED_MEMORY_CONTEXT_OPEN;
 
+/// Prompt name served through the MCP Prompts capability.
+pub const RECALL_UNTRUSTED_DATA_PROMPT_NAME: &str = "recall_untrusted_data";
+
+/// Resource URI for hosts that prefer resource selection over prompt invocation.
+pub const RECALL_UNTRUSTED_DATA_PROMPT_RESOURCE_URI: &str =
+    "aionforge://prompt/recall-untrusted-data";
+
 /// The recommended template a host installs so the model treats recalled memory as
 /// untrusted third-party data, never as instructions (07 §4, M6.T02).
 pub const RECALL_UNTRUSTED_DATA_PROMPT: &str = "\
