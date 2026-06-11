@@ -181,6 +181,10 @@ async fn mcp_transport_lists_client_policy_resources() -> TestResult {
         .map(|tool| tool.name.to_string())
         .collect();
     assert_eq!(manifest_tools, listed_tool_names);
+    let surface = read_text_resource(&client, MCP_SURFACE_GUIDE_RESOURCE_URI).await?;
+    assert!(surface.contains("Repeat --bearer-token-agent-env once per agent"));
+    assert!(surface.contains("Rotate by overlapping old and new token env vars"));
+
     let listed_tools_by_name: BTreeMap<String, _> = listed_tools
         .iter()
         .map(|tool| (tool.name.to_string(), tool))
@@ -270,6 +274,8 @@ async fn mcp_transport_lists_client_policy_resources() -> TestResult {
     assert!(oauth.contains("resource_metadata"));
     assert!(oauth.contains("codex mcp login aionforge_memory"));
     assert!(oauth.contains("oauth=false"));
+    assert!(oauth.contains("Repeat --bearer-token-agent-env for every internal principal token"));
+    assert!(oauth.contains("Rotate internal tokens by overlapping old and new bindings"));
 
     let plugin = read_text_resource(&client, PLUGIN_PACKAGE_GUIDE_RESOURCE_URI).await?;
     assert!(plugin.contains("plugins/aionforge-memory"));
