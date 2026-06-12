@@ -93,6 +93,20 @@ fn a_plain_question_defaults_to_single_hop_factual() {
 }
 
 #[test]
+fn source_and_file_anchors_route_to_quote() {
+    assert_eq!(
+        classify("docs/2026-plan.md"),
+        QueryClass::Quote,
+        "a dated path is an exact source lookup, not a temporal query"
+    );
+    assert_eq!(
+        classify("embedding-guide graph-algorithms contributing procedures"),
+        QueryClass::Quote,
+        "multiple hyphenated source anchors should favor lexical lookup"
+    );
+}
+
+#[test]
 fn precedence_runs_specific_to_general() {
     // Quote beats a temporal marker.
     assert_eq!(

@@ -61,6 +61,10 @@ pub struct EpisodeEntry {
     pub ingested_at: Timestamp,
     /// Soft-expiry instant, if any (only present on history queries).
     pub expired_at: Option<Timestamp>,
+    /// Writer-asserted replacement hint this episode made, if any.
+    pub supersedes: Option<Id>,
+    /// Newest live episode that claims to replace this one, if any.
+    pub superseded_by: Option<Id>,
     /// Writer trust.
     pub trust: f64,
     /// The fused RRF score.
@@ -322,10 +326,13 @@ impl RecallBundle {
             // extracted value cannot break out of its attribute quotes (07 §4). The fused score
             // is common to both kinds, so it is read through the accessor and appended once.
             match entry {
-                StructuredEntry::Episode(e) => out.push_str(&format!(
-                    "<memory id=\"{id}\" sid=\"{sid}\" kind=\"episode\" role=\"{role}\"",
-                    role = role_tag(e.role),
-                )),
+                StructuredEntry::Episode(e) => {
+                    out.push_str(&format!(
+                        "<memory id=\"{id}\" sid=\"{sid}\" kind=\"episode\" role=\"{role}\"",
+                        role = role_tag(e.role),
+                    ));
+                    push_episode_supersedes_attrs(&mut out, e);
+                }
                 StructuredEntry::Fact(f) => out.push_str(&format!(
                     "<memory id=\"{id}\" sid=\"{sid}\" kind=\"fact\" predicate=\"{predicate}\" status=\"{status}\"",
                     predicate = attr_escape(&f.predicate),
@@ -473,6 +480,21 @@ fn status_tag(status: FactStatus) -> &'static str {
     }
 }
 
+fn push_episode_supersedes_attrs(out: &mut String, entry: &EpisodeEntry) {
+    if let Some(supersedes) = &entry.supersedes {
+        out.push_str(&format!(
+            " supersedes=\"{}\"",
+            attr_escape(&supersedes.to_string())
+        ));
+    }
+    if let Some(superseded_by) = &entry.superseded_by {
+        out.push_str(&format!(
+            " superseded_by=\"{}\"",
+            attr_escape(&superseded_by.to_string())
+        ));
+    }
+}
+
 /// The spec string for a core block's category in the rendered view — also a field of
 /// the core serialization-id key, so the rendered attributes and the rendered order
 /// derive from the same bytes.
@@ -504,10 +526,14 @@ pub fn render(entries: &[StructuredEntry]) -> String {
         // The body — the episode content or the fact statement — is `tag_escape`d so it
         // cannot forge or close a `memory` tag (07).
         match entry {
-            StructuredEntry::Episode(e) => out.push_str(&format!(
-                "<memory id=\"{sid}\" kind=\"episode\" role=\"{}\">\n",
-                role_tag(e.role),
-            )),
+            StructuredEntry::Episode(e) => {
+                out.push_str(&format!(
+                    "<memory id=\"{sid}\" kind=\"episode\" role=\"{}\"",
+                    role_tag(e.role),
+                ));
+                push_episode_supersedes_attrs(&mut out, e);
+                out.push_str(">\n");
+            }
             StructuredEntry::Fact(f) => out.push_str(&format!(
                 "<memory id=\"{sid}\" kind=\"fact\" predicate=\"{}\" status=\"{}\">\n",
                 attr_escape(&f.predicate),
@@ -568,6 +594,8 @@ mod tests {
             role: Role::User,
             ingested_at: ts("2026-06-06T09:30:00-05:00[America/Chicago]"),
             expired_at: None,
+            supersedes: None,
+            superseded_by: None,
             trust: 0.8,
             score: 1.0,
             contributions: vec![
@@ -647,5 +675,21 @@ mod tests {
         assert_eq!(score_band(0.49, 1.0), "low");
         assert_eq!(score_band(0.0, 1.0), "low");
         assert_eq!(score_band(1.0, 0.0), "low");
+    }
+
+    #[test]
+    fn compact_render_marks_superseded_episodes() {
+        let mut bundle = compact_test_bundle();
+        let replacement = Id::generate();
+        let StructuredEntry::Episode(entry) = &mut bundle.structured[0] else {
+            panic!("fixture episode");
+        };
+        entry.superseded_by = Some(replacement);
+
+        let rendered = bundle.render_compact(false);
+        assert!(
+            rendered.contains(&format!("superseded_by=\"{replacement}\"")),
+            "superseded episode is explicitly annotated: {rendered}"
+        );
     }
 }

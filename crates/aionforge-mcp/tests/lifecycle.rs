@@ -11,9 +11,10 @@ use aionforge_domain::time::Timestamp;
 use aionforge_engine::{ForgettingPolicy, Memory, MemoryConfig};
 use aionforge_mcp::{
     AionforgeMcp, AuditHistoryToolParams, CaptureToolParams, ConsolidationRunToolParams,
-    ConsolidationStatusToolParams, MemoryLifecycleToolParams, SearchToolParams, audit_history_tool,
-    capture_tool, consolidate_tool, consolidation_status_tool, forget_tool, search_tool,
-    unforget_tool,
+    ConsolidationStatusToolParams, MemoryLifecycleToolParams, ReadMemoryToolParams,
+    SearchToolParams, SessionManifestToolParams, audit_history_tool, capture_tool,
+    consolidate_tool, consolidation_status_tool, forget_tool, read_memory_tool, search_tool,
+    session_manifest_tool, unforget_tool,
 };
 use rmcp::ServiceExt;
 
@@ -97,6 +98,8 @@ fn capture_params(content: &str, agent_id: &str) -> CaptureToolParams {
     CaptureToolParams {
         content: content.to_string(),
         agent_id: agent_id.to_string(),
+        teams: Vec::new(),
+        target_namespace: None,
         role: None,
         session_id: None,
         trust: Some(0.1),
@@ -141,6 +144,25 @@ fn search_params(query: &str, agent: Id) -> SearchToolParams {
     }
 }
 
+fn read_params(memory_id: &str, agent: Id) -> ReadMemoryToolParams {
+    ReadMemoryToolParams {
+        memory_id: memory_id.to_string(),
+        viewer: format!("agent:{agent}"),
+        teams: Vec::new(),
+        verbose: None,
+    }
+}
+
+fn manifest_params(session_id: Id, agent: Id) -> SessionManifestToolParams {
+    SessionManifestToolParams {
+        session_id: session_id.to_string(),
+        viewer: format!("agent:{agent}"),
+        teams: Vec::new(),
+        limit: None,
+        verbose: None,
+    }
+}
+
 #[tokio::test]
 async fn mcp_transport_lists_lifecycle_tools() -> TestResult {
     let (server_transport, client_transport) = tokio::io::duplex(16 * 1024);
@@ -162,6 +184,8 @@ async fn mcp_transport_lists_lifecycle_tools() -> TestResult {
         "server_status",
         "capture",
         "search",
+        "read_memory",
+        "session_manifest",
         "consolidation_status",
         "consolidate",
         "forget",
@@ -310,6 +334,123 @@ async fn disabled_forget_receipts_name_the_config_gate() -> TestResult {
     assert!(
         restored.contains("outcome=disabled reason=forgetting.enabled=false"),
         "{restored}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn read_memory_is_principal_scoped() -> TestResult {
+    let memory = memory();
+    let alice = Id::generate();
+    let bob = Id::generate();
+    let receipt = capture_tool(
+        &memory,
+        capture_params("read-by-id private memory", &alice.to_string()),
+        &now(),
+    )
+    .await?;
+    let memory_id = capture_id(&receipt);
+
+    let own = read_memory_tool(&memory, read_params(&memory_id, alice))?;
+    assert!(own.starts_with("[memory] "), "{own}");
+    assert!(own.contains("read-by-id private memory"), "{own}");
+
+    let denied = read_memory_tool(&memory, read_params(&memory_id, bob))
+        .expect_err("another agent cannot read Alice's private memory by receipt id");
+    assert!(denied.starts_with("ERR_NOT_FOUND"), "{denied}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn session_manifest_filters_to_visible_namespaces() -> TestResult {
+    let memory = memory();
+    let session = Id::generate();
+    let alice = Id::generate();
+    let bob = Id::generate();
+
+    let mut alice_private = capture_params("alice private manifest memory", &alice.to_string());
+    alice_private.session_id = Some(session.to_string());
+    capture_tool(&memory, alice_private, &now()).await?;
+
+    let mut bob_private = capture_params("bob private manifest memory", &bob.to_string());
+    bob_private.session_id = Some(session.to_string());
+    capture_tool(&memory, bob_private, &now()).await?;
+
+    let mut shared = capture_params("squad shared manifest memory", &alice.to_string());
+    shared.session_id = Some(session.to_string());
+    shared.teams = vec!["squad".to_string()];
+    shared.target_namespace = Some("team:squad".to_string());
+    capture_tool(&memory, shared, &now()).await?;
+
+    let alice_without_team = session_manifest_tool(&memory, manifest_params(session, alice))?;
+    assert!(
+        alice_without_team.contains("count=1"),
+        "only Alice private is visible without team assertion: {alice_without_team}"
+    );
+    assert!(
+        alice_without_team.contains("alice private manifest memory"),
+        "{alice_without_team}"
+    );
+    assert!(
+        !alice_without_team.contains("bob private manifest memory"),
+        "{alice_without_team}"
+    );
+    assert!(
+        !alice_without_team.contains("squad shared manifest memory"),
+        "{alice_without_team}"
+    );
+
+    let mut alice_with_team = manifest_params(session, alice);
+    alice_with_team.teams = vec!["squad".to_string()];
+    let alice_with_team = session_manifest_tool(&memory, alice_with_team)?;
+    assert!(
+        alice_with_team.contains("count=2"),
+        "Alice sees private plus asserted team, not Bob private: {alice_with_team}"
+    );
+    assert!(alice_with_team.contains("alice private manifest memory"));
+    assert!(alice_with_team.contains("squad shared manifest memory"));
+    assert!(!alice_with_team.contains("bob private manifest memory"));
+
+    let bob_manifest = session_manifest_tool(&memory, manifest_params(session, bob))?;
+    assert!(
+        bob_manifest.contains("count=1"),
+        "Bob only sees his private memory: {bob_manifest}"
+    );
+    assert!(bob_manifest.contains("bob private manifest memory"));
+    assert!(!bob_manifest.contains("alice private manifest memory"));
+    assert!(!bob_manifest.contains("squad shared manifest memory"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn session_manifest_applies_limit_after_visibility_filtering() -> TestResult {
+    let memory = memory();
+    let session = Id::generate();
+    let alice = Id::generate();
+    let bob = Id::generate();
+    let first: Timestamp = "2026-06-06T09:31:00-05:00[America/Chicago]".parse()?;
+    let second: Timestamp = "2026-06-06T09:32:00-05:00[America/Chicago]".parse()?;
+
+    let mut bob_private = capture_params("bob earlier private manifest memory", &bob.to_string());
+    bob_private.session_id = Some(session.to_string());
+    capture_tool(&memory, bob_private, &first).await?;
+
+    let mut alice_private =
+        capture_params("alice later visible manifest memory", &alice.to_string());
+    alice_private.session_id = Some(session.to_string());
+    capture_tool(&memory, alice_private, &second).await?;
+
+    let mut manifest = manifest_params(session, alice);
+    manifest.limit = Some(1);
+    let output = session_manifest_tool(&memory, manifest)?;
+    assert!(output.contains("count=1"), "{output}");
+    assert!(
+        output.contains("alice later visible manifest memory"),
+        "{output}"
+    );
+    assert!(
+        !output.contains("bob earlier private manifest memory"),
+        "{output}"
     );
     Ok(())
 }

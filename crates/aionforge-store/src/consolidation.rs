@@ -113,8 +113,8 @@ pub struct ConsolidationWorkItem {
 /// against an injected clock, since L0 keeps no ambient clock for stored time.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LagSnapshot {
-    /// The `captured_at` of the oldest episode still needing consolidation, if any.
-    pub oldest_pending_captured_at: Option<Timestamp>,
+    /// The `ingested_at` of the oldest episode still needing consolidation, if any.
+    pub oldest_pending_ingested_at: Option<Timestamp>,
     /// How many episodes are `raw` or `in_progress`.
     pub episodes_pending: u64,
     /// How many episodes are `failed`.
@@ -453,21 +453,21 @@ impl Store {
 
     /// Snapshot the consolidation backlog for the lag metric (write-and-consolidation §3).
     ///
-    /// Reads the oldest pending `captured_at` and the pending/failed counts plus the
-    /// current generation. The lag *duration* is computed above this layer against the
-    /// caller's clock.
+    /// Reads the oldest pending `ingested_at` and the pending/failed counts plus the
+    /// current generation. The age *duration* is computed above this layer against the
+    /// caller's clock so historical backfills do not look like live stuck work.
     ///
     /// # Errors
     /// Returns [`StoreError`] if a query fails or a stored value cannot be decoded.
     pub fn consolidation_lag(&self) -> Result<LagSnapshot, StoreError> {
-        // Oldest pending captured_at + pending count, in one ordered read.
+        // Oldest pending ingested_at + pending count, in one ordered read.
         let pending = BoundQuery::new(
             "MATCH (e:Episode) WHERE e.consolidation_state IN [$raw, $in_progress] \
-             RETURN e.captured_at AS captured_at ORDER BY e.captured_at ASC",
+             RETURN e.ingested_at AS ingested_at ORDER BY e.ingested_at ASC",
         )
         .bind("raw", enum_value(&ConsolidationState::Raw)?)?
         .bind("in_progress", enum_value(&ConsolidationState::InProgress)?)?;
-        let (oldest_pending_captured_at, episodes_pending) = match self.execute(&pending)? {
+        let (oldest_pending_ingested_at, episodes_pending) = match self.execute(&pending)? {
             QueryResult::Rows(rows) => {
                 let oldest = match rows.value(0, 0) {
                     Some(value) => Some(as_timestamp(value)?),
@@ -496,7 +496,7 @@ impl Store {
         };
 
         Ok(LagSnapshot {
-            oldest_pending_captured_at,
+            oldest_pending_ingested_at,
             episodes_pending,
             episodes_failed,
             generation: self.graph().read().meta.generation,

@@ -21,7 +21,7 @@ use selene_gql::{BindingTable, BuiltinProcedureRegistry, Session, StatementOutpu
 use selene_graph::{DEFAULT_WAL_FILE_NAME, GraphTypeDef, SeleneGraph, SharedGraph, WalConfig};
 
 use crate::config::StoreConfig;
-use crate::convert::{as_id, as_namespace};
+use crate::convert::{as_id, as_namespace, id_value};
 use crate::error::StoreError;
 use crate::gql::{BoundQuery, QueryResult, Rows};
 use crate::providers::candidate_state_provider;
@@ -296,6 +296,104 @@ impl Store {
             Some(props) => Ok(Some(episode::from_properties(props)?)),
             None => Ok(None),
         }
+    }
+
+    /// Read an episode by its domain id from a fresh snapshot.
+    ///
+    /// This returns live and soft-forgotten episodes; caller-facing read surfaces must
+    /// still enforce visibility and `expired_at` policy before rendering the value.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] if the id lookup or stored episode decode fails.
+    pub fn episode_by_id(&self, id: &Id) -> Result<Option<Episode>, StoreError> {
+        let snapshot = self.graph.read();
+        let Some(node) = crate::convert::node_by_id(&snapshot, Episode::LABEL, id)? else {
+            return Ok(None);
+        };
+        match snapshot.node_properties(node) {
+            Some(props) => Ok(Some(episode::from_properties(props)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Live episodes for a session id, ordered by ingestion and capped by `limit`.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] if the lookup or episode decode fails.
+    pub fn live_episodes_by_session_id(
+        &self,
+        session_id: &Id,
+        limit: usize,
+    ) -> Result<Vec<Episode>, StoreError> {
+        let snapshot = self.graph.read();
+        let label = db_string(Episode::LABEL)?;
+        let prop = db_string("session_id")?;
+        let value = id_value(session_id)?;
+        let Some(rows) = snapshot.nodes_with_property_eq(&label, &prop, &value) else {
+            return Ok(Vec::new());
+        };
+        let mut episodes = Vec::new();
+        for row in rows.iter() {
+            let Some(node) = snapshot.node_id_for_row(selene_graph::RowIndex::new(row)) else {
+                continue;
+            };
+            let Some(props) = snapshot.node_properties(node) else {
+                continue;
+            };
+            let episode = episode::from_properties(props)?;
+            if episode.identity.expired_at.is_none() {
+                episodes.push(episode);
+            }
+        }
+        episodes.sort_by(|left, right| {
+            left.identity
+                .ingested_at
+                .to_string()
+                .cmp(&right.identity.ingested_at.to_string())
+                .then_with(|| {
+                    left.identity
+                        .id
+                        .to_string()
+                        .cmp(&right.identity.id.to_string())
+                })
+        });
+        episodes.truncate(limit);
+        Ok(episodes)
+    }
+
+    /// The newest live episode that explicitly supersedes `id`, if one exists.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] if episode decode fails.
+    pub fn live_episode_superseded_by(&self, id: &Id) -> Result<Option<Id>, StoreError> {
+        let snapshot = self.graph.read();
+        let label = db_string(Episode::LABEL)?;
+        let Some(rows) = snapshot.nodes_with_label(&label) else {
+            return Ok(None);
+        };
+        let mut newest: Option<Episode> = None;
+        for row in rows.iter() {
+            let Some(node) = snapshot.node_id_for_row(selene_graph::RowIndex::new(row)) else {
+                continue;
+            };
+            let Some(props) = snapshot.node_properties(node) else {
+                continue;
+            };
+            let episode = episode::from_properties(props)?;
+            if episode.identity.expired_at.is_some() {
+                continue;
+            }
+            if episode.origin.as_ref().and_then(|origin| origin.supersedes) != Some(*id) {
+                continue;
+            }
+            if newest
+                .as_ref()
+                .is_none_or(|current| episode_is_newer(&episode, current))
+            {
+                newest = Some(episode);
+            }
+        }
+        Ok(newest.map(|episode| episode.identity.id))
     }
 
     /// Whether any episode — live or soft-forgotten — already carries this domain id.
@@ -811,6 +909,18 @@ impl Store {
         txn.commit()?;
         Ok(())
     }
+}
+
+fn episode_is_newer(candidate: &Episode, current: &Episode) -> bool {
+    let candidate_key = (
+        candidate.identity.ingested_at.to_string(),
+        candidate.identity.id.to_string(),
+    );
+    let current_key = (
+        current.identity.ingested_at.to_string(),
+        current.identity.id.to_string(),
+    );
+    candidate_key > current_key
 }
 
 fn emit_open_metrics(mode: &'static str, result: &Result<Store, StoreError>, elapsed: Duration) {

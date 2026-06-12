@@ -515,7 +515,11 @@ impl<E: Embedder> HybridRetriever<E> {
                 continue;
             }
             considered += 1;
-            let entry = StructuredEntry::Episode(episode_entry(&episode, &candidate));
+            let superseded_by = self
+                .store
+                .live_episode_superseded_by(&episode.identity.id)?;
+            let entry =
+                StructuredEntry::Episode(episode_entry(&episode, &candidate, superseded_by));
             let session = episode.session_id.as_ref().map(|id| id.to_string());
             let seen = per_session.entry(session).or_insert(0);
             if cap == 0 || *seen < cap {
@@ -910,7 +914,11 @@ fn admit_episode(
 }
 
 /// Build an episode entry from an episode and its fused candidate.
-fn episode_entry(episode: &Episode, candidate: &FusedCandidate) -> EpisodeEntry {
+fn episode_entry(
+    episode: &Episode,
+    candidate: &FusedCandidate,
+    superseded_by: Option<aionforge_domain::ids::Id>,
+) -> EpisodeEntry {
     EpisodeEntry {
         id: episode.identity.id,
         serialization_id: SerializationId::derive(
@@ -921,6 +929,8 @@ fn episode_entry(episode: &Episode, candidate: &FusedCandidate) -> EpisodeEntry 
         role: episode.role,
         ingested_at: episode.identity.ingested_at.clone(),
         expired_at: episode.identity.expired_at.clone(),
+        supersedes: episode.origin.as_ref().and_then(|origin| origin.supersedes),
+        superseded_by,
         trust: episode.stats.trust,
         score: candidate.score,
         contributions: candidate.contributions.clone(),

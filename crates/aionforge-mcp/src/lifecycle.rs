@@ -135,7 +135,7 @@ pub fn consolidation_status_tool<E: Embedder>(
         .consolidation_lag(now)
         .map_err(|error| format!("ERR_CONSOLIDATION_STATUS: {error}"))?;
     let mut out = format!(
-        "[consolidation] pending={} failed={} oldest_pending_lag_s={} generation={}",
+        "[consolidation] pending={} failed={} oldest_pending_age_s={} generation={}",
         lag.episodes_pending,
         lag.episodes_failed,
         duration_seconds(lag.oldest_pending_lag),
