@@ -8,9 +8,10 @@
 
 use std::path::PathBuf;
 
-use aionforge_domain::blocks::Identity;
-use aionforge_domain::ids::Id;
+use aionforge_domain::blocks::{Identity, Stats};
+use aionforge_domain::ids::{ContentHash, Id};
 use aionforge_domain::namespace::Namespace;
+use aionforge_domain::nodes::episodic::{ConsolidationState, Episode, Role};
 use aionforge_domain::nodes::forensic::{AuditEvent, AuditKind};
 use aionforge_store::{BoundQuery, QueryResult, SCHEMA_VERSION, Store, StoreConfig, Value};
 
@@ -98,6 +99,43 @@ fn insert_fact(store: &Store, id: &str, subject: &str) {
     .bind_str("stmt", "a canonical statement")
     .unwrap();
     store.execute(&query).expect("insert fact");
+}
+
+fn insert_raw_episode(store: &Store, content: &str, captured_at: &str) -> Id {
+    let captured_at: Zoned = captured_at
+        .parse::<jiff::Timestamp>()
+        .expect("valid captured_at")
+        .to_zoned(jiff::tz::TimeZone::UTC);
+    let id = tag_id(content);
+    let episode = Episode {
+        identity: Identity {
+            id,
+            ingested_at: now(),
+            namespace: Namespace::Agent("test".to_string()),
+            expired_at: None,
+        },
+        stats: Stats {
+            importance: 0.5,
+            trust: 0.8,
+            last_access: now(),
+            access_count_recent: 0,
+            referenced_count: 0,
+            surprise: 0.0,
+            is_pinned: false,
+        },
+        content: content.to_string(),
+        role: Role::User,
+        captured_at,
+        agent_id: tag_id("agent:test"),
+        session_id: Some(tag_id("session:test")),
+        content_hash: ContentHash::of(content.as_bytes()),
+        embedding: None,
+        embedder_model: None,
+        consolidation_state: ConsolidationState::Raw,
+        origin: None,
+    };
+    store.insert_episode(&episode).expect("insert episode");
+    id
 }
 
 /// Commit a minimal `AuditEvent` with a specific `occurred_at`, so recovery has a real
@@ -443,6 +481,47 @@ fn open_or_recover_creates_then_recovers() {
         "data from the first run is recovered"
     );
     drop(store);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn recovered_wal_preserves_episode_event_and_ingestion_time() {
+    let dir = temp_dir("episode-timestamps");
+    let config = StoreConfig::default();
+    let episode_id;
+
+    {
+        let store =
+            Store::open_persistent_migrated(&dir, config, &now()).expect("open and migrate");
+        episode_id =
+            insert_raw_episode(&store, "historical captured event", "2026-01-02T03:04:05Z");
+        drop(store);
+    }
+
+    let recovered = Store::recover(&dir, config).expect("recover");
+    let episode = recovered
+        .episode_by_id(&episode_id)
+        .expect("episode lookup")
+        .expect("episode recovered");
+    let historical: Zoned = "2026-01-02T03:04:05Z"
+        .parse::<jiff::Timestamp>()
+        .expect("valid timestamp")
+        .to_zoned(jiff::tz::TimeZone::UTC);
+    assert_eq!(episode.captured_at, historical);
+    assert_eq!(
+        episode.identity.ingested_at,
+        now(),
+        "replay preserves the operational ingestion timestamp separately"
+    );
+    assert_eq!(
+        recovered
+            .consolidation_lag()
+            .expect("lag")
+            .oldest_pending_ingested_at,
+        Some(now()),
+        "current-format replay drives backlog age from ingestion time"
+    );
+    drop(recovered);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

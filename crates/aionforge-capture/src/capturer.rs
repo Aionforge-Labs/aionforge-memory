@@ -269,14 +269,14 @@ where
         let episode = Episode {
             identity: Identity {
                 id: episode_id,
-                ingested_at: request.captured_at.clone(),
+                ingested_at: request.ingested_at.clone(),
                 namespace: namespace.clone(),
                 expired_at: None,
             },
             stats: Stats {
                 importance: CAPTURE_IMPORTANCE,
                 trust,
-                last_access: request.captured_at.clone(),
+                last_access: request.ingested_at.clone(),
                 access_count_recent: 0,
                 referenced_count: 0,
                 surprise: 0.0,
@@ -310,7 +310,7 @@ where
         let provenance = ProvenanceRecord {
             identity: Identity {
                 id: Id::generate(),
-                ingested_at: request.captured_at.clone(),
+                ingested_at: request.ingested_at.clone(),
                 namespace,
                 expired_at: None,
             },
@@ -327,7 +327,7 @@ where
         let audit = AuditEvent {
             identity: Identity {
                 id: Id::generate(),
-                ingested_at: request.captured_at.clone(),
+                ingested_at: request.ingested_at.clone(),
                 namespace: Namespace::System,
                 expired_at: None,
             },
@@ -340,7 +340,7 @@ where
                 "injection_flags": outcome.injection_flags.clone(),
             }),
             signature: String::new(),
-            occurred_at: request.captured_at,
+            occurred_at: request.ingested_at,
         };
         let audit_id = audit.identity.id;
 
@@ -580,7 +580,7 @@ fn supersedes_rejected_audit(request: &CaptureRequest, target: &Id, cause: &str)
     AuditEvent {
         identity: Identity {
             id: Id::generate(),
-            ingested_at: request.captured_at.clone(),
+            ingested_at: request.ingested_at.clone(),
             namespace: Namespace::System,
             expired_at: None,
         },
@@ -593,7 +593,7 @@ fn supersedes_rejected_audit(request: &CaptureRequest, target: &Id, cause: &str)
             "claimed_target": target.to_string(),
         }),
         signature: String::new(),
-        occurred_at: request.captured_at.clone(),
+        occurred_at: request.ingested_at.clone(),
     }
 }
 
@@ -606,7 +606,7 @@ fn residue_rejected_audit(request: &CaptureRequest, outcome: &FilterOutcome) -> 
     AuditEvent {
         identity: Identity {
             id: Id::generate(),
-            ingested_at: request.captured_at.clone(),
+            ingested_at: request.ingested_at.clone(),
             namespace: Namespace::System,
             expired_at: None,
         },
@@ -621,7 +621,7 @@ fn residue_rejected_audit(request: &CaptureRequest, outcome: &FilterOutcome) -> 
             "cleaned_len": outcome.cleaned.len(),
         }),
         signature: String::new(),
-        occurred_at: request.captured_at.clone(),
+        occurred_at: request.ingested_at.clone(),
     }
 }
 
@@ -633,7 +633,7 @@ fn system_role_denied_audit(request: &CaptureRequest) -> AuditEvent {
     AuditEvent {
         identity: Identity {
             id: Id::generate(),
-            ingested_at: request.captured_at.clone(),
+            ingested_at: request.ingested_at.clone(),
             namespace: Namespace::System,
             expired_at: None,
         },
@@ -646,7 +646,7 @@ fn system_role_denied_audit(request: &CaptureRequest) -> AuditEvent {
             "agent": request.agent_id.to_string(),
         }),
         signature: String::new(),
-        occurred_at: request.captured_at.clone(),
+        occurred_at: request.ingested_at.clone(),
     }
 }
 
@@ -661,7 +661,7 @@ fn namespace_denied_audit(
     AuditEvent {
         identity: Identity {
             id: Id::generate(),
-            ingested_at: request.captured_at.clone(),
+            ingested_at: request.ingested_at.clone(),
             namespace: Namespace::System,
             expired_at: None,
         },
@@ -674,7 +674,7 @@ fn namespace_denied_audit(
             "agent": denial.agent,
         }),
         signature: String::new(),
-        occurred_at: request.captured_at.clone(),
+        occurred_at: request.ingested_at.clone(),
     }
 }
 
@@ -692,7 +692,7 @@ fn provenance_rejected_audit(
     AuditEvent {
         identity: Identity {
             id: Id::generate(),
-            ingested_at: request.captured_at.clone(),
+            ingested_at: request.ingested_at.clone(),
             namespace: Namespace::System,
             expired_at: None,
         },
@@ -701,7 +701,7 @@ fn provenance_rejected_audit(
         actor_id: request.agent_id,
         payload,
         signature: String::new(),
-        occurred_at: request.captured_at.clone(),
+        occurred_at: request.ingested_at.clone(),
     }
 }
 

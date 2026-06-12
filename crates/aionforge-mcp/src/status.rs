@@ -48,7 +48,7 @@ mod tests {
     fn compact_status_reports_counts_and_posture() {
         let out = server_status_tool(8, ServerStatusToolParams { verbose: None });
         assert!(out.starts_with("[server] "), "{out}");
-        assert!(out.contains("tools=8"), "{out}");
+        assert!(out.contains("tools=10"), "{out}");
         assert!(out.contains("resources=8"), "{out}");
         assert!(out.contains("sampling=false"), "{out}");
     }
@@ -61,7 +61,7 @@ mod tests {
                 verbose: Some(true),
             },
         );
-        assert!(out.contains("read_like_tools=server_status,search"));
+        assert!(out.contains("read_like_tools=server_status,search,read_memory,session_manifest"));
         assert!(out.contains("mutating_tools=capture,consolidate"));
         assert!(out.contains("aionforge://policy/tool-approval"));
     }

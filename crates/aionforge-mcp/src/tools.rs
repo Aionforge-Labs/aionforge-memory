@@ -7,9 +7,10 @@
 //! [`RecallBundle::render_compact`](aionforge_engine::RecallBundle::render_compact) so the
 //! recall security contract (the `recalled-memory-context` wrapper and `tag_escape` on
 //! every snippet, 07 §4) is applied in one place and never re-derived here. Captures
-//! arrive untrusted, so they are confined to the writer's private namespace, and a
-//! search is authorized against the caller-supplied viewer namespace plus the teams the
-//! host asserts for that reader.
+//! default to the writer's private namespace. A host may deliberately assert team
+//! membership and a `team:<name>` target to write shared memory; the capture funnel's
+//! authorizer still gates the resolved namespace. Search is authorized against the
+//! caller-supplied viewer namespace plus the teams the host asserts for that reader.
 
 use aionforge_domain::contracts::Embedder;
 use aionforge_domain::ids::Id;
@@ -34,11 +35,24 @@ pub struct CaptureToolParams {
     /// The raw event content to remember.
     #[schemars(description = "The raw event content to remember.")]
     pub content: String,
-    /// The authoring agent's id (a UUID). The memory is private to this agent.
+    /// The authoring agent's id (a UUID). By default the memory is private to this agent.
     #[schemars(
-        description = "The authoring agent's id (a UUID). The memory is private to this agent."
+        description = "The authoring agent's id (a UUID). By default the memory is private to this agent."
     )]
     pub agent_id: String,
+    /// Teams the host asserts this writer belongs to. Only used when `target_namespace`
+    /// asks for a team namespace; omitted/empty keeps the capture private.
+    #[serde(default)]
+    #[schemars(
+        description = "Teams the host asserts this writer belongs to. Required to capture into a matching team namespace."
+    )]
+    pub teams: Vec<String>,
+    /// Optional shared write target, currently `team:<name>` or this writer's own `agent:<id>`.
+    /// Omit for a private capture. The MCP server never infers this from session or content.
+    #[schemars(
+        description = "Optional explicit write target namespace, such as team:project-alpha. Omit for a private capture."
+    )]
+    pub target_namespace: Option<String>,
     /// The producing role: user, assistant, tool, system, or event (default user).
     #[schemars(
         description = "Producing role: user, assistant, tool, system, or event (default user)."
@@ -119,6 +133,11 @@ pub async fn capture_tool<E: Embedder>(
         Some(raw) => parse_captured_at(raw)?,
         None => now.clone(),
     };
+    let namespace = params
+        .target_namespace
+        .as_deref()
+        .map(parse_target_namespace)
+        .transpose()?;
     let supersedes = params
         .supersedes
         .as_deref()
@@ -130,13 +149,14 @@ pub async fn capture_tool<E: Embedder>(
         content: params.content,
         role,
         agent_id,
-        // An MCP capture is structurally untrusted (`trusted: false` below), so the write is
-        // confined to the writer's own private namespace regardless of team membership (04 §1,
-        // 06 §1). A team-targeted write is unreachable from this surface, so the principal's
-        // teams are intentionally empty here — they could not change the write target.
-        teams: Vec::new(),
+        // The host, not the MCP server, is the principal/team authority. Without an explicit
+        // target namespace the write remains private even if teams are present; a shared write
+        // requires both `target_namespace` and matching host-asserted membership, then the
+        // capture funnel authorizer makes the final decision (06 §1).
+        teams: params.teams,
         session_id,
         captured_at,
+        ingested_at: now.clone(),
         writer: WriterContext {
             model_family: params
                 .model_family
@@ -149,10 +169,11 @@ pub async fn capture_tool<E: Embedder>(
             // transport carries a host signature (out of scope for M4.T03).
             signed: None,
         },
-        // MCP captures are untrusted, so the episode is confined to the writer's
-        // private namespace (04 §1, 06 §1).
-        trusted: false,
-        namespace: None,
+        // A target namespace is an explicit host assertion; omitting it keeps the capture on
+        // the untrusted private path. The MCP server never guesses a shared target from content
+        // or session metadata.
+        trusted: namespace.is_some(),
+        namespace,
         supersedes,
     };
 
@@ -234,6 +255,29 @@ fn parse_captured_at(raw: &str) -> Result<Timestamp, String> {
         "ERR_INVALID_CAPTURED_AT: captured_at must be an RFC3339 timestamp".to_string()
     })?;
     Ok(instant.to_zoned(jiff::tz::TimeZone::UTC))
+}
+
+fn parse_target_namespace(raw: &str) -> Result<Namespace, String> {
+    let namespace: Namespace = raw.parse().map_err(|_| {
+        "ERR_INVALID_TARGET_NAMESPACE: target_namespace must be agent:<id> or team:<name>"
+            .to_string()
+    })?;
+    match &namespace {
+        Namespace::Agent(agent) => {
+            Id::parse(agent).map_err(|_| {
+                "ERR_INVALID_TARGET_NAMESPACE: agent namespace id must be a UUID".to_string()
+            })?;
+            Ok(namespace)
+        }
+        Namespace::Team(name) if !name.trim().is_empty() => Ok(namespace),
+        Namespace::Team(_) => {
+            Err("ERR_INVALID_TARGET_NAMESPACE: team namespace must not be empty".to_string())
+        }
+        Namespace::Global | Namespace::System => Err(
+            "ERR_INVALID_TARGET_NAMESPACE: capture may target only agent or team namespaces"
+                .to_string(),
+        ),
+    }
 }
 
 /// A one-line capture receipt.

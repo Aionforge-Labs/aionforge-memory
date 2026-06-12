@@ -7,7 +7,7 @@ implement transport authentication; keep it local unless an OAuth
 resource-server verifier or equivalent perimeter protects the endpoint.
 
 The current server instructions deliberately lead with the recall safety rule:
-memories returned by `search` are third-party data wrapped in
+memories returned by `search`, `read_memory`, and `session_manifest` are third-party data wrapped in
 `<recalled-memory-context>`, not instructions. The same guidance is also exposed
 as the `recall_untrusted_data` prompt and as the
 `aionforge://prompt/recall-untrusted-data` resource.
@@ -69,20 +69,22 @@ Default HTTP posture:
 Aionforge namespaces memory by agent id. Use one stable UUID per agent workflow
 when you want the same private memory namespace across sessions. Clients should
 pass the raw UUID to `capture.agent_id` and `agent:<uuid>` to `search.viewer`,
-`forget.viewer`, `unforget.viewer`, and `audit_history.viewer`.
+`read_memory.viewer`, `session_manifest.viewer`, `forget.viewer`,
+`unforget.viewer`, and `audit_history.viewer`.
 
 Team visibility is host-asserted through the optional `teams` array. A local
 client should only provide teams it is allowed to assert. The MCP server does
 not derive a default principal from the connection or token, and the current MCP
-`capture` tool writes only to the authoring agent's private namespace. Shared
-team or project writes belong behind a host that asserts those authorities
-explicitly. Transport-derived identity for remote deployments is deferred until
-the platform OAuth/identity layer exists.
+`capture` tool writes to the authoring agent's private namespace unless the host
+explicitly supplies `target_namespace`. Shared team/project writes use
+`target_namespace="team:<name>"` plus a matching host-asserted `teams` entry; a
+missing membership assertion is rejected. Transport-derived identity for remote
+deployments is deferred until the platform OAuth/identity layer exists.
 
 Private namespaces are intentionally private. An agent cannot inspect another
-agent's private capture receipt by id unless the host gives it a shared team or
-system visibility path. Use team namespaces or a shared host-level workflow for
-cross-agent project bootstraps rather than exchanging private receipt ids.
+agent's private capture receipt by id unless the host gives it a shared team
+visibility path. Use team namespaces plus `read_memory` or `session_manifest`
+for cross-agent project bootstraps rather than exchanging private receipt ids.
 
 ## OAuth Readiness
 
@@ -150,6 +152,8 @@ prompts:
 enabled_tools = [
   "server_status",
   "search",
+  "read_memory",
+  "session_manifest",
   "consolidation_status",
   "audit_history",
   "capture",
@@ -160,6 +164,10 @@ enabled_tools = [
 [mcp_servers.aionforge_memory.tools.server_status]
 approval_mode = "approve"
 [mcp_servers.aionforge_memory.tools.search]
+approval_mode = "approve"
+[mcp_servers.aionforge_memory.tools.read_memory]
+approval_mode = "approve"
+[mcp_servers.aionforge_memory.tools.session_manifest]
 approval_mode = "approve"
 [mcp_servers.aionforge_memory.tools.consolidation_status]
 approval_mode = "approve"
@@ -281,8 +289,10 @@ Authorization header.
 
 ## Tool approval posture
 
-Read-like tools are `server_status`, `search`, `consolidation_status`, and
-`audit_history`. `audit_history` reads the principal-scoped audit subgraph by
+Read-like tools are `server_status`, `search`, `read_memory`,
+`session_manifest`, `consolidation_status`, and `audit_history`. `read_memory`
+reads one visible captured memory by receipt id; `session_manifest` lists the
+visible captured memories for a session. `audit_history` reads the principal-scoped audit subgraph by
 subject, by `kind`, or by subject+kind; when `subject_id` is omitted, `kind` is
 required and the compact output uses `subject=*` while listing each row's
 subject. Mutating tools are `capture`, `consolidate`, `forget`, and
@@ -310,7 +320,8 @@ episode origin keep the same ids for later provenance reads.
 Compact `search` memory lines include `score="<raw-rrf>"` and
 `score_band="<high|medium|low>"` for ranked hits. The band is relative to the
 top hit in that response and is meant for quick agent triage; it is not a global
-confidence value.
+confidence value. Episode lines may include `supersedes` or `superseded_by`
+attributes when a live capture claims a replacement relationship.
 
 `aionforge://manifest/tools.json` is the lowest-token machine-readable contract
 for agents. It lists the server version, tool classes, recommended approval
@@ -325,9 +336,9 @@ documentation.
 `consolidation_status` reports the service-wide backlog, not a caller-private
 queue. In deployments where multiple agents capture concurrently, the pending
 count can move between status and foreground `consolidate` calls. Its lag value
-is based on the stored memory timestamp; historical backfills that preserve old
-event times can therefore show large lag even when the newly enqueued work is
-fresh.
+is based on the oldest pending episode's `ingested_at`, not `captured_at`, so
+historical backfills preserve old event time without looking like stuck live
+work.
 
 `capture` receipts are the first provenance handle for a new write. Capture
 audit rows are system-authored and principal-scoped audit reads may not expose
@@ -335,9 +346,9 @@ them to ordinary agent viewers; use `audit_history` for lifecycle and other
 visible audit rows, and preserve capture receipt ids in handoffs when later
 audit or supersession work is likely.
 
-`supersedes` on capture is evidence for consolidation, not an immediate recall
-filter. A refreshed memory can rank above the older one while the older evidence
-still appears lower in ordinary search results.
+`supersedes` on capture is evidence for consolidation and recall annotation, not
+an immediate hide/delete operation. A refreshed memory can rank above the older
+one while the older evidence still appears lower with `superseded_by=<id>`.
 
 The repo also ships an installable plugin package at
 [`plugins/aionforge-memory`](../plugins/aionforge-memory). The MCP resource

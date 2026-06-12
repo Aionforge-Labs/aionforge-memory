@@ -3,10 +3,6 @@
 //! Exercises the tool functions directly with a fake embedder; the rmcp handler that
 //! wraps them is compile-verified. Hermetic — no transport, no network.
 
-use std::future::Future;
-use std::sync::Arc;
-use std::time::Duration;
-
 use aionforge_domain::contracts::Embedder;
 use aionforge_domain::embedding::{EmbedderModel, Embedding};
 use aionforge_domain::ids::Id;
@@ -19,6 +15,9 @@ use aionforge_mcp::{
 };
 use rmcp::ServiceExt;
 use rmcp::model::{GetPromptRequestParams, PromptMessageContent, ReadResourceRequestParams};
+use std::future::Future;
+use std::sync::Arc;
+use std::time::Duration;
 
 type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
@@ -86,6 +85,8 @@ fn capture_params(content: &str, agent_id: &str) -> CaptureToolParams {
     CaptureToolParams {
         content: content.to_string(),
         agent_id: agent_id.to_string(),
+        teams: Vec::new(),
+        target_namespace: None,
         role: None,
         session_id: None,
         trust: None,
@@ -494,37 +495,25 @@ async fn search_tool_enforces_namespace_authorization() {
 
 #[tokio::test]
 async fn search_tool_widens_to_a_team_only_when_the_host_asserts_membership() {
-    use aionforge_domain::namespace::Namespace;
-    use aionforge_domain::nodes::episodic::Role;
-    use aionforge_engine::{CaptureRequest, WriterContext};
-
     let memory = memory();
-    // Land a memory in the "squad" team's shared namespace. The MCP capture tool cannot do
-    // this (its writes are untrusted and confined to private), so drive the engine seam with
-    // a trusted, team-targeted write — the author is a squad member, so the write is allowed.
     let author = Id::generate();
-    memory
-        .capture(CaptureRequest {
-            content: "the squad roadmap".to_string(),
-            role: Role::User,
-            agent_id: author,
-            teams: vec!["squad".to_string()],
-            session_id: None,
-            captured_at: now(),
-            writer: WriterContext {
-                model_family: "test".to_string(),
-                model_version: None,
-                transport: None,
-                request_id: None,
-                trust: 0.9,
-                signed: None,
-            },
-            trusted: true,
-            namespace: Some(Namespace::Team("squad".to_string())),
-            supersedes: None,
-        })
+    let mut denied = capture_params("denied squad roadmap", &author.to_string());
+    denied.target_namespace = Some("team:squad".to_string());
+    let err = capture_tool(&memory, denied, &now())
         .await
-        .expect("trusted team capture");
+        .expect_err("team capture requires asserted membership");
+    assert!(err.contains("ERR_CAPTURE"), "{err}");
+
+    let mut shared = capture_params("the squad roadmap", &author.to_string());
+    shared.teams = vec!["squad".to_string()];
+    shared.target_namespace = Some("team:squad".to_string());
+    let receipt = capture_tool(&memory, shared, &now())
+        .await
+        .expect("MCP team capture");
+    assert!(
+        receipt.contains("ns=team:squad"),
+        "team namespace receipt: {receipt}"
+    );
 
     // A reader the host does not place in the squad sees nothing in the team namespace.
     let reader = Id::generate();
@@ -621,14 +610,26 @@ async fn capture_tool_persists_a_caller_supplied_event_time() {
     assert!(line.starts_with("[capture] "), "compact receipt: {line}");
     assert!(line.contains("verdict=new"));
 
-    // Prove the backfilled time was actually stored, not the injected `now()`: the
-    // capture-to-now lag is measured from the episode's stored `captured_at`. Had the
-    // override been ignored, the lag would be ~0; the event is months behind `now`.
+    // Prove the backfilled event time was stored separately from ingestion freshness:
+    // `captured_at` preserves the historical event, while consolidation lag measures the
+    // current queued write and stays near zero.
+    let episode_id = Id::parse(line.split_whitespace().nth(1).expect("receipt id")).expect("id");
+    let episode = memory
+        .store()
+        .episode_by_id(&episode_id)
+        .expect("episode lookup")
+        .expect("episode exists");
+    let historical: Timestamp = "2026-01-02T03:04:05Z"
+        .parse::<jiff::Timestamp>()
+        .expect("timestamp")
+        .to_zoned(jiff::tz::TimeZone::UTC);
+    assert_eq!(episode.captured_at, historical);
+    assert_eq!(episode.identity.ingested_at, now());
     let lag = memory.consolidation_lag(&now()).expect("lag query");
     assert_eq!(lag.episodes_pending, 1, "the backfilled capture is pending");
     assert!(
-        lag.oldest_pending_lag >= Duration::from_secs(30 * 86_400),
-        "the caller's past event time was persisted, not the injected now: {:?}",
+        lag.oldest_pending_lag <= Duration::from_secs(1),
+        "old event time must not inflate live consolidation backlog age: {:?}",
         lag.oldest_pending_lag
     );
 }

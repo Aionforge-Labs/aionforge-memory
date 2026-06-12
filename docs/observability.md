@@ -63,7 +63,7 @@ Recall error labels are `audit`, `store`, `deadline_exceeded`, and `other`.
 | `consolidation_episodes_retried_total` | counter | none | Episodes left raw for retry after transient pass failure. |
 | `consolidation_episodes_failed_total` | counter | none | Episodes marked failed by the scheduler. |
 | `consolidation_recovery_resets_total` | counter | none | `in_progress` episodes reset to `raw` at consolidator startup. |
-| `consolidation_lag_seconds` | gauge | none | Age of the oldest pending episode. |
+| `consolidation_lag_seconds` | gauge | none | Age since `ingested_at` for the oldest pending episode. |
 | `consolidation_episodes_pending` | gauge | none | Pending consolidation backlog size. |
 | `consolidation_episodes_failed` | gauge | none | Failed episode count. |
 | `consolidation_supersessions_total` | counter | none | Supersession decisions materialized by fact extraction. |

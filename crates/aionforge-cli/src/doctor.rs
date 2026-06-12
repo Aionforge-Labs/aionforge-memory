@@ -268,10 +268,10 @@ pub(crate) fn render_human(
     )?;
     writeln!(
         out,
-        "consolidation: pending={} failed={} oldest_pending={}",
+        "consolidation: pending={} failed={} oldest_pending_ingested={}",
         lag.episodes_pending,
         lag.episodes_failed,
-        lag.oldest_pending_captured_at
+        lag.oldest_pending_ingested_at
             .as_ref()
             .map_or_else(|| "none".to_owned(), ToString::to_string)
     )?;
