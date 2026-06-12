@@ -139,12 +139,12 @@ for skill in memory-loop memory-recall memory-capture memory-maintenance; do
   [ -f "$metadata" ] || continue
   require_grep "$metadata" 'allow_implicit_invocation: true' "$skill implicit invocation"
   require_grep "$metadata" 'type: "mcp"' "$skill MCP dependency"
-  require_grep "$metadata" 'value: "aionforge_memory"' "$skill MCP server name"
+  require_grep "$metadata" 'value: "aionforge_memory_plugin"' "$skill MCP server name"
 done
 
 require_grep "$plugin_dir/.codex-plugin/plugin.json" '"skills": "\./skills/"' "Codex skills path"
 require_grep "$plugin_dir/.codex-plugin/plugin.json" '"mcpServers": "\./\.mcp\.json"' "Codex MCP path"
-require_grep "$plugin_dir/codex.plugin-policy.example.toml" '\[plugins\."aionforge-memory@aionforge-plugins"\.mcp_servers\.aionforge_memory\]' "Codex plugin MCP policy"
+require_grep "$plugin_dir/codex.plugin-policy.example.toml" '\[plugins\."aionforge-memory@aionforge-plugins"\.mcp_servers\.aionforge_memory_plugin\]' "Codex plugin MCP policy"
 require_grep "$plugin_dir/codex.plugin-policy.example.toml" 'default_tools_approval_mode = "prompt"' "Codex default plugin approval mode"
 require_grep "$plugin_dir/codex.plugin-policy.example.toml" '\.tools\.search\]' "Codex search tool policy"
 require_grep "$plugin_dir/codex.plugin-policy.example.toml" '\.tools\.capture\]' "Codex capture tool policy"
@@ -153,7 +153,7 @@ require_grep "$plugin_dir/.cursor-plugin/plugin.json" '"mcpServers": "\./cursor\
 require_grep "$plugin_dir/plugin.json" '"mcpServers": "\.mcp\.json"' "root MCP path"
 
 require_grep "$plugin_dir/settings.json" '"agent": "aionforge-memory-steward"' "Claude default agent setting"
-require_grep "$plugin_dir/.mcp.json" '"aionforge_memory"' "Codex MCP server id"
+require_grep "$plugin_dir/.mcp.json" '"aionforge_memory_plugin"' "Codex MCP server id"
 require_grep "$plugin_dir/.mcp.json" '"bearer_token_env_var": "AIONFORGE_MCP_TOKEN"' "Codex bearer token env"
 reject_grep "$plugin_dir/.mcp.json" '"Authorization"' "Codex static authorization header"
 require_grep "$plugin_dir/claude.mcp.json" '"Authorization": "Bearer \$\{AIONFORGE_MCP_TOKEN\}"' "Claude bearer header"
