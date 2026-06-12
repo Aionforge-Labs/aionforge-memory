@@ -52,7 +52,7 @@ Tools:
 - server_status: version/counts/transports/tool posture.
 - search: principal-scoped recall inside <recalled-memory-context>.
 - read_memory: read one visible captured memory by id.
-- session_manifest: visible session handoff; supports after/next pagination.
+- session_manifest: visible session handoff; supports after/next pagination and audit counts.
 - capture: write one event for agent_id or principal.agent_id; team target requires asserted teams.
 - consolidation_status: service-wide backlog age from ingestion, not historical event time.
 - consolidate: bounded deterministic foreground pass, max_ticks <= 5.
@@ -61,7 +61,7 @@ Tools:
 
 Local discipline:
 - Keep the built-in HTTP server on loopback; it does not implement transport authentication. Use an OAuth verifier before shared-network exposure.
-- Identity tools accept principal={agent_id,teams}; legacy agent_id/viewer works. If both are present they must agree.
+- Identity tools accept principal={agent_id,teams}; legacy agent_id/viewer works. If principal is present, principal.teams is authoritative and any legacy teams must match.
 - No default principal or target is derived from connection, token, session, or content.
 - Private agent namespaces are not cross-readable by receipt id; use team target_namespace or session_manifest for cross-agent bootstraps.
 - Compact search id is the domain id for forget/audit; sid is render order. score_band is high/medium/low relative to this response.
@@ -103,7 +103,7 @@ Error markers worth preserving in summaries:
 - ERR_NOT_FOUND: lifecycle target was absent or not authorized for the viewer.
 - ERR_INVALID_VIEWER / ERR_INVALID_AGENT_ID: caller passed an invalid principal id.
 - ERR_MISSING_PRINCIPAL / ERR_MISSING_AGENT_ID: caller omitted both legacy identity fields and explicit principal.
-- ERR_PRINCIPAL_MISMATCH: legacy identity fields and explicit principal disagree.
+- ERR_PRINCIPAL_MISMATCH: legacy identity/team fields and explicit principal disagree.
 - ERR_INVALID_AUDIT_QUERY: audit_history needs either subject_id or kind.
 - outcome=disabled reason=forgetting.enabled=false: forgetting is disabled by config; ask the operator to enable it before retrying point forget/unforget.
 "#;
@@ -116,7 +116,7 @@ Server posture:
 - The built-in Aionforge HTTP server is a local loopback endpoint and does not validate OAuth tokens.
 - Put an OAuth resource-server verifier in front of /mcp for remote or multi-user deployments.
 - Validate issuer, expiry, audience/resource, and scopes before requests reach MCP.
-- Map the verified subject and teams into each tool's explicit principal={agent_id,teams}; the MCP server never infers identity from transport state.
+- Map the verified subject and teams into each tool's explicit principal={agent_id,teams}; the MCP server never infers identity from transport state or extends principal.teams from legacy top-level teams.
 - Bind tokens to the public MCP resource URL and reject tokens issued for other resources.
 - The verifier should advertise protected-resource metadata through a 401 WWW-Authenticate resource_metadata parameter or /.well-known/oauth-protected-resource/mcp.
 - Never pass inbound MCP access tokens through to downstream services.

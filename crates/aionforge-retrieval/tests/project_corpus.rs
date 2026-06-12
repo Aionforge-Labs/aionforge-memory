@@ -327,8 +327,8 @@ fn assert_scrubbed(memories: &[MemoryRow], queries: &[QueryRow]) {
 async fn sanitized_project_memory_corpus_recalls_expected_operational_notes() {
     let memories = parse_memories();
     let queries = parse_queries();
-    assert_eq!(memories.len(), 14, "memory fixture count is intentional");
-    assert_eq!(queries.len(), 12, "query fixture count is intentional");
+    assert_eq!(memories.len(), 15, "memory fixture count is intentional");
+    assert_eq!(queries.len(), 13, "query fixture count is intentional");
     assert_scrubbed(&memories, &queries);
 
     let by_id: HashMap<&str, &MemoryRow> =
@@ -410,6 +410,22 @@ async fn sanitized_project_memory_corpus_recalls_expected_operational_notes() {
                 bundle.explanation.class,
                 aionforge_retrieval::QueryClass::Quote,
                 "source-path queries stay on the exact lexical route"
+            );
+        }
+        if query.id == "pq-0013" && rank == Some(0) {
+            let signals: Vec<Signal> = top
+                .contributions()
+                .iter()
+                .map(|contribution| contribution.signal)
+                .collect();
+            assert!(
+                signals.contains(&Signal::LexicalAnchor),
+                "multi-anchor doc-drift queries keep lexical-anchor evidence"
+            );
+            assert_eq!(
+                bundle.explanation.class,
+                aionforge_retrieval::QueryClass::Quote,
+                "multi-anchor doc-drift queries stay on the exact lexical route"
             );
         }
     }

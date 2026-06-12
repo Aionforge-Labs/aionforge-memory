@@ -123,8 +123,8 @@ fn resolve_teams(
     if legacy_teams.is_empty() {
         return Ok(principal_teams);
     }
-    if principal_teams.is_empty() || same_team_set(&legacy_teams, &principal_teams) {
-        return Ok(legacy_teams);
+    if same_team_set(&legacy_teams, &principal_teams) {
+        return Ok(principal_teams);
     }
     Err(
         "ERR_PRINCIPAL_MISMATCH: teams and principal.teams must match when both are supplied"
@@ -192,5 +192,35 @@ mod tests {
         )
         .expect_err("mismatch rejected");
         assert!(err.starts_with("ERR_PRINCIPAL_MISMATCH"), "{err}");
+    }
+
+    #[test]
+    fn rejects_legacy_teams_when_principal_omits_them() {
+        let agent = Id::generate();
+        let err = resolve_writer(
+            Some(&agent.to_string()),
+            vec!["alpha".to_string()],
+            Some(HostPrincipalToolParam {
+                agent_id: agent.to_string(),
+                teams: Vec::new(),
+            }),
+        )
+        .expect_err("legacy teams cannot extend explicit principal");
+        assert!(err.starts_with("ERR_PRINCIPAL_MISMATCH"), "{err}");
+    }
+
+    #[test]
+    fn accepts_duplicate_matching_team_assertions() {
+        let agent = Id::generate();
+        let (_agent, teams) = resolve_writer(
+            Some(&agent.to_string()),
+            vec!["beta".to_string(), "alpha".to_string()],
+            Some(HostPrincipalToolParam {
+                agent_id: agent.to_string(),
+                teams: vec!["alpha".to_string(), "beta".to_string()],
+            }),
+        )
+        .expect("matching legacy and principal teams resolve");
+        assert_eq!(teams, vec!["alpha", "beta"]);
     }
 }

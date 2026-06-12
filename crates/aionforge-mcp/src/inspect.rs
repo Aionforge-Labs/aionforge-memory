@@ -178,19 +178,20 @@ pub fn session_manifest_tool<E: Embedder>(
         .store()
         .live_episode_superseded_by_many(ids.iter())
         .map_err(|error| format!("ERR_SESSION_MANIFEST: {error}"))?;
-    let mut visible_episodes = Vec::new();
-    let mut has_more = false;
+    let mut eligible_episodes = Vec::new();
+    let mut superseded_hidden = 0usize;
     for episode in visible_after {
         let replacement = superseded_by.get(&episode.identity.id).copied();
         if !include_superseded && replacement.is_some() {
+            superseded_hidden += 1;
             continue;
         }
-        if visible_episodes.len() >= limit {
-            has_more = true;
-            break;
-        }
-        visible_episodes.push((episode, replacement));
+        eligible_episodes.push((episode, replacement));
     }
+    let total_visible = eligible_episodes.len();
+    let has_more = total_visible > limit;
+    let visible_episodes: Vec<(Episode, Option<Id>)> =
+        eligible_episodes.into_iter().take(limit).collect();
     let next = if has_more {
         visible_episodes
             .last()
@@ -202,6 +203,8 @@ pub fn session_manifest_tool<E: Embedder>(
         &session_id,
         visible_episodes,
         limit,
+        total_visible,
+        superseded_hidden,
         next.as_ref(),
         verbose,
     ))
@@ -240,14 +243,18 @@ fn render_session_manifest(
     session_id: &Id,
     episodes: Vec<(Episode, Option<Id>)>,
     limit: usize,
+    total_visible: usize,
+    superseded_hidden: usize,
     next: Option<&SessionManifestCursor>,
     verbose: bool,
 ) -> String {
     let mut out = format!(
-        "[session_manifest] session={} count={} limit={} next={}",
+        "[session_manifest] session={} count={} total_visible={} limit={} superseded_hidden={} next={}",
         session_id,
         episodes.len(),
+        total_visible,
         limit,
+        superseded_hidden,
         render_session_manifest_cursor(next),
     );
     out.push('\n');

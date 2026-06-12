@@ -78,17 +78,19 @@ pass either:
   `audit_history.viewer`.
 
 If both shapes are present they must agree. The server rejects mismatched
-`agent_id`/`viewer` and `principal.agent_id` values, and rejects conflicting
-top-level `teams` versus `principal.teams`. It never silently merges identity
-sources and never derives a principal from a connection, HTTP header, bearer
-token, or session id on its own.
+`agent_id`/`viewer` and `principal.agent_id` values. When `principal` is
+supplied, `principal.teams` is the authoritative team assertion; legacy
+top-level `teams` may be omitted or repeated only when they name the same team
+set. The server never silently merges identity sources and never derives a
+principal from a connection, HTTP header, bearer token, or session id on its own.
 
-Team visibility is host-asserted through the optional `teams` array. A local
-client should only provide teams it is allowed to assert. OAuth-capable hosts
-should validate tokens at the perimeter, map the verified subject and team
-claims into the explicit `principal` object, and pass only those derived values
-to Aionforge. The MCP `capture` tool writes to the authoring agent's private
-namespace unless the host explicitly supplies `target_namespace`. Shared
+Team visibility is host-asserted through either legacy top-level `teams` or
+`principal.teams`. A local client should only provide teams it is allowed to
+assert. OAuth-capable hosts should validate tokens at the perimeter, map the
+verified subject and team claims into the explicit `principal` object, and pass
+only those derived values to Aionforge. The MCP `capture` tool writes to the
+authoring agent's private namespace unless the host explicitly supplies
+`target_namespace`. Shared
 team/project writes use `target_namespace="team:<name>"` plus a matching
 host-asserted team membership; a missing membership assertion is rejected.
 
@@ -345,11 +347,15 @@ when the page is complete or a compact JSON cursor when another page is
 available:
 
 ```text
-[session_manifest] session=<id> count=<n> limit=<limit> next={"ingested_at":"...","id":"..."}
+[session_manifest] session=<id> count=<n> total_visible=<n> limit=<limit> superseded_hidden=<n> next={"ingested_at":"...","id":"..."}
 ```
 
-Pass that object back as `session_manifest.after`. The tool also accepts
-`include_superseded=false` for current-only handoff manifests.
+`count` is the current page size. `total_visible` is the number of visible
+entries remaining after the supplied cursor and current-only filter, and
+`superseded_hidden` counts visible entries hidden because
+`include_superseded=false`. Pass the `next` object back as
+`session_manifest.after`. The tool also accepts `include_superseded=false` for
+current-only handoff manifests.
 
 `aionforge://manifest/tools.json` is the lowest-token machine-readable contract
 for agents. It lists the server version, tool classes, recommended approval
