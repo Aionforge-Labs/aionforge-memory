@@ -27,6 +27,7 @@ tower-service = "0.3"
 [dev-dependencies]
 aionforge-domain = { path = "../aionforge-domain", version = "0.1.0" }
 aionforge-engine = { path = "../aionforge-engine", version = "0.1.0" }
+aionforge-store = { path = "../aionforge-store", version = "0.1.0" }
 rmcp = { version = "1.6", features = ["client"] }
 tokio = { workspace = true }
 

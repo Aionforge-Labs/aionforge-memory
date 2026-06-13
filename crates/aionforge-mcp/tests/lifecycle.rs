@@ -153,11 +153,13 @@ fn search_params(query: &str, agent: Id) -> SearchToolParams {
 
 fn read_params(memory_id: &str, agent: Id) -> ReadMemoryToolParams {
     ReadMemoryToolParams {
-        memory_id: memory_id.to_string(),
+        memory_ids: vec![memory_id.to_string()],
         viewer: Some(format!("agent:{agent}")),
         principal: None,
         teams: Vec::new(),
         verbose: None,
+        full: None,
+        include_system: None,
     }
 }
 
@@ -233,9 +235,12 @@ async fn read_memory_excludes_a_system_role_episode_by_default() -> TestResult {
         Role::System,
         None,
     );
-    let denied = read_memory_tool(&memory, read_params(&system_id.to_string(), alice))
-        .expect_err("a system-role episode is not readable by default, even in one's own ns");
-    assert!(denied.starts_with("ERR_NOT_FOUND"), "{denied}");
+    let denied = read_memory_tool(&memory, read_params(&system_id.to_string(), alice))?;
+    assert!(
+        denied.contains("requested=1 found=0"),
+        "a system-role episode is not surfaced by default, even in one's own ns: {denied}"
+    );
+    assert!(!denied.contains("a system directive turn"), "{denied}");
 
     // The gate is role-specific, not a blanket block: an ordinary turn stays readable.
     let normal_id = seed_episode(
@@ -246,6 +251,7 @@ async fn read_memory_excludes_a_system_role_episode_by_default() -> TestResult {
         None,
     );
     let ok = read_memory_tool(&memory, read_params(&normal_id.to_string(), alice))?;
+    assert!(ok.contains("requested=1 found=1"), "{ok}");
     assert!(ok.contains("an ordinary assistant turn"), "{ok}");
     Ok(())
 }
@@ -474,12 +480,13 @@ async fn read_memory_is_principal_scoped() -> TestResult {
     let memory_id = capture_id(&receipt);
 
     let own = read_memory_tool(&memory, read_params(&memory_id, alice))?;
-    assert!(own.starts_with("[memory] "), "{own}");
+    assert!(own.starts_with("[read_memory] "), "{own}");
+    assert!(own.contains("requested=1 found=1"), "{own}");
     assert!(own.contains("read-by-id private memory"), "{own}");
 
-    let denied = read_memory_tool(&memory, read_params(&memory_id, bob))
-        .expect_err("another agent cannot read Alice's private memory by receipt id");
-    assert!(denied.starts_with("ERR_NOT_FOUND"), "{denied}");
+    let denied = read_memory_tool(&memory, read_params(&memory_id, bob))?;
+    assert!(denied.contains("requested=1 found=0"), "{denied}");
+    assert!(!denied.contains("read-by-id private memory"), "{denied}");
     Ok(())
 }
 
