@@ -7,9 +7,11 @@
 </p>
 
 > **Status: 0.1.0 public release.** The Rust library, CLI, MCP server,
-> read-only TUI, Docker image, and red-team gates are in place. A small
-> sanitized retrieval regression corpus is in place; broader retrieval-quality
-> benchmarks remain deferred. Expect schema and API changes before 1.0.
+> read-only operator TUI, Docker image, and red-team gates are in place. A
+> small sanitized retrieval regression corpus is in place; broader
+> retrieval-quality benchmarks remain deferred. Expect schema and API changes
+> before 1.0; the read-only TUI is slated to be replaced by an operator
+> console in a later release.
 
 Aionforge Memory is a Rust memory layer for agent systems. It stores episodes,
 facts, notes, skills, bad patterns, core memory, and audit events in
@@ -42,8 +44,9 @@ new instructions.
 
 Aionforge Memory is retrieval memory, not model training. It does not fine-tune a
 model, make the model smarter, or route work across multiple model providers.
-Embeddings and optional chat/completion work come from the provider you
-configure.
+Embeddings and any optional chat/completion work are handled by thin clients
+(`aionforge-embed`, `aionforge-chat`) that talk to the OpenAI-compatible
+provider you configure.
 
 Several subsystems are off by default and must be enabled per deployment:
 forgetting, read-time importance decay, cross-namespace promotion, and
@@ -234,8 +237,16 @@ Start with:
 
 ## Contributing
 
-This project is public and pre-1.0. Issues and pull requests are welcome, but
-please open an issue before large design changes.
+This project is public and pre-1.0. Issues and pull requests are welcome. Open
+an issue before large design changes; substantial designs are explored as
+RFC-style proposals first.
+
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** — setup, the branch and release model,
+  the commit convention, and the gate block to run before opening a PR.
+- **[AGENTS.md](AGENTS.md)** — the authoritative gate commands, crate layering,
+  and core invariants for contributors and agents.
+- **Bugs, features, and RFCs** — file through the issue forms in the
+  [new-issue chooser](../../issues/new/choose).
 
 Keep PR descriptions public-safe and focused on code, behavior, and validation.
 The repository PR template includes a public-repo check for that reason. Do not
