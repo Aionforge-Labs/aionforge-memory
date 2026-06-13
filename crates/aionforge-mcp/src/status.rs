@@ -6,6 +6,21 @@ use serde::Deserialize;
 
 use crate::surface::{self, ToolClass};
 
+/// The short source SHA baked in at build time (release-integrity Layer 1, see `build.rs`).
+/// `option_env!` degrades to `unknown` for a build without git rather than failing to
+/// compile. This is a self-declared advertisement; the cryptographic proof a release matches
+/// this SHA is the SLSA attestation published by the release pipeline (PR #202), verified
+/// out of band — not this string.
+const BUILD_SHA: &str = match option_env!("AIONFORGE_BUILD_SHA") {
+    Some(sha) => sha,
+    None => "unknown",
+};
+/// `clean` or `dirty` (tracked content vs the built commit), or `unknown` off a checkout.
+const BUILD_STATUS: &str = match option_env!("AIONFORGE_BUILD_STATUS") {
+    Some(status) => status,
+    None => "unknown",
+};
+
 /// Parameters for the `server_status` tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ServerStatusToolParams {
@@ -26,8 +41,10 @@ pub fn server_status_tool(
     params: ServerStatusToolParams,
 ) -> String {
     let mut out = format!(
-        "[server] version={} tools={} resources={} prompts={} transports={} sampling=false recall_wrapper=recalled-memory-context mutating_tools={} memories={}",
+        "[server] version={} build_sha={} build={} tools={} resources={} prompts={} transports={} sampling=false recall_wrapper=recalled-memory-context mutating_tools={} memories={}",
         env!("CARGO_PKG_VERSION"),
+        BUILD_SHA,
+        BUILD_STATUS,
         surface::tool_count(),
         resource_count,
         surface::PROMPT_COUNT,
@@ -83,6 +100,16 @@ mod tests {
         assert!(out.contains("resources=8"), "{out}");
         assert!(out.contains("sampling=false"), "{out}");
         assert!(out.contains("memories=6"), "{out}");
+        // Build provenance rides the base line: the SHA field and a clean/dirty/unknown
+        // verdict are always present (the value is whatever the build baked in).
+        assert!(out.contains("build_sha="), "{out}");
+        assert!(out.contains("build="), "{out}");
+        assert!(
+            ["build=clean", "build=dirty", "build=unknown"]
+                .iter()
+                .any(|status| out.contains(status)),
+            "{out}"
+        );
     }
 
     #[test]
