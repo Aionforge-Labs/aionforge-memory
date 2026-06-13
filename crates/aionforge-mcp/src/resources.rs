@@ -51,7 +51,7 @@ Start locally with `aionforge serve stdio` or
 Tools:
 - server_status: version/counts/transports/tool posture.
 - search: principal-scoped recall inside <recalled-memory-context>.
-- read_memory: read one visible captured memory by id.
+- read_memory: read 1..=16 memories by id; full=true returns untruncated body; include_system opt-in.
 - session_manifest: visible session handoff; supports after/next pagination and audit counts.
 - capture: write one event for agent_id or principal.agent_id; team target requires asserted teams.
 - batch_capture: capture an array (1..=64) under one shared writer; per-item best-effort, dup counts stored near-duplicates.

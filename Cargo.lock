@@ -190,6 +190,7 @@ version = "0.1.0"
 dependencies = [
  "aionforge-domain",
  "aionforge-engine",
+ "aionforge-store",
  "bytes",
  "http",
  "http-body",

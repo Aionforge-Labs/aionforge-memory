@@ -201,7 +201,7 @@ impl<E: Embedder + 'static> AionforgeMcp<E> {
     }
 
     #[tool(
-        description = "Read one visible captured memory by id in the caller's principal scope.",
+        description = "Read 1..=16 memories by id; full=true returns untruncated bodies.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,
