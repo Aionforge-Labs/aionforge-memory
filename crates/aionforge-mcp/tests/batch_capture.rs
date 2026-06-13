@@ -12,8 +12,8 @@ use aionforge_domain::ids::Id;
 use aionforge_domain::time::Timestamp;
 use aionforge_engine::{Memory, MemoryConfig};
 use aionforge_mcp::{
-    BatchCaptureItem, BatchCaptureToolParams, CaptureToolParams, MAX_BATCH_ITEMS, SearchToolParams,
-    batch_capture_tool, capture_tool, search_tool,
+    AuthEnabled, BatchCaptureItem, BatchCaptureToolParams, CaptureToolParams, MAX_BATCH_ITEMS,
+    SearchToolParams, batch_capture_tool, capture_tool, search_tool,
 };
 use std::future::Future;
 use std::sync::Arc;
@@ -161,6 +161,8 @@ async fn batch_capture_commits_every_item_with_a_tally_header_and_receipts_in_or
             ],
         ),
         &now(),
+        None,
+        AuthEnabled(false),
     )
     .await
     .expect("batch capture");
@@ -195,9 +197,15 @@ async fn batch_capture_commits_every_item_with_a_tally_header_and_receipts_in_or
 
     // All three batch items are committed and recallable under the shared writer's namespace —
     // the two near-duplicates are stored, so recall returns every one of them.
-    let recall = search_tool(&memory, recall_query("seeded note", &agent), &now())
-        .await
-        .expect("search");
+    let recall = search_tool(
+        &memory,
+        recall_query("seeded note", &agent),
+        &now(),
+        None,
+        AuthEnabled(false),
+    )
+    .await
+    .expect("search");
     assert!(
         recall.starts_with("hits: 3 of 3 considered"),
         "all three batch items landed: {recall}"
@@ -223,6 +231,8 @@ async fn batch_capture_is_best_effort_one_bad_item_does_not_abort_the_batch() {
             ],
         ),
         &now(),
+        None,
+        AuthEnabled(false),
     )
     .await
     .expect("batch capture returns Ok even with a bad item");
@@ -256,6 +266,8 @@ async fn batch_capture_counts_an_exact_duplicate_under_dup() {
         &memory,
         capture_params("an already stored memory", &agent.to_string()),
         &now(),
+        None,
+        AuthEnabled(false),
     )
     .await
     .expect("seed");
@@ -269,6 +281,8 @@ async fn batch_capture_counts_an_exact_duplicate_under_dup() {
             vec![batch_item("an already stored memory")],
         ),
         &now(),
+        None,
+        AuthEnabled(false),
     )
     .await
     .expect("batch capture");
@@ -301,6 +315,8 @@ async fn batch_capture_counts_a_stored_near_duplicate_under_dup() {
             ],
         ),
         &now(),
+        None,
+        AuthEnabled(false),
     )
     .await
     .expect("batch capture");
@@ -317,9 +333,15 @@ async fn batch_capture_counts_a_stored_near_duplicate_under_dup() {
 
     // The near-duplicate was committed, so BOTH episodes are recallable — proof that `new`
     // would be wrong to claim it and `dup` is the honest tally for a stored near-duplicate.
-    let recall = search_tool(&memory, recall_query("memory", &agent), &now())
-        .await
-        .expect("search");
+    let recall = search_tool(
+        &memory,
+        recall_query("memory", &agent),
+        &now(),
+        None,
+        AuthEnabled(false),
+    )
+    .await
+    .expect("search");
     assert!(
         recall.starts_with("hits: 2 "),
         "the near-duplicate is stored, so two episodes are recallable: {recall}"
@@ -334,6 +356,8 @@ async fn batch_capture_rejects_an_empty_array_before_any_commit() {
         &memory,
         batch_params(Some(&agent.to_string()), Vec::new()),
         &now(),
+        None,
+        AuthEnabled(false),
     )
     .await
     .expect_err("an empty batch is a call-level failure");
@@ -352,15 +376,23 @@ async fn batch_capture_rejects_an_oversized_array_before_any_commit() {
         &memory,
         batch_params(Some(&agent.to_string()), items),
         &now(),
+        None,
+        AuthEnabled(false),
     )
     .await
     .expect_err("more than MAX_BATCH_ITEMS is a call-level failure");
     assert!(err.starts_with("ERR_BATCH_TOO_LARGE"), "{err}");
 
     // Nothing was committed: the rejected oversized batch wrote no memory.
-    let recall = search_tool(&memory, recall_query("item", &agent), &now())
-        .await
-        .expect("search");
+    let recall = search_tool(
+        &memory,
+        recall_query("item", &agent),
+        &now(),
+        None,
+        AuthEnabled(false),
+    )
+    .await
+    .expect("search");
     assert!(
         recall.starts_with("hits: 0 "),
         "an oversized batch is rejected before any commit: {recall}"
@@ -376,6 +408,8 @@ async fn batch_capture_fails_the_whole_call_on_a_bad_shared_identity() {
         &memory,
         batch_params(Some("not-a-uuid"), vec![batch_item("x")]),
         &now(),
+        None,
+        AuthEnabled(false),
     )
     .await
     .expect_err("a bad shared identity fails the whole call");
@@ -397,6 +431,8 @@ async fn batch_capture_refuses_a_system_role_item_in_place() {
             vec![batch_item("a normal note"), sys],
         ),
         &now(),
+        None,
+        AuthEnabled(false),
     )
     .await
     .expect("batch capture");
@@ -427,6 +463,8 @@ async fn batch_capture_accepts_exactly_max_batch_items() {
         &memory,
         batch_params(Some(&agent.to_string()), items),
         &now(),
+        None,
+        AuthEnabled(false),
     )
     .await
     .expect("a batch of exactly MAX_BATCH_ITEMS is accepted");
@@ -467,6 +505,8 @@ async fn batch_capture_commits_every_item_into_a_team_when_membership_is_asserte
             vec!["squad".to_string()],
         ),
         &now(),
+        None,
+        AuthEnabled(false),
     )
     .await
     .expect("team batch capture with asserted membership");
@@ -504,6 +544,8 @@ async fn batch_capture_refuses_every_team_item_when_membership_is_not_asserted()
             Vec::new(),
         ),
         &now(),
+        None,
+        AuthEnabled(false),
     )
     .await
     .expect("the call returns Ok; each item fails its own authorization in place");
@@ -525,9 +567,15 @@ async fn batch_capture_refuses_every_team_item_when_membership_is_not_asserted()
     );
 
     // Nothing was committed: a non-member's team batch writes no memory at all.
-    let recall = search_tool(&memory, recall_query("squad secret", &agent), &now())
-        .await
-        .expect("search");
+    let recall = search_tool(
+        &memory,
+        recall_query("squad secret", &agent),
+        &now(),
+        None,
+        AuthEnabled(false),
+    )
+    .await
+    .expect("search");
     assert!(
         recall.starts_with("hits: 0 "),
         "a non-member's team batch lands nothing: {recall}"

@@ -25,6 +25,7 @@ mod status;
 mod surface;
 mod telemetry;
 mod tools;
+mod validated;
 
 pub use http_body_limit::{DEFAULT_MAX_REQUEST_BODY_BYTES, RequestBodyLimitService};
 pub use http_transport::{
@@ -43,7 +44,7 @@ pub use lifecycle::{
     consolidation_status_tool, forget_tool, pin_tool, unforget_tool, unpin_tool,
 };
 pub use mapper::{MapError, TokenClass, WritePosture, map_verified_claims_to_principal};
-pub use principal::HostPrincipalToolParam;
+pub use principal::{AuthEnabled, HostPrincipalToolParam};
 pub use prompt::{
     RECALL_UNTRUSTED_DATA_PROMPT, RECALL_UNTRUSTED_DATA_PROMPT_NAME,
     RECALL_UNTRUSTED_DATA_PROMPT_RESOURCE_URI, RECALL_WRAPPER_TAG,
@@ -59,6 +60,7 @@ pub use tools::{
     BatchCaptureItem, BatchCaptureToolParams, CaptureToolParams, MAX_BATCH_ITEMS, SearchToolParams,
     batch_capture_tool, capture_tool, search_tool,
 };
+pub use validated::{ValidatedPrincipal, validated_principal_from_extensions};
 
 use std::sync::Arc;
 
@@ -89,6 +91,12 @@ aionforge://policy/tool-approval for approval policy.";
 /// The MCP server handler over a shared [`Memory`].
 pub struct AionforgeMcp<E> {
     memory: Arc<Memory<E>>,
+    // Whether the OAuth resource-server posture is enabled. Threaded into every identity
+    // resolver: `false` (the default, via [`AionforgeMcp::new`]) reproduces today's body-only
+    // behavior; `true` (via [`AionforgeMcp::new_with_auth`]) requires a validated request
+    // extension. PR4 ships dark — no caller sets it to `true` yet — so runtime behavior is
+    // unchanged; PR5's validator layer flips it on.
+    auth_enabled: bool,
     consolidation_lock: Arc<tokio::sync::Mutex<()>>,
     // Used by the rmcp-generated `#[tool_handler]` impl; the macro expansion hides the
     // read from the dead-code analyzer.
@@ -106,6 +114,7 @@ impl<E> Clone for AionforgeMcp<E> {
     fn clone(&self) -> Self {
         Self {
             memory: Arc::clone(&self.memory),
+            auth_enabled: self.auth_enabled,
             consolidation_lock: Arc::clone(&self.consolidation_lock),
             tool_router: self.tool_router.clone(),
             prompt_router: self.prompt_router.clone(),
@@ -115,11 +124,28 @@ impl<E> Clone for AionforgeMcp<E> {
 
 #[tool_router]
 impl<E: Embedder + 'static> AionforgeMcp<E> {
-    /// Build a handler over a shared memory.
+    /// Build a handler over a shared memory with auth **disabled** (today's default posture).
+    ///
+    /// Every identity resolver reproduces the long-standing body-only behavior: the validated
+    /// request extension is ignored (and is always absent today, as no producer is wired). Use
+    /// [`AionforgeMcp::new_with_auth`] to opt into the OAuth resource-server posture (PR5).
     #[must_use]
     pub fn new(memory: Arc<Memory<E>>) -> Self {
+        Self::new_with_auth(memory, false)
+    }
+
+    /// Build a handler over a shared memory, selecting the OAuth resource-server posture.
+    ///
+    /// When `auth_enabled` is `true`, every identity resolver requires a validated request
+    /// extension ([`ValidatedPrincipal`]): the extension is authoritative, a body identity may
+    /// only restate it, an absent extension is rejected, and a read-only extension may not write.
+    /// When `false`, the server behaves exactly as [`AionforgeMcp::new`]. PR4 ships dark: no
+    /// caller passes `true` yet, so runtime behavior is unchanged until PR5 wires the validator.
+    #[must_use]
+    pub fn new_with_auth(memory: Arc<Memory<E>>, auth_enabled: bool) -> Self {
         Self {
             memory,
+            auth_enabled,
             consolidation_lock: Arc::new(tokio::sync::Mutex::new(())),
             tool_router: Self::tool_router(),
             prompt_router: Self::prompt_router(),
@@ -159,10 +185,15 @@ impl<E: Embedder + 'static> AionforgeMcp<E> {
             open_world_hint = false
         )
     )]
-    async fn capture(&self, params: Parameters<CaptureToolParams>) -> Result<String, String> {
+    async fn capture(
+        &self,
+        params: Parameters<CaptureToolParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<String, String> {
         let params = params.0;
         let now = jiff::Zoned::now();
-        capture_tool(&self.memory, params, &now).await
+        let extension = validated_principal_from_extensions(&context.extensions);
+        capture_tool(&self.memory, params, &now, extension, self.auth_enabled()).await
     }
 
     #[tool(
@@ -177,10 +208,12 @@ impl<E: Embedder + 'static> AionforgeMcp<E> {
     async fn batch_capture(
         &self,
         params: Parameters<BatchCaptureToolParams>,
+        context: RequestContext<RoleServer>,
     ) -> Result<String, String> {
         let params = params.0;
         let now = jiff::Zoned::now();
-        batch_capture_tool(&self.memory, params, &now).await
+        let extension = validated_principal_from_extensions(&context.extensions);
+        batch_capture_tool(&self.memory, params, &now, extension, self.auth_enabled()).await
     }
 
     #[tool(
@@ -192,7 +225,11 @@ impl<E: Embedder + 'static> AionforgeMcp<E> {
             open_world_hint = false
         )
     )]
-    async fn search(&self, params: Parameters<SearchToolParams>) -> Result<String, String> {
+    async fn search(
+        &self,
+        params: Parameters<SearchToolParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<String, String> {
         // The host boundary owns the wall clock, mirroring `capture`: stamping the recall
         // instant here keeps the substrate free of an ambient clock while making the
         // importance and recency re-ranks available to every MCP search — each query class
@@ -200,7 +237,8 @@ impl<E: Embedder + 'static> AionforgeMcp<E> {
         // M5.T01).
         let params = params.0;
         let now = jiff::Zoned::now();
-        search_tool(&self.memory, params, &now).await
+        let extension = validated_principal_from_extensions(&context.extensions);
+        search_tool(&self.memory, params, &now, extension, self.auth_enabled()).await
     }
 
     #[tool(
@@ -215,8 +253,10 @@ impl<E: Embedder + 'static> AionforgeMcp<E> {
     async fn read_memory(
         &self,
         params: Parameters<ReadMemoryToolParams>,
+        context: RequestContext<RoleServer>,
     ) -> Result<String, String> {
-        read_memory_tool(&self.memory, params.0)
+        let extension = validated_principal_from_extensions(&context.extensions);
+        read_memory_tool(&self.memory, params.0, extension, self.auth_enabled())
     }
 
     #[tool(
@@ -231,8 +271,10 @@ impl<E: Embedder + 'static> AionforgeMcp<E> {
     async fn session_manifest(
         &self,
         params: Parameters<SessionManifestToolParams>,
+        context: RequestContext<RoleServer>,
     ) -> Result<String, String> {
-        session_manifest_tool(&self.memory, params.0)
+        let extension = validated_principal_from_extensions(&context.extensions);
+        session_manifest_tool(&self.memory, params.0, extension, self.auth_enabled())
     }
 
     #[tool(
@@ -285,10 +327,12 @@ impl<E: Embedder + 'static> AionforgeMcp<E> {
     async fn forget(
         &self,
         params: Parameters<MemoryLifecycleToolParams>,
+        context: RequestContext<RoleServer>,
     ) -> Result<String, String> {
         let params = params.0;
         let now = jiff::Zoned::now();
-        forget_tool(&self.memory, params, &now)
+        let extension = validated_principal_from_extensions(&context.extensions);
+        forget_tool(&self.memory, params, &now, extension, self.auth_enabled())
     }
 
     #[tool(
@@ -303,10 +347,12 @@ impl<E: Embedder + 'static> AionforgeMcp<E> {
     async fn unforget(
         &self,
         params: Parameters<MemoryLifecycleToolParams>,
+        context: RequestContext<RoleServer>,
     ) -> Result<String, String> {
         let params = params.0;
         let now = jiff::Zoned::now();
-        unforget_tool(&self.memory, params, &now)
+        let extension = validated_principal_from_extensions(&context.extensions);
+        unforget_tool(&self.memory, params, &now, extension, self.auth_enabled())
     }
 
     #[tool(
@@ -318,10 +364,15 @@ impl<E: Embedder + 'static> AionforgeMcp<E> {
             open_world_hint = false
         )
     )]
-    async fn pin(&self, params: Parameters<MemoryLifecycleToolParams>) -> Result<String, String> {
+    async fn pin(
+        &self,
+        params: Parameters<MemoryLifecycleToolParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<String, String> {
         let params = params.0;
         let now = jiff::Zoned::now();
-        pin_tool(&self.memory, params, &now)
+        let extension = validated_principal_from_extensions(&context.extensions);
+        pin_tool(&self.memory, params, &now, extension, self.auth_enabled())
     }
 
     #[tool(
@@ -333,10 +384,15 @@ impl<E: Embedder + 'static> AionforgeMcp<E> {
             open_world_hint = false
         )
     )]
-    async fn unpin(&self, params: Parameters<MemoryLifecycleToolParams>) -> Result<String, String> {
+    async fn unpin(
+        &self,
+        params: Parameters<MemoryLifecycleToolParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<String, String> {
         let params = params.0;
         let now = jiff::Zoned::now();
-        unpin_tool(&self.memory, params, &now)
+        let extension = validated_principal_from_extensions(&context.extensions);
+        unpin_tool(&self.memory, params, &now, extension, self.auth_enabled())
     }
 
     #[tool(
@@ -351,13 +407,20 @@ impl<E: Embedder + 'static> AionforgeMcp<E> {
     async fn audit_history(
         &self,
         params: Parameters<AuditHistoryToolParams>,
+        context: RequestContext<RoleServer>,
     ) -> Result<String, String> {
         let params = params.0;
-        audit_history_tool(&self.memory, params)
+        let extension = validated_principal_from_extensions(&context.extensions);
+        audit_history_tool(&self.memory, params, extension, self.auth_enabled())
     }
 }
 
 impl<E: Embedder + 'static> AionforgeMcp<E> {
+    /// The OAuth resource-server posture as the resolver-facing [`AuthEnabled`] signal.
+    fn auth_enabled(&self) -> AuthEnabled {
+        AuthEnabled(self.auth_enabled)
+    }
+
     /// Build prompt routes for host-installable Aionforge guidance.
     fn prompt_router() -> PromptRouter<Self> {
         let route = PromptRoute::new_dyn(

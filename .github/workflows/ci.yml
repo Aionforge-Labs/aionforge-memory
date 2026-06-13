@@ -119,6 +119,14 @@ jobs:
       - uses: actions/checkout@v4
       - run: bash .github/scripts/check-audit-keygen-confined.sh
 
+  principal-gate:
+    name: principal mint-site gate
+    if: github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash .github/scripts/check-principal-gate.sh
+
   deny:
     name: cargo-deny
     needs: changes

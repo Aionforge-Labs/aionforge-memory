@@ -9,8 +9,9 @@ use aionforge_domain::ids::Id;
 use aionforge_domain::time::Timestamp;
 use aionforge_engine::{Memory, MemoryConfig};
 use aionforge_mcp::{
-    CaptureToolParams, HostPrincipalToolParam, SearchToolParams, SessionManifestCursorToolParam,
-    SessionManifestToolParams, capture_tool, search_tool, session_manifest_tool,
+    AuthEnabled, CaptureToolParams, HostPrincipalToolParam, SearchToolParams,
+    SessionManifestCursorToolParam, SessionManifestToolParams, capture_tool, search_tool,
+    session_manifest_tool,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
@@ -154,7 +155,7 @@ async fn tools_accept_explicit_host_principal_without_legacy_identity_fields() -
     capture.principal = Some(host_principal(writer, &["squad"]));
     capture.teams = Vec::new();
     capture.target_namespace = Some("team:squad".to_string());
-    let receipt = capture_tool(&memory, capture, &now()).await?;
+    let receipt = capture_tool(&memory, capture, &now(), None, AuthEnabled(false)).await?;
     assert!(receipt.contains("ns=team:squad"), "{receipt}");
 
     let found = search_tool(
@@ -169,6 +170,8 @@ async fn tools_accept_explicit_host_principal_without_legacy_identity_fields() -
             include_superseded: None,
         },
         &now(),
+        None,
+        AuthEnabled(false),
     )
     .await?;
     assert!(
@@ -186,7 +189,7 @@ async fn conflicting_host_principal_identity_is_rejected() -> TestResult {
 
     let mut capture = capture_params("conflicting principal memory", &legacy.to_string());
     capture.principal = Some(host_principal(principal, &[]));
-    let err = capture_tool(&memory, capture, &now())
+    let err = capture_tool(&memory, capture, &now(), None, AuthEnabled(false))
         .await
         .expect_err("capture identity mismatch rejected");
     assert!(err.starts_with("ERR_PRINCIPAL_MISMATCH"), "{err}");
@@ -203,6 +206,8 @@ async fn conflicting_host_principal_identity_is_rejected() -> TestResult {
             include_superseded: None,
         },
         &now(),
+        None,
+        AuthEnabled(false),
     )
     .await
     .expect_err("search identity mismatch rejected");
@@ -221,7 +226,7 @@ async fn explicit_host_principal_does_not_inherit_legacy_teams() -> TestResult {
     capture.principal = Some(host_principal(writer, &[]));
     capture.teams = vec!["squad".to_string()];
     capture.target_namespace = Some("team:squad".to_string());
-    let err = capture_tool(&memory, capture, &now())
+    let err = capture_tool(&memory, capture, &now(), None, AuthEnabled(false))
         .await
         .expect_err("top-level teams cannot extend an explicit principal");
     assert!(err.starts_with("ERR_PRINCIPAL_MISMATCH"), "{err}");
@@ -238,6 +243,8 @@ async fn explicit_host_principal_does_not_inherit_legacy_teams() -> TestResult {
             include_superseded: None,
         },
         &now(),
+        None,
+        AuthEnabled(false),
     )
     .await
     .expect_err("top-level teams cannot extend an explicit reader principal");
@@ -256,19 +263,22 @@ async fn session_manifest_paginates_visible_memories() -> TestResult {
 
     let mut first_params = capture_params("first paged manifest memory", &alice.to_string());
     first_params.session_id = Some(session.to_string());
-    let first_id = capture_id(&capture_tool(&memory, first_params, &first).await?);
+    let first_id =
+        capture_id(&capture_tool(&memory, first_params, &first, None, AuthEnabled(false)).await?);
 
     let mut second_params = capture_params("second paged manifest memory", &alice.to_string());
     second_params.session_id = Some(session.to_string());
-    let second_id = capture_id(&capture_tool(&memory, second_params, &second).await?);
+    let second_id =
+        capture_id(&capture_tool(&memory, second_params, &second, None, AuthEnabled(false)).await?);
 
     let mut third_params = capture_params("third paged manifest memory", &alice.to_string());
     third_params.session_id = Some(session.to_string());
-    let third_id = capture_id(&capture_tool(&memory, third_params, &third).await?);
+    let third_id =
+        capture_id(&capture_tool(&memory, third_params, &third, None, AuthEnabled(false)).await?);
 
     let mut page_one = manifest_params(session, alice);
     page_one.limit = Some(2);
-    let page_one = session_manifest_tool(&memory, page_one)?;
+    let page_one = session_manifest_tool(&memory, page_one, None, AuthEnabled(false))?;
     assert!(page_one.contains("count=2"), "{page_one}");
     assert!(page_one.contains("total_visible=3"), "{page_one}");
     assert!(page_one.contains("superseded_hidden=0"), "{page_one}");
@@ -295,7 +305,7 @@ async fn session_manifest_paginates_visible_memories() -> TestResult {
     let mut page_two = manifest_params(session, alice);
     page_two.limit = Some(2);
     page_two.after = Some(next);
-    let page_two = session_manifest_tool(&memory, page_two)?;
+    let page_two = session_manifest_tool(&memory, page_two, None, AuthEnabled(false))?;
     assert!(page_two.contains("count=1"), "{page_two}");
     assert!(page_two.contains("total_visible=1"), "{page_two}");
     assert!(page_two.contains("superseded_hidden=0"), "{page_two}");
@@ -321,18 +331,23 @@ async fn session_manifest_reports_total_visible_and_hidden_superseded_counts() -
 
     let mut old = capture_params("obsolete manifest audit memory", &alice.to_string());
     old.session_id = Some(session.to_string());
-    let old_id = capture_id(&capture_tool(&memory, old, &first).await?);
+    let old_id = capture_id(&capture_tool(&memory, old, &first, None, AuthEnabled(false)).await?);
 
     let mut current = capture_params("still current manifest audit memory", &alice.to_string());
     current.session_id = Some(session.to_string());
-    capture_tool(&memory, current, &second).await?;
+    capture_tool(&memory, current, &second, None, AuthEnabled(false)).await?;
 
     let mut replacement = capture_params("fresh manifest audit memory", &alice.to_string());
     replacement.session_id = Some(session.to_string());
     replacement.supersedes = Some(old_id.clone());
-    capture_tool(&memory, replacement, &third).await?;
+    capture_tool(&memory, replacement, &third, None, AuthEnabled(false)).await?;
 
-    let default = session_manifest_tool(&memory, manifest_params(session, alice))?;
+    let default = session_manifest_tool(
+        &memory,
+        manifest_params(session, alice),
+        None,
+        AuthEnabled(false),
+    )?;
     assert!(default.contains("count=3"), "{default}");
     assert!(default.contains("total_visible=3"), "{default}");
     assert!(default.contains("superseded_hidden=0"), "{default}");
@@ -343,7 +358,7 @@ async fn session_manifest_reports_total_visible_and_hidden_superseded_counts() -
 
     let mut current_only = manifest_params(session, alice);
     current_only.include_superseded = Some(false);
-    let current_only = session_manifest_tool(&memory, current_only)?;
+    let current_only = session_manifest_tool(&memory, current_only, None, AuthEnabled(false))?;
     assert!(current_only.contains("count=2"), "{current_only}");
     assert!(current_only.contains("total_visible=2"), "{current_only}");
     assert!(
@@ -370,6 +385,8 @@ async fn search_can_hide_superseded_episode_evidence() -> TestResult {
             &alice.to_string(),
         ),
         &now(),
+        None,
+        AuthEnabled(false),
     )
     .await?;
     let old_id = capture_id(&old);
@@ -379,13 +396,15 @@ async fn search_can_hide_superseded_episode_evidence() -> TestResult {
         &alice.to_string(),
     );
     replacement.supersedes = Some(old_id.clone());
-    let new = capture_tool(&memory, replacement, &now()).await?;
+    let new = capture_tool(&memory, replacement, &now(), None, AuthEnabled(false)).await?;
     let new_id = capture_id(&new);
 
     let default = search_tool(
         &memory,
         search_params("superseded lifecycle marker", alice),
         &now(),
+        None,
+        AuthEnabled(false),
     )
     .await?;
     assert!(default.contains(&old_id), "{default}");
@@ -393,7 +412,7 @@ async fn search_can_hide_superseded_episode_evidence() -> TestResult {
 
     let mut current_only = search_params("superseded lifecycle marker", alice);
     current_only.include_superseded = Some(false);
-    let current_only = search_tool(&memory, current_only, &now()).await?;
+    let current_only = search_tool(&memory, current_only, &now(), None, AuthEnabled(false)).await?;
     assert!(current_only.contains(&new_id), "{current_only}");
     assert!(
         !current_only.contains(&format!("<memory id=\"{old_id}\"")),

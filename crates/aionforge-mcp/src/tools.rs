@@ -24,7 +24,8 @@ use aionforge_engine::{
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use crate::principal::{HostPrincipalToolParam, resolve_reader, resolve_writer};
+use crate::principal::{AuthEnabled, HostPrincipalToolParam, resolve_reader, resolve_writer};
+use crate::validated::ValidatedPrincipal;
 
 /// The default number of hits a search returns when the caller does not say.
 const DEFAULT_LIMIT: usize = 10;
@@ -216,9 +217,16 @@ pub async fn capture_tool<E: Embedder>(
     memory: &Memory<E>,
     params: CaptureToolParams,
     now: &Timestamp,
+    extension: Option<ValidatedPrincipal>,
+    auth_enabled: AuthEnabled,
 ) -> Result<String, String> {
-    let (agent_id, teams) =
-        resolve_writer(params.agent_id.as_deref(), params.teams, params.principal)?;
+    let (agent_id, teams) = resolve_writer(
+        params.agent_id.as_deref(),
+        params.teams,
+        params.principal,
+        extension,
+        auth_enabled,
+    )?;
     // The single-capture path resolves the shared writer identity here, then builds one
     // request: the same trust default (0.5) and `trusted = target_namespace.is_some()`
     // semantics the batch path reuses item-by-item.
@@ -341,6 +349,8 @@ pub async fn batch_capture_tool<E: Embedder>(
     memory: &Memory<E>,
     params: BatchCaptureToolParams,
     now: &Timestamp,
+    extension: Option<ValidatedPrincipal>,
+    auth_enabled: AuthEnabled,
 ) -> Result<String, String> {
     if params.items.is_empty() {
         return Err("ERR_EMPTY_BATCH: items must contain at least one memory".to_string());
@@ -352,8 +362,13 @@ pub async fn batch_capture_tool<E: Embedder>(
         ));
     }
     // One shared writer identity for the whole call; a bad identity fails before any commit.
-    let (agent_id, teams) =
-        resolve_writer(params.agent_id.as_deref(), params.teams, params.principal)?;
+    let (agent_id, teams) = resolve_writer(
+        params.agent_id.as_deref(),
+        params.teams,
+        params.principal,
+        extension,
+        auth_enabled,
+    )?;
     // Resolve the model-family default once, before the loop, then clone per item.
     let model_family = params
         .model_family
@@ -431,6 +446,8 @@ pub async fn search_tool<E: Embedder>(
     memory: &Memory<E>,
     params: SearchToolParams,
     now: &Timestamp,
+    extension: Option<ValidatedPrincipal>,
+    auth_enabled: AuthEnabled,
 ) -> Result<String, String> {
     // A reader is an agent: recall scopes to the global space, the reader's own private
     // namespace, and the teams the host asserts. A non-agent viewer has no reader identity,
@@ -440,7 +457,13 @@ pub async fn search_tool<E: Embedder>(
     // explicit `principal` object; older clients keep using `viewer` plus `teams`. If both
     // are present they must agree, so the MCP server never guesses or silently merges two
     // authority sources.
-    let principal = resolve_reader(params.viewer.as_deref(), params.teams, params.principal)?;
+    let principal = resolve_reader(
+        params.viewer.as_deref(),
+        params.teams,
+        params.principal,
+        extension,
+        auth_enabled,
+    )?;
     let limit = params.limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT);
     let verbose = params.verbose.unwrap_or(false);
 

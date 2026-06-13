@@ -18,7 +18,7 @@ use aionforge_domain::namespace::Namespace;
 use aionforge_domain::nodes::episodic::{ConsolidationState, Episode, Role};
 use aionforge_domain::time::Timestamp;
 use aionforge_engine::{Memory, MemoryConfig};
-use aionforge_mcp::{ReadMemoryToolParams, read_memory_tool};
+use aionforge_mcp::{AuthEnabled, ReadMemoryToolParams, read_memory_tool};
 use aionforge_store::{Store, StoreConfig};
 
 #[derive(Clone)]
@@ -184,7 +184,13 @@ fn reads_every_requested_id_in_order_with_a_requested_found_header() {
     let b = seed(&memory, "second memory body", ns.clone(), Role::User);
     let c = seed(&memory, "third memory body", ns, Role::Assistant);
 
-    let out = read_memory_tool(&memory, read_params(&[a, b, c], alice)).expect("read");
+    let out = read_memory_tool(
+        &memory,
+        read_params(&[a, b, c], alice),
+        None,
+        AuthEnabled(false),
+    )
+    .expect("read");
     assert!(
         out.starts_with("[read_memory] requested=3 found=3"),
         "{out}"
@@ -216,6 +222,8 @@ fn a_missing_id_is_simply_absent_not_an_error() {
     let out = read_memory_tool(
         &memory,
         read_params(&[real_one, never_stored, real_two], alice),
+        None,
+        AuthEnabled(false),
     )
     .expect("a missing id is best-effort, not a call-level error");
     assert!(
@@ -246,7 +254,13 @@ fn an_unauthorized_id_is_indistinguishable_from_a_missing_one() {
 
     // Alice requests her own id plus Bob's. Bob's is in a namespace she cannot see, so it
     // drops out of the found set exactly like a missing id — the header reveals only a count.
-    let out = read_memory_tool(&memory, read_params(&[alice_id, bob_id], alice)).expect("read");
+    let out = read_memory_tool(
+        &memory,
+        read_params(&[alice_id, bob_id], alice),
+        None,
+        AuthEnabled(false),
+    )
+    .expect("read");
     assert!(
         out.starts_with("[read_memory] requested=2 found=1"),
         "{out}"
@@ -276,7 +290,8 @@ fn full_returns_the_untruncated_body_while_the_default_truncates() {
 
     // Default (no full, no verbose): the body is truncated to the snippet cap with an ellipsis,
     // so the far tail never appears.
-    let truncated = read_memory_tool(&memory, read_params(&[id], alice)).expect("read");
+    let truncated = read_memory_tool(&memory, read_params(&[id], alice), None, AuthEnabled(false))
+        .expect("read");
     assert!(
         truncated.contains("..."),
         "default read truncates: {truncated}"
@@ -289,7 +304,7 @@ fn full_returns_the_untruncated_body_while_the_default_truncates() {
     // full=true: the entire body is returned, tail included, no ellipsis.
     let mut full = read_params(&[id], alice);
     full.full = Some(true);
-    let out = read_memory_tool(&memory, full).expect("read");
+    let out = read_memory_tool(&memory, full, None, AuthEnabled(false)).expect("read");
     assert!(out.contains("_TAIL"), "full returns the whole body: {out}");
     assert!(!out.contains("..."), "full does not truncate: {out}");
 }
@@ -304,7 +319,8 @@ fn a_single_id_read_is_just_requested_1_found_1() {
         Namespace::Agent(alice.to_string()),
         Role::Assistant,
     );
-    let out = read_memory_tool(&memory, read_params(&[id], alice)).expect("read");
+    let out = read_memory_tool(&memory, read_params(&[id], alice), None, AuthEnabled(false))
+        .expect("read");
     assert!(
         out.starts_with("[read_memory] requested=1 found=1"),
         "{out}"
@@ -323,7 +339,13 @@ fn a_repeated_id_is_read_once() {
         Role::Assistant,
     );
     // The same id twice dedupes to a single request and a single found line.
-    let out = read_memory_tool(&memory, read_params(&[id, id], alice)).expect("read");
+    let out = read_memory_tool(
+        &memory,
+        read_params(&[id, id], alice),
+        None,
+        AuthEnabled(false),
+    )
+    .expect("read");
     assert!(
         out.starts_with("[read_memory] requested=1 found=1"),
         "{out}"
@@ -340,18 +362,24 @@ fn empty_ids_oversized_ids_and_malformed_ids_are_call_level_errors() {
     let memory = memory();
     let alice = Id::generate();
 
-    let empty = read_memory_tool(&memory, read_params(&[], alice))
+    let empty = read_memory_tool(&memory, read_params(&[], alice), None, AuthEnabled(false))
         .expect_err("no ids is a call-level error");
     assert!(empty.starts_with("ERR_NO_MEMORY_IDS"), "{empty}");
 
     let too_many: Vec<Id> = (0..17).map(|_| Id::generate()).collect();
-    let oversized = read_memory_tool(&memory, read_params(&too_many, alice))
-        .expect_err("more than 16 ids is a call-level error");
+    let oversized = read_memory_tool(
+        &memory,
+        read_params(&too_many, alice),
+        None,
+        AuthEnabled(false),
+    )
+    .expect_err("more than 16 ids is a call-level error");
     assert!(oversized.starts_with("ERR_TOO_MANY_IDS"), "{oversized}");
 
     let mut malformed = read_params(&[], alice);
     malformed.memory_ids = vec!["not-a-uuid".to_string()];
-    let bad = read_memory_tool(&memory, malformed).expect_err("a non-uuid id is rejected");
+    let bad = read_memory_tool(&memory, malformed, None, AuthEnabled(false))
+        .expect_err("a non-uuid id is rejected");
     assert!(bad.starts_with("ERR_INVALID_MEMORY_ID"), "{bad}");
 }
 
@@ -370,7 +398,7 @@ fn a_system_role_memory_is_not_surfaced_by_default_even_when_requested() {
     // capability, so include_system=true still yields found=0 (a free bool is not a gate).
     let mut asked = read_params(&[id], alice);
     asked.include_system = Some(true);
-    let out = read_memory_tool(&memory, asked).expect("read");
+    let out = read_memory_tool(&memory, asked, None, AuthEnabled(false)).expect("read");
     assert!(
         out.starts_with("[read_memory] requested=1 found=0"),
         "{out}"
@@ -392,7 +420,7 @@ fn the_admin_capability_lifts_the_system_role_gate_only_when_the_caller_opts_in(
     // Capability granted AND the caller opts in -> the gate lifts, the system turn surfaces.
     let mut revealed = read_params(&[id], admin);
     revealed.include_system = Some(true);
-    let lifted = read_memory_tool(&memory, revealed).expect("read");
+    let lifted = read_memory_tool(&memory, revealed, None, AuthEnabled(false)).expect("read");
     assert!(
         lifted.starts_with("[read_memory] requested=1 found=1"),
         "{lifted}"
@@ -401,7 +429,8 @@ fn the_admin_capability_lifts_the_system_role_gate_only_when_the_caller_opts_in(
 
     // Same capability, but the caller does NOT opt in -> still hidden. Both halves of the AND
     // are required; the capability alone does not auto-surface system content.
-    let hidden = read_memory_tool(&memory, read_params(&[id], admin)).expect("read");
+    let hidden = read_memory_tool(&memory, read_params(&[id], admin), None, AuthEnabled(false))
+        .expect("read");
     assert!(
         hidden.starts_with("[read_memory] requested=1 found=0"),
         "{hidden}"
@@ -427,7 +456,7 @@ fn equivalent_uuid_spellings_dedupe_to_one_read() {
     // Id, not the raw string, so neither the count nor a MAX_READ_IDS slot is double-charged.
     let mut params = read_params(&[id], alice);
     params.memory_ids = vec![id.to_string(), id.to_string().to_uppercase()];
-    let out = read_memory_tool(&memory, params).expect("read");
+    let out = read_memory_tool(&memory, params, None, AuthEnabled(false)).expect("read");
     assert!(
         out.starts_with("[read_memory] requested=1 found=1"),
         "equivalent spellings dedupe before the count: {out}"
@@ -460,8 +489,8 @@ fn the_distinct_id_cap_is_measured_after_dedup() {
 
     // 20 raw ids that collapse to 14 distinct stay under the cap: dedup runs before the cap,
     // so the limit is measured on distinct memories rather than the raw request length.
-    let out =
-        read_memory_tool(&memory, read_params(&raw, alice)).expect("within the distinct-id cap");
+    let out = read_memory_tool(&memory, read_params(&raw, alice), None, AuthEnabled(false))
+        .expect("within the distinct-id cap");
     assert!(
         out.starts_with("[read_memory] requested=14 found=14"),
         "{out}"
@@ -474,8 +503,13 @@ fn the_distinct_id_cap_is_measured_after_dedup() {
 
     // 17 DISTINCT ids exceed the cap regardless of duplicates.
     let seventeen: Vec<Id> = (0..17).map(|_| Id::generate()).collect();
-    let oversized = read_memory_tool(&memory, read_params(&seventeen, alice))
-        .expect_err("17 distinct ids exceeds the cap");
+    let oversized = read_memory_tool(
+        &memory,
+        read_params(&seventeen, alice),
+        None,
+        AuthEnabled(false),
+    )
+    .expect_err("17 distinct ids exceeds the cap");
     assert!(oversized.starts_with("ERR_TOO_MANY_IDS"), "{oversized}");
 }
 
@@ -494,7 +528,8 @@ fn verbose_widens_the_snippet_cap_between_default_and_full() {
     );
 
     // Default: truncated before MID.
-    let default = read_memory_tool(&memory, read_params(&[id], alice)).expect("read");
+    let default = read_memory_tool(&memory, read_params(&[id], alice), None, AuthEnabled(false))
+        .expect("read");
     assert!(
         !default.contains("_MID_"),
         "default truncates before MID: {default}"
@@ -503,7 +538,7 @@ fn verbose_widens_the_snippet_cap_between_default_and_full() {
     // Verbose: MID is revealed, but TAIL past 2000 is still truncated with an ellipsis.
     let mut verbose = read_params(&[id], alice);
     verbose.verbose = Some(true);
-    let out = read_memory_tool(&memory, verbose).expect("read");
+    let out = read_memory_tool(&memory, verbose, None, AuthEnabled(false)).expect("read");
     assert!(
         out.contains("_MID_"),
         "verbose reveals content past the default cap: {out}"
@@ -520,7 +555,7 @@ fn verbose_widens_the_snippet_cap_between_default_and_full() {
     // Full: the entire body, tail included.
     let mut full = read_params(&[id], alice);
     full.full = Some(true);
-    let whole = read_memory_tool(&memory, full).expect("read");
+    let whole = read_memory_tool(&memory, full, None, AuthEnabled(false)).expect("read");
     assert!(whole.contains("_TAIL"), "full reveals the tail: {whole}");
 }
 
@@ -540,7 +575,7 @@ fn the_admin_reveal_lifts_the_system_namespace_gate_only_with_opt_in() {
     // Admin capability AND opt-in: both the namespace gate (with_system) and the role gate lift.
     let mut revealed = read_params(&[id], admin);
     revealed.include_system = Some(true);
-    let lifted = read_memory_tool(&memory, revealed).expect("read");
+    let lifted = read_memory_tool(&memory, revealed, None, AuthEnabled(false)).expect("read");
     assert!(
         lifted.starts_with("[read_memory] requested=1 found=1"),
         "{lifted}"
@@ -548,7 +583,8 @@ fn the_admin_reveal_lifts_the_system_namespace_gate_only_with_opt_in() {
     assert!(lifted.contains("a system namespace directive"), "{lifted}");
 
     // Admin capability but NO opt-in: the system namespace stays excluded.
-    let unopted = read_memory_tool(&memory, read_params(&[id], admin)).expect("read");
+    let unopted = read_memory_tool(&memory, read_params(&[id], admin), None, AuthEnabled(false))
+        .expect("read");
     assert!(
         unopted.starts_with("[read_memory] requested=1 found=0"),
         "{unopted}"
@@ -558,7 +594,7 @@ fn the_admin_reveal_lifts_the_system_namespace_gate_only_with_opt_in() {
     let outsider = Id::generate();
     let mut asked = read_params(&[id], outsider);
     asked.include_system = Some(true);
-    let denied = read_memory_tool(&memory, asked).expect("read");
+    let denied = read_memory_tool(&memory, asked, None, AuthEnabled(false)).expect("read");
     assert!(
         denied.starts_with("[read_memory] requested=1 found=0"),
         "{denied}"

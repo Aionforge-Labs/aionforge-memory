@@ -137,6 +137,7 @@ bash .github/scripts/check-plugin-package.sh
 bash .github/scripts/check-no-gql-interpolation.sh
 bash .github/scripts/check-store-only-selene.sh
 bash .github/scripts/check-audit-keygen-confined.sh
+bash .github/scripts/check-principal-gate.sh
 ```
 
 Dependency or manifest changes also require:

@@ -24,7 +24,10 @@ use aionforge_engine::{
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use crate::principal::{HostPrincipalToolParam, resolve_reader};
+use crate::principal::{
+    AuthEnabled, HostPrincipalToolParam, refuse_read_only_write, resolve_reader,
+};
+use crate::validated::ValidatedPrincipal;
 
 const DEFAULT_CONSOLIDATION_MAX_TICKS: usize = 1;
 const MAX_CONSOLIDATION_MAX_TICKS: usize = 5;
@@ -226,6 +229,8 @@ pub fn forget_tool<E: Embedder>(
     memory: &Memory<E>,
     params: MemoryLifecycleToolParams,
     now: &Timestamp,
+    extension: Option<ValidatedPrincipal>,
+    auth_enabled: AuthEnabled,
 ) -> Result<String, String> {
     let target = writable_memory(
         memory,
@@ -233,6 +238,8 @@ pub fn forget_tool<E: Embedder>(
         params.viewer.as_deref(),
         params.teams,
         params.principal,
+        extension,
+        auth_enabled,
     )?;
     let outcome = memory
         .forget(&target.id, now)
@@ -255,6 +262,8 @@ pub fn unforget_tool<E: Embedder>(
     memory: &Memory<E>,
     params: MemoryLifecycleToolParams,
     now: &Timestamp,
+    extension: Option<ValidatedPrincipal>,
+    auth_enabled: AuthEnabled,
 ) -> Result<String, String> {
     let target = writable_memory(
         memory,
@@ -262,6 +271,8 @@ pub fn unforget_tool<E: Embedder>(
         params.viewer.as_deref(),
         params.teams,
         params.principal,
+        extension,
+        auth_enabled,
     )?;
     let outcome = memory
         .unforget(&target.id, now)
@@ -289,6 +300,8 @@ pub fn pin_tool<E: Embedder>(
     memory: &Memory<E>,
     params: MemoryLifecycleToolParams,
     now: &Timestamp,
+    extension: Option<ValidatedPrincipal>,
+    auth_enabled: AuthEnabled,
 ) -> Result<String, String> {
     let target = writable_memory(
         memory,
@@ -296,6 +309,8 @@ pub fn pin_tool<E: Embedder>(
         params.viewer.as_deref(),
         params.teams,
         params.principal,
+        extension,
+        auth_enabled,
     )?;
     let outcome = memory
         .pin(&target.id, now)
@@ -322,6 +337,8 @@ pub fn unpin_tool<E: Embedder>(
     memory: &Memory<E>,
     params: MemoryLifecycleToolParams,
     now: &Timestamp,
+    extension: Option<ValidatedPrincipal>,
+    auth_enabled: AuthEnabled,
 ) -> Result<String, String> {
     let target = writable_memory(
         memory,
@@ -329,6 +346,8 @@ pub fn unpin_tool<E: Embedder>(
         params.viewer.as_deref(),
         params.teams,
         params.principal,
+        extension,
+        auth_enabled,
     )?;
     let outcome = memory
         .unpin(&target.id, now)
@@ -349,13 +368,21 @@ pub fn unpin_tool<E: Embedder>(
 pub fn audit_history_tool<E: Embedder>(
     memory: &Memory<E>,
     params: AuditHistoryToolParams,
+    extension: Option<ValidatedPrincipal>,
+    auth_enabled: AuthEnabled,
 ) -> Result<String, String> {
     let subject = params
         .subject_id
         .as_deref()
         .map(|subject| parse_id(subject.trim(), "SUBJECT_ID"))
         .transpose()?;
-    let principal = resolve_reader(params.viewer.as_deref(), params.teams, params.principal)?;
+    let principal = resolve_reader(
+        params.viewer.as_deref(),
+        params.teams,
+        params.principal,
+        extension,
+        auth_enabled,
+    )?;
     let after = params.after.map(parse_audit_cursor).transpose()?;
     let limit = params
         .limit
@@ -413,9 +440,17 @@ fn writable_memory<E: Embedder>(
     raw_viewer: Option<&str>,
     teams: Vec<String>,
     principal: Option<HostPrincipalToolParam>,
+    extension: Option<ValidatedPrincipal>,
+    auth_enabled: AuthEnabled,
 ) -> Result<WritableMemory, String> {
     let id = parse_id(raw_id, "MEMORY_ID")?;
-    let principal = resolve_reader(raw_viewer, teams, principal)?;
+    // forget/unforget/pin/unpin are writes (they mutate durable memory). The point ops resolve
+    // identity through the read scope (`resolve_reader`) and then namespace-authorize the write,
+    // so the read-only write-guard does not flow through `resolve_writer` here — apply the *same*
+    // shared guard `resolve_writer` uses, so a validated read-only/ephemeral identity may never
+    // mutate durable memory and there is no second, drift-prone copy of the check.
+    refuse_read_only_write(extension.as_ref(), auth_enabled)?;
+    let principal = resolve_reader(raw_viewer, teams, principal, extension, auth_enabled)?;
     let candidate = memory
         .store()
         .memory_by_id(&id, &MCP_MEMORY_LABELS)
