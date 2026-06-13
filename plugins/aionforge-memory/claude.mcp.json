@@ -1,9 +1,0 @@
-{
-  "mcpServers": {
-    "aionforge-memory": {
-      "type": "http",
-      "url": "${AIONFORGE_MCP_URL:-http://127.0.0.1:3918/mcp}",
-      "timeout": 60000
-    }
-  }
-}
