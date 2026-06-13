@@ -15,6 +15,10 @@ secrets, transcripts, and local-only preferences out of this repository.
 - `docs/README.md` is the documentation map for subsystem behavior.
 - `Cargo.toml` is the workspace map and contains the intended crate layering.
 - `.github/workflows/ci.yml` is the source of truth for PR validation.
+- `CONTRIBUTING.md` is the human onboarding guide: environment setup, the
+  branch/release model, the commit convention, and the pre-PR gate block.
+- `.github/pull_request_template.md` and `.github/ISSUE_TEMPLATE/` carry the PR
+  and issue (bug, feature, RFC/design) forms.
 
 Local scratch or planning directories may exist in some checkouts under `_*/`.
 They are not part of the public codebase contract. Prefer the tracked README,
@@ -28,7 +32,14 @@ The workspace is intentionally layered and acyclic:
 - `crates/aionforge-domain`: memory-kind types and contract traits; no I/O.
 - `crates/aionforge-store`: `selene-db` storage adapter, shared graph, and
   persistence. This is the only crate that should name `selene-db` types.
-- `crates/aionforge-config`: layered file, environment, and flag configuration.
+- `crates/aionforge-config`: layered file, environment, and flag configuration,
+  including the `[auth]` (OAuth resource-server posture) and `[server]`
+  (Streamable HTTP bind/allow-list) blocks.
+- `crates/aionforge-auth`: OIDC/JWKS discovery and an RS256-pinned JWT validator
+  (OAuth resource-server support; default-off).
+- `crates/aionforge-embed`: OpenAI-compatible embedding and rerank client.
+- `crates/aionforge-chat`: multi-provider chat-completion client for optional
+  LLM-backed layers, kept off the deterministic canonical path.
 - `crates/aionforge-capture`: fast capture path, redaction, injection filtering,
   deduplication, embedding, and provenance recording.
 - `crates/aionforge-retrieval`: hybrid recall, router, rank fusion, graph
@@ -47,7 +58,8 @@ The workspace is intentionally layered and acyclic:
   cross-cutting policy.
 - `crates/aionforge`: public Rust library API.
 - `crates/aionforge-mcp`: MCP server surface.
-- `crates/aionforge-tui`: read-only operator TUI.
+- `crates/aionforge-tui`: read-only operator TUI. Slated for retirement in favor
+  of an operator console; do not invest in new TUI features.
 - `crates/aionforge-cli`: the `aionforge` binary.
 - `plugins/aionforge-memory`: agent plugin package and client-facing assets.
 
@@ -135,8 +147,9 @@ bash .github/scripts/check-thirdparty-current.sh
 ```
 
 The CI workflow runs on pull requests into `development`. Doc-only changes still
-run formatting and repository safety gates; code and dependency changes run the
-heavier Rust build, lint, test, and documentation jobs.
+run formatting and repository safety gates; the heavier Rust build, lint, test,
+and documentation matrix runs at the `development` -> `main` release gate, not on
+every development PR. See `CONTRIBUTING.md` for the full branch/release model.
 
 ## Editing Guidance
 
