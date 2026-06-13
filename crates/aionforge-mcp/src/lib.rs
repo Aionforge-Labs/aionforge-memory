@@ -17,6 +17,7 @@ mod http_body_limit;
 mod http_transport;
 mod inspect;
 mod lifecycle;
+mod mapper;
 mod principal;
 mod prompt;
 mod resources;
@@ -41,6 +42,7 @@ pub use lifecycle::{
     ConsolidationStatusToolParams, MemoryLifecycleToolParams, audit_history_tool, consolidate_tool,
     consolidation_status_tool, forget_tool, pin_tool, unforget_tool, unpin_tool,
 };
+pub use mapper::{MapError, TokenClass, WritePosture, map_verified_claims_to_principal};
 pub use principal::HostPrincipalToolParam;
 pub use prompt::{
     RECALL_UNTRUSTED_DATA_PROMPT, RECALL_UNTRUSTED_DATA_PROMPT_NAME,
