@@ -54,11 +54,11 @@ Claude Code can test the plugin directly:
 claude --plugin-dir ./plugins/aionforge-memory
 ```
 
-The Claude manifest points to `claude.mcp.json`, which keeps Claude's MCP shape separate from the Codex config.
+The Claude manifest does not register an MCP server. Configure the Aionforge MCP server separately (for example with `claude mcp add`, or in your client MCP config) as `aionforge-memory`; the plugin skills assume that server already exists and only add memory workflow instructions. See `docs/mcp-clients.md` for client-specific config shapes.
 
 When the plugin is enabled in Claude Code, `settings.json` selects the `aionforge-memory-steward` agent by default. Run `/reload-plugins` after local edits, then check `/agents` and `/help` to confirm the agent and commands are loaded.
 
-Cursor can load it as a local plugin by symlinking or copying this directory into `~/.cursor/plugins/local/aionforge-memory`. Cursor reads `.cursor-plugin/plugin.json` and `cursor.mcp.json`.
+Cursor can load it as a local plugin by symlinking or copying this directory into `~/.cursor/plugins/local/aionforge-memory`. Cursor reads `.cursor-plugin/plugin.json` for the skills; configure the Aionforge MCP server separately in Cursor's MCP settings.
 
 ## Identity
 

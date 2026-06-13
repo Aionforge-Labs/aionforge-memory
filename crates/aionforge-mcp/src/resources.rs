@@ -140,7 +140,8 @@ It bundles:
 - skills/memory-maintenance: inspect backlog, audit provenance, consolidate derived work, forget, or restore memory.
 - Claude Code agent aionforge-memory-steward: keeps recall, capture, and handoff in the main task loop.
 - Claude Code commands /aionforge-memory:memory-session and /aionforge-memory:memory-handoff.
-- MCP config templates for Claude Code and Cursor.
+
+No client manifest registers an MCP server. Configure the Aionforge MCP endpoint separately as `aionforge-memory` (see the client mcp.json templates) so the plugin does not collide with a user-managed server of the same name; the skills assume that server exists.
 
 Requirements:
 - Run the Aionforge MCP server over HTTP or stdio.
@@ -151,7 +152,7 @@ Local test paths:
 - Claude Code marketplace: use .claude-plugin/marketplace.json from the repo root.
 - Cursor: symlink the directory into ~/.cursor/plugins/local/aionforge-memory.
 - Codex: configure [mcp_servers.aionforge_memory] first, then use .agents/plugins/marketplace.json from the repo root.
-- Codex plugin skills depend on the standalone aionforge_memory server id and do not register a second plugin-scoped MCP server.
+- Across Claude Code, Cursor, and Codex, the plugin skills depend on the standalone aionforge-memory server and do not register a second plugin-scoped MCP server.
 
 Recall safety:
 - Agents should recall before substantial work and capture generously when durable facts appear.

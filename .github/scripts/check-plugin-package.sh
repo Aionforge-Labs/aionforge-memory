@@ -110,8 +110,6 @@ for file in \
   "$plugin_dir/.claude-plugin/plugin.json" \
   "$plugin_dir/.cursor-plugin/plugin.json" \
   "$plugin_dir/plugin.json" \
-  "$plugin_dir/claude.mcp.json" \
-  "$plugin_dir/cursor.mcp.json" \
   "$plugin_dir/settings.json" \
   ".agents/plugins/marketplace.json" \
   ".claude-plugin/marketplace.json" \
@@ -141,18 +139,23 @@ done
 
 require_grep "$plugin_dir/.codex-plugin/plugin.json" '"skills": "\./skills/"' "Codex skills path"
 reject_grep "$plugin_dir/.codex-plugin/plugin.json" '"mcpServers"' "Codex MCP path"
-require_grep "$plugin_dir/.claude-plugin/plugin.json" '"mcpServers": "\./claude\.mcp\.json"' "Claude MCP path"
-require_grep "$plugin_dir/.cursor-plugin/plugin.json" '"mcpServers": "\./cursor\.mcp\.json"' "Cursor MCP path"
+reject_grep "$plugin_dir/.claude-plugin/plugin.json" '"mcpServers"' "Claude MCP path"
+reject_grep "$plugin_dir/.cursor-plugin/plugin.json" '"mcpServers"' "Cursor MCP path"
 reject_grep "$plugin_dir/plugin.json" '"mcpServers"' "root MCP path"
+reject_grep ".cursor-plugin/marketplace.json" '"mcpServers"' "Cursor marketplace MCP path"
 
 require_grep "$plugin_dir/settings.json" '"agent": "aionforge-memory-steward"' "Claude default agent setting"
-reject_grep "$plugin_dir/claude.mcp.json" '"Authorization"' "Claude static auth header"
-reject_grep "$plugin_dir/claude.mcp.json" 'AIONFORGE_MCP_TOKEN' "Claude token env reference"
-reject_grep "$plugin_dir/cursor.mcp.json" '"Authorization"' "Cursor static auth header"
-reject_grep "$plugin_dir/cursor.mcp.json" 'AIONFORGE_MCP_TOKEN' "Cursor token env reference"
 
 if [ -e "$plugin_dir/.mcp.json" ]; then
   fail "Codex plugin MCP manifest remains at $plugin_dir/.mcp.json"
+fi
+
+if [ -e "$plugin_dir/claude.mcp.json" ]; then
+  fail "Claude plugin MCP manifest remains at $plugin_dir/claude.mcp.json"
+fi
+
+if [ -e "$plugin_dir/cursor.mcp.json" ]; then
+  fail "Cursor plugin MCP manifest remains at $plugin_dir/cursor.mcp.json"
 fi
 
 if [ -e "$plugin_dir/codex.plugin-policy.example.toml" ]; then

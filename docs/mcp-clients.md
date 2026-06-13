@@ -278,8 +278,9 @@ rules for this server:
 
 Cursor uses the `mcp.json` shape and supports both stdio and remote MCP
 servers. Use the HTTP server for a local Aionforge process. The repository
-plugin stores this Cursor template as `cursor.mcp.json` so Codex does not ingest
-it as a second MCP server.
+plugin does not register an MCP server of its own; add this entry to your Cursor
+MCP config so the plugin skills can reach the canonical `aionforge-memory`
+server.
 
 ```json
 {

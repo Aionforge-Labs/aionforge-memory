@@ -67,14 +67,18 @@ without the marketplace file:
 claude --plugin-dir ./plugins/aionforge-memory
 ```
 
-The Claude manifest loads `skills/`, `commands/`, `agents/`, and
-`claude.mcp.json`. The plugin root `settings.json` selects
+The Claude manifest loads `skills/`, `commands/`, and `agents/`. It does not
+register an MCP server; configure the Aionforge MCP endpoint separately as
+`aionforge-memory` so the plugin does not collide with a user-managed server of
+the same name. The plugin root `settings.json` selects
 `aionforge-memory-steward` as the default main-thread agent so ordinary Claude
 Code work starts with the memory loop available.
 
 Cursor can load the package as a local plugin from
 `~/.cursor/plugins/local/aionforge-memory`; it reads `.cursor-plugin/plugin.json`
-and `cursor.mcp.json`.
+for the skills. As with Claude and Codex, the Cursor manifest does not register
+its own MCP server — configure the Aionforge endpoint separately in Cursor's MCP
+settings.
 
 ## Safety Posture
 
