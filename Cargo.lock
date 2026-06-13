@@ -265,9 +265,9 @@ dependencies = [
  "metrics",
  "miette",
  "proptest",
- "selene-core",
- "selene-gql",
- "selene-graph",
+ "selene-db-core",
+ "selene-db-gql",
+ "selene-db-graph",
  "serde",
  "serde_json",
  "thiserror",
@@ -969,7 +969,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2536,7 +2536,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2592,7 +2592,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2716,24 +2716,26 @@ dependencies = [
 ]
 
 [[package]]
-name = "selene-algorithms"
-version = "1.1.0"
-source = "git+https://github.com/Aionforge-Labs/selene-db.git?branch=development#873a202908894073105a9368533efe9d8763e875"
+name = "selene-db-algorithms"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c060cde63b1c4c0876cb0cab6d4f30b3a69baa7b73e1004bf491039bdabe2fc9"
 dependencies = [
  "parking_lot",
  "rayon",
  "roaring",
  "rustc-hash",
- "selene-core",
- "selene-graph",
+ "selene-db-core",
+ "selene-db-graph",
  "smallvec",
  "thiserror",
 ]
 
 [[package]]
-name = "selene-core"
-version = "1.1.0"
-source = "git+https://github.com/Aionforge-Labs/selene-db.git?branch=development#873a202908894073105a9368533efe9d8763e875"
+name = "selene-db-core"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "58b08ddd59238d09bdcbcd08853469566721af8a87fb8314bd9040e8571a6090"
 dependencies = [
  "bytes",
  "jiff",
@@ -2750,9 +2752,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "selene-gql"
-version = "1.1.0"
-source = "git+https://github.com/Aionforge-Labs/selene-db.git?branch=development#873a202908894073105a9368533efe9d8763e875"
+name = "selene-db-gql"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a82621ea728fa05b4ea60f89ec1eaacce8e48f5516b712bf19c997227790898c"
 dependencies = [
  "jiff",
  "lru",
@@ -2762,9 +2765,9 @@ dependencies = [
  "pest_derive",
  "rust_decimal",
  "rustc-hash",
- "selene-algorithms",
- "selene-core",
- "selene-graph",
+ "selene-db-algorithms",
+ "selene-db-core",
+ "selene-db-graph",
  "serde",
  "serde_json",
  "smallvec",
@@ -2776,9 +2779,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "selene-graph"
-version = "1.1.0"
-source = "git+https://github.com/Aionforge-Labs/selene-db.git?branch=development#873a202908894073105a9368533efe9d8763e875"
+name = "selene-db-graph"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "37d3e12a6f9fc44d37ca15690843e4f4cec02fda67eab65da6995593fb64d270"
 dependencies = [
  "arc-swap",
  "imbl",
@@ -2791,8 +2795,8 @@ dependencies = [
  "roaring",
  "rust_decimal",
  "rustc-hash",
- "selene-core",
- "selene-persist",
+ "selene-db-core",
+ "selene-db-persist",
  "serde",
  "smallvec",
  "thiserror",
@@ -2803,15 +2807,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "selene-persist"
-version = "1.1.0"
-source = "git+https://github.com/Aionforge-Labs/selene-db.git?branch=development#873a202908894073105a9368533efe9d8763e875"
+name = "selene-db-persist"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aeb851c2056780c8da870714cd65d0c2d1d9aa9591d9bba1fc17c61c03b20946"
 dependencies = [
  "blake3",
  "miette",
  "postcard",
  "rayon",
- "selene-core",
+ "selene-db-core",
  "serde",
  "thiserror",
  "tracing",
@@ -3077,7 +3082,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3619,7 +3624,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
