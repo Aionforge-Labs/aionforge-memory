@@ -11,6 +11,7 @@ members = [
     "crates/aionforge-domain",       # L1 — memory-kind types + contract traits (no I/O)
     "crates/aionforge-store",        # L0 — selene-db SharedGraph + persistence (only crate naming selene-db)
     "crates/aionforge-config",       # layered configuration (file + env + flags); produces StoreConfig
+    "crates/aionforge-auth",         # L2 — OIDC/JWKS discovery + RS256-pinned JWT validator (PR2, fork#3)
     "crates/aionforge-embed",        # L2 — OpenAI-compatible embedding/rerank client
     "crates/aionforge-chat",         # L2 — multi-provider chat-completion client (OpenAI/Anthropic/open)
     "crates/aionforge-capture",      # L2 — fast capture path
@@ -81,6 +82,13 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls-no-p
 # aws-lc-rs default. aionforge-embed installs it as the process default before it
 # builds a client (rustls-no-provider panics on a client built with no provider).
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
+# JWT validation (RS256-pinned, ring-backed, constant-time). Spike 2026-06-13 chose v9 over v10:
+# v10 dropped ring, forcing either aws-lc-rs (cmake/Go, breaks musl) or rust_crypto (carries
+# RUSTSEC-2023-0071 Marvin advisory + rand duplicate); v9 reuses ring v0.17.14 (already in-tree
+# via rustls), pulls 11 new crates (time, simple_asn1, num-bigint), passes cargo deny clean with
+# ZERO carve-outs. Quarantined in aionforge-auth; resource server only does public-key verify
+# (never private ops), and jsonwebtoken types never leak into that crate's public API (fork#3).
+jsonwebtoken = { version = "9.3" }
 # Capture-side privacy/injection filter patterns (M1.T02). Already in the tree
 # transitively via selene-db, so this direct pin reuses that exact locked version.
 regex = "1"
