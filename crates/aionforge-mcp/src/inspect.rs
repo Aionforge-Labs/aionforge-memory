@@ -11,7 +11,8 @@ use aionforge_engine::Memory;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::principal::{HostPrincipalToolParam, resolve_reader};
+use crate::principal::{AuthEnabled, HostPrincipalToolParam, resolve_reader};
+use crate::validated::ValidatedPrincipal;
 
 const DEFAULT_MANIFEST_LIMIT: usize = 50;
 const MAX_MANIFEST_LIMIT: usize = 200;
@@ -124,6 +125,8 @@ struct RenderedSessionManifestCursor {
 pub fn read_memory_tool<E: Embedder>(
     memory: &Memory<E>,
     params: ReadMemoryToolParams,
+    extension: Option<ValidatedPrincipal>,
+    auth_enabled: AuthEnabled,
 ) -> Result<String, String> {
     // Parse every id upfront (fail fast on malformed input before any store access), then
     // dedupe on the parsed Id so equivalent UUID spellings collapse to a single read. The
@@ -148,7 +151,13 @@ pub fn read_memory_tool<E: Embedder>(
         ));
     }
 
-    let principal = resolve_reader(params.viewer.as_deref(), params.teams, params.principal)?;
+    let principal = resolve_reader(
+        params.viewer.as_deref(),
+        params.teams,
+        params.principal,
+        extension,
+        auth_enabled,
+    )?;
     // Same admin-gated reveal as recall: both the system-namespace gate (`with_system`) and the
     // role gate lift only when the injected authority grants the capability AND the caller opts in.
     // Default authorities deny it; a free bool alone is not a security gate.
@@ -226,9 +235,17 @@ pub fn read_memory_tool<E: Embedder>(
 pub fn session_manifest_tool<E: Embedder>(
     memory: &Memory<E>,
     params: SessionManifestToolParams,
+    extension: Option<ValidatedPrincipal>,
+    auth_enabled: AuthEnabled,
 ) -> Result<String, String> {
     let session_id = parse_id(&params.session_id, "SESSION_ID")?;
-    let principal = resolve_reader(params.viewer.as_deref(), params.teams, params.principal)?;
+    let principal = resolve_reader(
+        params.viewer.as_deref(),
+        params.teams,
+        params.principal,
+        extension,
+        auth_enabled,
+    )?;
     // Same admin-gated reveal as recall and `read_memory`: system content stays hidden in a
     // manifest unless the injected authority grants the capability (default deny).
     let surface_system = memory.authorizer().may_surface_system(&principal);

@@ -14,7 +14,7 @@ use aionforge_domain::embedding::{EmbedderModel, Embedding};
 use aionforge_domain::ids::Id;
 use aionforge_domain::time::Timestamp;
 use aionforge_engine::{Memory, MemoryConfig};
-use aionforge_mcp::{CaptureToolParams, SearchToolParams, capture_tool, search_tool};
+use aionforge_mcp::{AuthEnabled, CaptureToolParams, SearchToolParams, capture_tool, search_tool};
 use metrics::{
     Counter, CounterFn, Gauge, Histogram, Key, KeyName, Metadata, Recorder, SharedString, Unit,
 };
@@ -180,6 +180,8 @@ fn search_emits_recall_bytes_served_through_the_facade() {
             &memory,
             capture_params("telemetry served-bytes seed memory", &agent.to_string()),
             &now(),
+            None,
+            AuthEnabled(false),
         ))
         .expect("seed capture");
 
@@ -190,9 +192,15 @@ fn search_emits_recall_bytes_served_through_the_facade() {
     let rendered_len = Cell::new(0u64);
     metrics::with_local_recorder(&recorder, || {
         runtime.block_on(async {
-            let rendered = search_tool(&memory, search_params("telemetry", agent), &now())
-                .await
-                .expect("search renders");
+            let rendered = search_tool(
+                &memory,
+                search_params("telemetry", agent),
+                &now(),
+                None,
+                AuthEnabled(false),
+            )
+            .await
+            .expect("search renders");
             // Even a zero-hit recall renders a non-empty wrapper, so served bytes are always > 0.
             assert!(!rendered.is_empty(), "search renders a non-empty wrapper");
             rendered_len.set(rendered.len() as u64);

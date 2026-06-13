@@ -14,8 +14,8 @@ use aionforge_domain::ids::Id;
 use aionforge_domain::time::Timestamp;
 use aionforge_engine::{Memory, MemoryConfig};
 use aionforge_mcp::{
-    AuditHistoryToolParams, CaptureToolParams, MemoryLifecycleToolParams, audit_history_tool,
-    capture_tool, pin_tool, unpin_tool,
+    AuditHistoryToolParams, AuthEnabled, CaptureToolParams, MemoryLifecycleToolParams,
+    audit_history_tool, capture_tool, pin_tool, unpin_tool,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
@@ -126,6 +126,8 @@ fn pin_kind_audit(memory: &Memory<FakeEmbedder>, memory_id: &str, agent: Id, kin
             limit: Some(5),
             verbose: None,
         },
+        None,
+        AuthEnabled(false),
     )
     .expect("audit read")
 }
@@ -140,20 +142,40 @@ async fn pin_and_unpin_are_scoped_audited_and_idempotent() -> TestResult {
         &memory,
         capture_params("pinnable lifecycle memory", &alice.to_string()),
         &now(),
+        None,
+        AuthEnabled(false),
     )
     .await?;
     let memory_id = capture_id(&receipt);
 
     // Another agent cannot pin Alice's private memory — the same not-found masking as forget,
     // so an outsider cannot even probe its existence.
-    let denied = pin_tool(&memory, lifecycle_params(&memory_id, bob), &now())
-        .expect_err("another agent must not pin Alice's private memory");
+    let denied = pin_tool(
+        &memory,
+        lifecycle_params(&memory_id, bob),
+        &now(),
+        None,
+        AuthEnabled(false),
+    )
+    .expect_err("another agent must not pin Alice's private memory");
     assert!(denied.starts_with("ERR_NOT_FOUND"), "{denied}");
 
     // First pin applies and audits; a second pin is an idempotent no-op.
-    let pinned = pin_tool(&memory, lifecycle_params(&memory_id, alice), &now())?;
+    let pinned = pin_tool(
+        &memory,
+        lifecycle_params(&memory_id, alice),
+        &now(),
+        None,
+        AuthEnabled(false),
+    )?;
     assert!(pinned.contains("outcome=pinned"), "{pinned}");
-    let again = pin_tool(&memory, lifecycle_params(&memory_id, alice), &now())?;
+    let again = pin_tool(
+        &memory,
+        lifecycle_params(&memory_id, alice),
+        &now(),
+        None,
+        AuthEnabled(false),
+    )?;
     assert!(again.contains("outcome=already_pinned"), "{again}");
 
     // Only the applied transition is audited — one pin row, in Alice's own namespace.
@@ -162,9 +184,21 @@ async fn pin_and_unpin_are_scoped_audited_and_idempotent() -> TestResult {
     assert!(pin_audit.contains("kind=pin"), "{pin_audit}");
 
     // Unpin lifts the stay and audits; a second unpin is an idempotent no-op.
-    let unpinned = unpin_tool(&memory, lifecycle_params(&memory_id, alice), &now())?;
+    let unpinned = unpin_tool(
+        &memory,
+        lifecycle_params(&memory_id, alice),
+        &now(),
+        None,
+        AuthEnabled(false),
+    )?;
     assert!(unpinned.contains("outcome=unpinned"), "{unpinned}");
-    let still = unpin_tool(&memory, lifecycle_params(&memory_id, alice), &now())?;
+    let still = unpin_tool(
+        &memory,
+        lifecycle_params(&memory_id, alice),
+        &now(),
+        None,
+        AuthEnabled(false),
+    )?;
     assert!(still.contains("outcome=not_pinned"), "{still}");
 
     let unpin_audit = pin_kind_audit(&memory, &memory_id, alice, "unpin");
