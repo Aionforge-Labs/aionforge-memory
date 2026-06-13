@@ -548,6 +548,36 @@ mod tests {
     }
 
     #[test]
+    fn the_teams_allow_list_is_fail_closed_an_empty_set_validates_and_grants_nothing() {
+        // PR3 blocking precondition (b), config half: the mandatory teams allow-list is
+        // fail-closed. An *empty* allow-list is a valid configuration — it simply grants no teams
+        // from this issuer (the PR3 mapper drops every team name, including a spoofed reserved
+        // `system`/`global`). Validation must accept it, never require a non-empty list.
+        let empty = AuthConfig {
+            enabled: true,
+            issuers: vec![anchored_issuer()], // default teams_allowlist is empty
+        };
+        assert!(
+            empty.issuers[0].teams_allowlist.is_empty(),
+            "the default allow-list is empty"
+        );
+        assert!(
+            empty.validate().is_ok(),
+            "an empty allow-list is a valid, fail-closed posture (grants no teams)"
+        );
+
+        // A populated allow-list of plain name KEYS also validates.
+        let mut issuer = anchored_issuer();
+        issuer.teams_allowlist.insert("platform".into());
+        issuer.teams_allowlist.insert("payments".into());
+        let populated = AuthConfig {
+            enabled: true,
+            issuers: vec![issuer],
+        };
+        assert!(populated.validate().is_ok());
+    }
+
+    #[test]
     fn the_posture_round_trips_through_json() {
         let mut issuer = anchored_issuer();
         issuer.teams_allowlist.insert("platform".into());
