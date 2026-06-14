@@ -5,14 +5,20 @@
 //! caller-defined `level`, wired into a hierarchy by the indexed self-referential
 //! `parent_id` scalar and advanced through the `work_status` lifecycle. It is Identity-only
 //! (no Stats block) and is exempt from decay/forgetting by absence from the maintenance scan
-//! sets — so this surface deliberately stays out of the forget/pin/erase machinery; PR1
-//! lays down the create + the indexed readers (by id, by parent, by status). The status
-//! transition (a guarded CAS plus a signed audit record) and the tag/parent edge writes are
-//! later work; here `work_status` is written once at create from the item's value.
+//! sets — so this surface deliberately stays out of the forget/pin/erase machinery. The create
+//! plus the indexed readers (by id, by parent, by status) and [`Store::advance_work_status`] —
+//! the guarded compare-and-set status transition that co-commits a signed `WorkStatusChange`
+//! audit record — live here. Re-parent/reorder and the tag-edge writes ride the tool surface.
 
 use aionforge_domain::blocks::Identity;
+use aionforge_domain::edges::Audit;
+use aionforge_domain::ids::Id;
+use aionforge_domain::nodes::forensic::{AuditEvent, AuditKind};
 use aionforge_domain::nodes::work::{WorkItem, WorkStatus};
-use selene_core::{DbString, LabelSet, NodeId, PropertyMap, Value, db_string};
+use aionforge_domain::time::Timestamp;
+use selene_core::{
+    DbString, LabelDiff, LabelSet, NodeId, PropertyDiff, PropertyMap, Value, db_string,
+};
 use selene_graph::{RowIndex, SeleneGraph};
 
 use crate::convert::{
@@ -222,5 +228,101 @@ impl Store {
         let mut items = work_items_where(&snapshot, WORK_STATUS, &enum_value(&status)?)?;
         items.sort_by_key(|item| item.identity.id);
         Ok(items)
+    }
+
+    /// Advance a work item's lifecycle status as a guarded compare-and-set, recording the
+    /// transition in the signed audit trail (work-structure design §2).
+    ///
+    /// One atomic commit: resolve the work item by domain id, read its current `work_status`,
+    /// and — when `expected_from` is given — refuse with [`StoreError::Invariant`] unless it
+    /// matches (the CAS guard that turns a stale-state advance into a clean error rather than a
+    /// lost update). The new `work_status` is written in place — the work item stays one node for
+    /// life, only this field moves — and a signed `WorkStatusChange` [`AuditEvent`] anchored on
+    /// the work item via an `AUDIT` edge is co-committed in the SAME transaction, so the
+    /// transition and its audit are all-or-nothing. Lifecycle history therefore lives in the
+    /// by-subject audit trail (see [`Store::audit_history`]), never in version nodes. Returns the
+    /// updated work item.
+    ///
+    /// # Errors
+    /// Returns [`StoreError::Invariant`] on a CAS mismatch, [`StoreError`] if no work item carries
+    /// `id`, or if a mutation or the commit fails.
+    pub fn advance_work_status(
+        &self,
+        id: &Id,
+        to: WorkStatus,
+        expected_from: Option<WorkStatus>,
+        actor: &Id,
+        at: &Timestamp,
+    ) -> Result<WorkItem, StoreError> {
+        let mut txn = self.graph().begin_write();
+        let updated = {
+            let mut mutator = txn.mutator();
+            let node = work_item_node_id_in(mutator.read(), id)?
+                .ok_or_else(|| StoreError::decode(format!("work item {id} not found")))?;
+            // Read the current item, dropping the read borrow before mutating.
+            let current = {
+                let read = mutator.read();
+                let props = read
+                    .node_properties(node)
+                    .ok_or_else(|| StoreError::decode("work item vanished mid-transition"))?;
+                from_properties(props)?
+            };
+            let from = current.work_status;
+            if let Some(expected) = expected_from
+                && from != expected
+            {
+                return Err(StoreError::invariant(format!(
+                    "work item {id} is {from:?}, expected {expected:?} to advance to {to:?}"
+                )));
+            }
+            // State-gate the write: advancing to the status the item already holds is a no-op
+            // that builds no audit at all. Idempotency lives in this gate, never in the audit id
+            // (the `audit_addr.rs` discipline), so a crash-retry or same-state re-assertion never
+            // leaves a phantom `{from: X, to: X}` row in the by-subject history.
+            if to == from {
+                return Ok(current);
+            }
+            mutator.update_node(
+                node,
+                LabelDiff::new([], [])?,
+                PropertyDiff::new([(db_string(WORK_STATUS)?, enum_value(&to)?)], [])?,
+            )?;
+            // Co-commit the signed transition record, anchored on the work item, in this txn.
+            // One fresh id per applied transition — deliberately generated, NOT content-addressed
+            // (the `audit_addr.rs` discipline): every real flip is its own audit row, so two
+            // genuine crossings of the same transition at the same instant never collide into a
+            // single id whose second write is silently deduplicated away. With a unique id the
+            // `ensure_event` probe never matches, so `created` is always true here; the guard
+            // mirrors the canonical sibling sites and keeps the edge in lockstep with the node.
+            let audit = AuditEvent {
+                identity: Identity {
+                    id: Id::generate(),
+                    ingested_at: at.clone(),
+                    namespace: current.identity.namespace.clone(),
+                    expired_at: None,
+                },
+                kind: AuditKind::WorkStatusChange,
+                subject_id: *id,
+                actor_id: *actor,
+                payload: serde_json::json!({ "from": from, "to": to }),
+                signature: String::new(),
+                occurred_at: at.clone(),
+            };
+            let ensured = crate::audit::ensure_event(&mut mutator, &audit, self.audit_signer())?;
+            if ensured.created {
+                mutator.create_edge(
+                    db_string(Audit::LABEL)?,
+                    ensured.node,
+                    node,
+                    PropertyMap::from_pairs(Vec::new())?,
+                )?;
+            }
+            WorkItem {
+                work_status: to,
+                ..current
+            }
+        };
+        txn.commit()?;
+        Ok(updated)
     }
 }

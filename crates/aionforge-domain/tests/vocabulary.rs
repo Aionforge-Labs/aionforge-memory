@@ -123,7 +123,8 @@ fn promotion_status_vocabulary() {
 
 #[test]
 fn audit_kind_vocabulary() {
-    // §4.11: the 23 audit-event kinds, in spec order.
+    // §4.11: the audit-event kinds (this curated subset is in spec order; work_status_change is
+    // the work-structure facet's lifecycle event).
     let expected = [
         (AuditKind::Capture, "capture"),
         (AuditKind::Forget, "forget"),
@@ -151,8 +152,9 @@ fn audit_kind_vocabulary() {
         (AuditKind::InvalidSignature, "invalid_signature"),
         (AuditKind::KeyRotation, "key_rotation"),
         (AuditKind::AgentRetired, "agent_retired"),
+        (AuditKind::WorkStatusChange, "work_status_change"),
     ];
-    assert_eq!(expected.len(), 23);
+    assert_eq!(expected.len(), 24);
     for (variant, want) in expected {
         assert_eq!(tag(variant), want);
     }

@@ -340,6 +340,7 @@ pub fn arb_audit_kind() -> impl Strategy<Value = AuditKind> {
         AuditKind::InvalidSignature,
         AuditKind::KeyRotation,
         AuditKind::AgentRetired,
+        AuditKind::WorkStatusChange,
     ])
 }
 
