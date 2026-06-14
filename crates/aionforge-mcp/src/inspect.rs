@@ -21,7 +21,7 @@ use crate::validated::ValidatedPrincipal;
 
 const DEFAULT_MANIFEST_LIMIT: usize = 50;
 const MAX_MANIFEST_LIMIT: usize = 200;
-const SNIPPET_CHARS: usize = 240;
+pub(crate) const SNIPPET_CHARS: usize = 240;
 const VERBOSE_CHARS: usize = 2_000;
 
 /// Maximum number of distinct ids accepted by `read_memory` in a single call.
@@ -500,7 +500,7 @@ fn render_episode_line(episode: &Episode, superseded_by: Option<&Id>, max_chars:
 /// (and `session_manifest`, which shares that renderer, is left untouched). Every arm reuses
 /// the same `attr_escape`/`tag_escape`/`truncate_chars` helpers, so escaping and the body
 /// char cap are uniform across kinds.
-fn render_memory_line(
+pub(crate) fn render_memory_line(
     memory: &ResolvedMemory,
     superseded_by: Option<&Id>,
     max_chars: usize,
@@ -601,7 +601,7 @@ fn render_memory_line(
 }
 
 /// The stable scalar tag for a work item's lifecycle status (matches the domain `snake_case`).
-fn work_status_tag(status: WorkStatus) -> &'static str {
+pub(crate) fn work_status_tag(status: WorkStatus) -> &'static str {
     match status {
         WorkStatus::Todo => "todo",
         WorkStatus::InProgress => "in_progress",

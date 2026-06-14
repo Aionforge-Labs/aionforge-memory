@@ -508,7 +508,7 @@ fn parse_captured_at(raw: &str) -> Result<Timestamp, String> {
     Ok(instant.to_zoned(jiff::tz::TimeZone::UTC))
 }
 
-fn parse_target_namespace(raw: &str) -> Result<Namespace, String> {
+pub(crate) fn parse_target_namespace(raw: &str) -> Result<Namespace, String> {
     let namespace: Namespace = raw.parse().map_err(|_| {
         "ERR_INVALID_TARGET_NAMESPACE: target_namespace must be agent:<id> or team:<name>"
             .to_string()

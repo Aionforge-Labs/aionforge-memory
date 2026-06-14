@@ -230,6 +230,18 @@ impl Store {
         Ok(items)
     }
 
+    /// Every work item at this caller-defined `level`, in ascending id order (`level` is indexed,
+    /// so a probe). The OPEN level vocabulary means any harness term resolves without a recompile.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] if the lookup fails or a stored item cannot be decoded.
+    pub fn work_items_by_level(&self, level: &str) -> Result<Vec<WorkItem>, StoreError> {
+        let snapshot = self.graph().read();
+        let mut items = work_items_where(&snapshot, LEVEL, &string_value(level)?)?;
+        items.sort_by_key(|item| item.identity.id);
+        Ok(items)
+    }
+
     /// Advance a work item's lifecycle status as a guarded compare-and-set, recording the
     /// transition in the signed audit trail (work-structure design §2).
     ///
