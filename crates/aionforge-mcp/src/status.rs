@@ -1,6 +1,6 @@
 //! Compact MCP server status reporting.
 
-use aionforge_engine::MemoryCounts;
+use aionforge_engine::{MemoryCounts, WorkCounts};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
@@ -64,17 +64,20 @@ impl AuthPosture {
 /// Render compact MCP server status.
 ///
 /// `counts` is the live, engine-native memory census (global operator telemetry): its
-/// `total()` rides the base `[server]` line as `memories=N`, and the per-kind breakdown
-/// is emitted only under verbose.
+/// `total()` rides the base `[server]` line as `memories=N`, and the per-kind breakdown is
+/// emitted only under verbose. `work_counts` is the separate work-item census: its `total()`
+/// rides the base line as `work_items=N` (never merged into `memories=` — work items are not
+/// memories), and the per-status breakdown rides a verbose `work_statuses=` line.
 #[must_use]
 pub fn server_status_tool(
     resource_count: usize,
     counts: MemoryCounts,
+    work_counts: WorkCounts,
     params: ServerStatusToolParams,
     auth: &AuthPosture,
 ) -> String {
     let mut out = format!(
-        "[server] version={} build_sha={} build={} tools={} resources={} prompts={} transports={} sampling=false recall_wrapper=recalled-memory-context mutating_tools={} memories={} auth_enabled={} auth_issuers={}",
+        "[server] version={} build_sha={} build={} tools={} resources={} prompts={} transports={} sampling=false recall_wrapper=recalled-memory-context mutating_tools={} memories={} work_items={} auth_enabled={} auth_issuers={}",
         env!("CARGO_PKG_VERSION"),
         BUILD_SHA,
         BUILD_STATUS,
@@ -84,6 +87,7 @@ pub fn server_status_tool(
         surface::TRANSPORTS_COMPACT,
         surface::tool_count_by_class(ToolClass::Mutating),
         counts.total(),
+        work_counts.total(),
         auth.enabled,
         auth.issuer_origins.len(),
     );
@@ -103,6 +107,15 @@ pub fn server_status_tool(
             counts.notes,
             counts.skills,
             counts.bad_patterns
+        ));
+        out.push('\n');
+        out.push_str(&format!(
+            "work_statuses=todo={} in_progress={} blocked={} done={} dropped={}",
+            work_counts.todo,
+            work_counts.in_progress,
+            work_counts.blocked,
+            work_counts.done,
+            work_counts.dropped,
         ));
         // The trusted issuer ORIGINS (never JWKS, keys, the resource audience, or any token/claim)
         // are listed only when auth is enabled and at least one issuer is configured. This is the
@@ -135,19 +148,32 @@ mod tests {
         }
     }
 
+    fn sample_work_counts() -> WorkCounts {
+        WorkCounts {
+            todo: 2,
+            in_progress: 1,
+            blocked: 0,
+            done: 1,
+            dropped: 0,
+        }
+    }
+
     #[test]
     fn compact_status_reports_counts_and_posture() {
         let out = server_status_tool(
             8,
             sample_counts(),
+            sample_work_counts(),
             ServerStatusToolParams { verbose: None },
             &AuthPosture::disabled(),
         );
         assert!(out.starts_with("[server] "), "{out}");
-        assert!(out.contains("tools=13"), "{out}");
+        assert!(out.contains("tools=18"), "{out}");
         assert!(out.contains("resources=8"), "{out}");
         assert!(out.contains("sampling=false"), "{out}");
         assert!(out.contains("memories=6"), "{out}");
+        // The work-item census rides its own field, never merged into memories=.
+        assert!(out.contains("work_items=4"), "{out}");
         // Build provenance rides the base line: the SHA field and a clean/dirty/unknown
         // verdict are always present (the value is whatever the build baked in).
         assert!(out.contains("build_sha="), "{out}");
@@ -174,6 +200,7 @@ mod tests {
         let out = server_status_tool(
             8,
             sample_counts(),
+            sample_work_counts(),
             ServerStatusToolParams {
                 verbose: Some(true),
             },
@@ -201,34 +228,49 @@ mod tests {
         let out = server_status_tool(
             8,
             sample_counts(),
+            sample_work_counts(),
             ServerStatusToolParams {
                 verbose: Some(true),
             },
             &AuthPosture::disabled(),
         );
-        assert!(out.contains("read_like_tools=server_status,search,read_memory,session_manifest"));
-        assert!(out.contains(
-            "mutating_tools=capture,batch_capture,consolidate,forget,unforget,pin,unpin"
-        ));
+        // The full rosters, in TOOLS order — the work tools append after the existing ones.
+        assert!(
+            out.contains(
+                "read_like_tools=server_status,search,read_memory,session_manifest,consolidation_status,audit_history,work_tree,work_query"
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains(
+                "mutating_tools=capture,batch_capture,consolidate,forget,unforget,pin,unpin,work_create,work_advance,work_link"
+            ),
+            "{out}"
+        );
         assert!(out.contains("aionforge://policy/tool-approval"));
         // The per-kind breakdown line is exact.
         let kinds_line = "kinds=episodes=3 facts=2 entities=1 notes=0 skills=0 bad_patterns=0";
         assert!(out.contains(kinds_line), "{out}");
-        // ...and it sits between the mutating_tools roster line and the policy line.
-        // Anchor to the verbose roster specifically — the base [server] line also
-        // contains "mutating_tools=", so a plain find() would match that one instead.
+        // The per-status work breakdown line is exact, and sits just after kinds.
+        let work_line = "work_statuses=todo=2 in_progress=1 blocked=0 done=1 dropped=0";
+        assert!(out.contains(work_line), "{out}");
+        // Ordering: mutating roster < kinds < work_statuses < policy. Anchor to the verbose
+        // roster specifically — the base [server] line also contains "mutating_tools=".
         let mutating_at = out
-            .find("mutating_tools=capture,batch_capture,consolidate,forget,unforget,pin,unpin")
+            .find("mutating_tools=capture,batch_capture,consolidate,forget,unforget,pin,unpin,work_create,work_advance,work_link")
             .expect("verbose output has a mutating_tools roster line");
         let kinds_at = out
             .find(kinds_line)
             .expect("verbose output has a kinds line");
+        let work_at = out
+            .find(work_line)
+            .expect("verbose output has a work_statuses line");
         let policy_at = out
             .find("policy=allow_read_like_ask_mutations")
             .expect("verbose output has a policy line");
         assert!(
-            mutating_at < kinds_at && kinds_at < policy_at,
-            "kinds line must fall between mutating_tools and policy: {out}"
+            mutating_at < kinds_at && kinds_at < work_at && work_at < policy_at,
+            "work_statuses line must fall between kinds and policy: {out}"
         );
     }
 }

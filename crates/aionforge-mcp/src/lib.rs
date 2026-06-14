@@ -27,6 +27,7 @@ mod surface;
 mod telemetry;
 mod tools;
 mod validated;
+mod work;
 
 pub use auth_validator::{AuthValidators, AuthValidatorsError};
 pub use http_body_limit::{DEFAULT_MAX_REQUEST_BODY_BYTES, RequestBodyLimitService};
@@ -63,6 +64,11 @@ pub use tools::{
     batch_capture_tool, capture_tool, search_tool,
 };
 pub use validated::{ValidatedPrincipal, validated_principal_from_extensions};
+pub use work::{
+    WorkAdvanceToolParams, WorkCreateToolParams, WorkLinkToolParams, WorkQueryToolParams,
+    WorkTreeToolParams, work_advance_tool, work_create_tool, work_link_tool, work_query_tool,
+    work_tree_tool,
+};
 
 use std::sync::Arc;
 
@@ -190,9 +196,15 @@ impl<E: Embedder + 'static> AionforgeMcp<E> {
             .memory
             .memory_counts()
             .map_err(|e| format!("ERR_SERVER_STATUS {e}"))?;
+        let work_counts = self
+            .memory
+            .store()
+            .work_counts()
+            .map_err(|e| format!("ERR_SERVER_STATUS {e}"))?;
         Ok(server_status_tool(
             resources::static_resource_count(),
             counts,
+            work_counts,
             params.0,
             &self.auth,
         ))
@@ -434,6 +446,99 @@ impl<E: Embedder + 'static> AionforgeMcp<E> {
         let params = params.0;
         let extension = validated_principal_from_extensions(&context.extensions);
         audit_history_tool(&self.memory, params, extension, self.auth_enabled())
+    }
+
+    #[tool(
+        description = "Create a work item at a caller-defined level in the writer's or an authorized namespace.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
+    )]
+    async fn work_create(
+        &self,
+        params: Parameters<WorkCreateToolParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<String, String> {
+        let now = jiff::Zoned::now();
+        let extension = validated_principal_from_extensions(&context.extensions);
+        work_create_tool(&self.memory, params.0, &now, extension, self.auth_enabled())
+    }
+
+    #[tool(
+        description = "Advance a work item's status as a guarded compare-and-set, recording a signed transition.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn work_advance(
+        &self,
+        params: Parameters<WorkAdvanceToolParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<String, String> {
+        let now = jiff::Zoned::now();
+        let extension = validated_principal_from_extensions(&context.extensions);
+        work_advance_tool(&self.memory, params.0, &now, extension, self.auth_enabled())
+    }
+
+    #[tool(
+        description = "Attach a HAS_TAG classification to a work item, minting the tag on first use.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn work_link(
+        &self,
+        params: Parameters<WorkLinkToolParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<String, String> {
+        let now = jiff::Zoned::now();
+        let extension = validated_principal_from_extensions(&context.extensions);
+        work_link_tool(&self.memory, params.0, &now, extension, self.auth_enabled())
+    }
+
+    #[tool(
+        description = "Read a work item's subtree as a recalled-memory-context wrapper of visible nodes.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn work_tree(
+        &self,
+        params: Parameters<WorkTreeToolParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<String, String> {
+        let extension = validated_principal_from_extensions(&context.extensions);
+        work_tree_tool(&self.memory, params.0, extension, self.auth_enabled())
+    }
+
+    #[tool(
+        description = "Query work items by lifecycle status and/or caller-defined level, scoped to visible namespaces.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn work_query(
+        &self,
+        params: Parameters<WorkQueryToolParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<String, String> {
+        let extension = validated_principal_from_extensions(&context.extensions);
+        work_query_tool(&self.memory, params.0, extension, self.auth_enabled())
     }
 }
 
