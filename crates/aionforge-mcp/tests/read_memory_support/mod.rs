@@ -24,6 +24,7 @@ use aionforge_domain::nodes::episodic::{ConsolidationState, Episode};
 use aionforge_domain::nodes::forensic::{AuditEvent, AuditKind};
 use aionforge_domain::nodes::procedural::{BadPattern, Skill};
 use aionforge_domain::nodes::semantic::{Entity, Fact};
+use aionforge_domain::nodes::work::WorkItem;
 use aionforge_domain::time::Timestamp;
 use aionforge_domain::value::ObjectValue;
 use aionforge_engine::{Memory, MemoryConfig};
@@ -37,6 +38,7 @@ pub use aionforge_domain::namespace::Namespace;
 pub use aionforge_domain::nodes::core::BlockKind;
 pub use aionforge_domain::nodes::episodic::Role;
 pub use aionforge_domain::nodes::semantic::FactStatus;
+pub use aionforge_domain::nodes::work::WorkStatus;
 pub use aionforge_mcp::{AuthEnabled, read_memory_tool};
 
 #[derive(Clone)]
@@ -383,6 +385,50 @@ pub fn seed_bad_pattern(
         .store()
         .save_bad_pattern(&pattern, skill_node)
         .expect("seed bad pattern");
+    id
+}
+
+/// Seed one work item straight into the store. Returns its domain id. Identity-only — no
+/// Stats, no embedding — so it never trips the dimension check the memory kinds carry.
+#[allow(clippy::too_many_arguments)]
+pub fn seed_work_item(
+    memory: &Memory<FakeEmbedder>,
+    level: &str,
+    title: &str,
+    body: Option<&str>,
+    status: WorkStatus,
+    parent: Option<Id>,
+    ordinal: u64,
+    namespace: Namespace,
+) -> Id {
+    let id = Id::generate();
+    let item = WorkItem {
+        identity: ident(id, namespace, false),
+        title: title.to_string(),
+        body: body.map(str::to_string),
+        level: level.to_string(),
+        work_status: status,
+        parent_id: parent,
+        ordinal,
+    };
+    memory
+        .store()
+        .save_work_item(&item)
+        .expect("seed work item");
+    id
+}
+
+/// Seed (mint) one tag straight into the store. Returns its content-addressed domain id.
+pub fn seed_tag(
+    memory: &Memory<FakeEmbedder>,
+    slug: &str,
+    display: Option<&str>,
+    namespace: Namespace,
+) -> Id {
+    let (id, _) = memory
+        .store()
+        .ensure_tag(&namespace, slug, display, &now())
+        .expect("seed tag");
     id
 }
 

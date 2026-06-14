@@ -11,7 +11,7 @@ mod common;
 use aionforge_domain::ids::Id;
 use aionforge_domain::namespace::Namespace;
 use aionforge_domain::nodes::work::{WorkItem, WorkStatus};
-use aionforge_store::BoundQuery;
+use aionforge_store::{BoundQuery, QueryResult, Store, Value};
 
 use common::{entity, identity, store, ts, zdt};
 
@@ -419,4 +419,227 @@ fn reading_a_wrong_kind_node_as_a_work_item_fails() {
         .expect("ensure tag");
     // A Tag node is missing the work-item required fields; decoding it as one fails closed.
     assert!(store.work_item_by_node_id(tag_node).is_err());
+}
+
+#[test]
+fn set_parent_attaches_clears_and_is_idempotent() {
+    let store = store();
+    let root = work_item("milestone", "M", WorkStatus::InProgress, None, 0);
+    let child = work_item("task", "c", WorkStatus::Todo, None, 0);
+    store.save_work_item(&root).expect("save root");
+    store.save_work_item(&child).expect("save child");
+
+    // Attach: the child becomes reachable under the root.
+    let moved = store
+        .set_parent(&child.identity.id, Some(&root.identity.id))
+        .expect("attach parent");
+    assert_eq!(
+        moved.parent_id,
+        Some(root.identity.id),
+        "returns the moved item"
+    );
+    let kids: Vec<Id> = store
+        .work_items_by_parent(&root.identity.id)
+        .expect("kids")
+        .iter()
+        .map(|k| k.identity.id)
+        .collect();
+    assert_eq!(
+        kids,
+        vec![child.identity.id],
+        "child now reachable under root"
+    );
+
+    // Idempotent: re-attaching to the same parent returns unchanged and writes nothing.
+    let again = store
+        .set_parent(&child.identity.id, Some(&root.identity.id))
+        .expect("idempotent attach");
+    assert_eq!(again.parent_id, Some(root.identity.id));
+
+    // Clear to a root: the parent_id property is REMOVED (absence, not null), so the parent probe
+    // no longer finds it and a fresh read agrees.
+    let cleared = store
+        .set_parent(&child.identity.id, None)
+        .expect("clear parent");
+    assert!(cleared.parent_id.is_none(), "cleared to a root");
+    assert!(
+        store
+            .work_items_by_parent(&root.identity.id)
+            .expect("kids after clear")
+            .is_empty(),
+        "no longer reachable under the old parent",
+    );
+    let read = store
+        .work_item_by_id(&child.identity.id)
+        .expect("read")
+        .expect("present");
+    assert!(
+        read.parent_id.is_none(),
+        "stored item has no parent_id property"
+    );
+}
+
+#[test]
+fn set_parent_on_an_unknown_item_errors() {
+    let store = store();
+    assert!(store.set_parent(&Id::generate(), None).is_err());
+}
+
+#[test]
+fn reorder_moves_siblings_and_is_idempotent() {
+    let store = store();
+    let parent = work_item("milestone", "M", WorkStatus::InProgress, None, 0);
+    store.save_work_item(&parent).expect("save parent");
+    let pid = parent.identity.id;
+    let a = work_item("task", "a", WorkStatus::Todo, Some(pid), 0);
+    let b = work_item("task", "b", WorkStatus::Todo, Some(pid), 1);
+    store.save_work_item(&a).expect("save a");
+    store.save_work_item(&b).expect("save b");
+
+    // Push a behind b (a: 0 -> 5), so siblings come back b, a.
+    let moved = store.reorder(&a.identity.id, 5).expect("reorder a");
+    assert_eq!(moved.ordinal, 5);
+    let order: Vec<Id> = store
+        .work_items_by_parent(&pid)
+        .expect("kids")
+        .iter()
+        .map(|k| k.identity.id)
+        .collect();
+    assert_eq!(order, vec![b.identity.id, a.identity.id], "b now leads a");
+
+    // Idempotent: the same ordinal returns unchanged and writes nothing.
+    let same = store
+        .reorder(&a.identity.id, 5)
+        .expect("idempotent reorder");
+    assert_eq!(same.ordinal, 5);
+}
+
+#[test]
+fn attach_tag_mints_then_dedups_the_edge() {
+    let store = store();
+    let item = work_item("task", "tag me", WorkStatus::Todo, None, 0);
+    store.save_work_item(&item).expect("save item");
+
+    let tag_id = store
+        .attach_tag(
+            WorkItem::LABEL,
+            &item.identity.id,
+            &ns(),
+            "auth",
+            Some("Auth"),
+            &ts(T1),
+        )
+        .expect("first attach");
+    // A second attach on the same (item, slug) is a no-op on both axes.
+    let tag_id_again = store
+        .attach_tag(
+            WorkItem::LABEL,
+            &item.identity.id,
+            &ns(),
+            "auth",
+            None,
+            &ts(T1),
+        )
+        .expect("second attach");
+    assert_eq!(tag_id, tag_id_again, "same content-addressed tag");
+
+    // Exactly one HAS_TAG edge and one Tag node despite two attaches.
+    assert_eq!(
+        count(
+            &store,
+            "MATCH (:WorkItem)-[r:HAS_TAG]->(:Tag) RETURN count(r) AS n"
+        ),
+        1,
+        "the edge is written once and deduped on replay",
+    );
+    assert_eq!(
+        count(&store, "MATCH (t:Tag) RETURN count(t) AS n"),
+        1,
+        "one tag node"
+    );
+
+    // The tag was minted in the item's namespace and resolves by slug.
+    let tag = store
+        .tag_by_slug(&ns(), "auth")
+        .expect("read")
+        .expect("present");
+    assert_eq!(tag.identity.id, tag_id);
+}
+
+#[test]
+fn attach_tag_to_a_missing_source_errors_and_mints_no_tag() {
+    let store = store();
+    assert!(
+        store
+            .attach_tag(
+                WorkItem::LABEL,
+                &Id::generate(),
+                &ns(),
+                "ghost",
+                None,
+                &ts(T1)
+            )
+            .is_err(),
+        "a missing source is rejected",
+    );
+    assert!(
+        store.tag_by_slug(&ns(), "ghost").expect("read").is_none(),
+        "the source is resolved before the tag is minted, so no orphan tag is left behind",
+    );
+}
+
+#[test]
+fn work_counts_group_by_status_and_never_touch_the_memory_census() {
+    let store = store();
+    let memories_before = store.memory_counts().expect("memory counts").total();
+
+    for (title, status) in [
+        ("a", WorkStatus::Todo),
+        ("b", WorkStatus::Todo),
+        ("c", WorkStatus::InProgress),
+        ("d", WorkStatus::Done),
+    ] {
+        store
+            .save_work_item(&work_item("task", title, status, None, 0))
+            .expect("save");
+    }
+    // A tag is also exempt from the memory census.
+    store.ensure_tag(&ns(), "x", None, &ts(T1)).expect("tag");
+    // A real memory (entity) is counted as a memory, never as work — the cross-check.
+    store
+        .insert_entity(&entity("real-memory"))
+        .expect("insert entity");
+
+    let wc = store.work_counts().expect("work counts");
+    assert_eq!(wc.todo, 2);
+    assert_eq!(wc.in_progress, 1);
+    assert_eq!(wc.done, 1);
+    assert_eq!(wc.blocked, 0);
+    assert_eq!(wc.dropped, 0);
+    assert_eq!(
+        wc.total(),
+        4,
+        "the five buckets sum to exactly the four work items"
+    );
+
+    assert_eq!(
+        store.memory_counts().expect("memory counts").total(),
+        memories_before + 1,
+        "the entity is a memory; the four work items and the tag are not",
+    );
+}
+
+/// Scalar count of a `RETURN count(...) AS n` probe (mirrors the work_status.rs helper).
+fn count(store: &Store, pattern: &str) -> u64 {
+    match store
+        .execute(&BoundQuery::new(pattern))
+        .expect("count query")
+    {
+        QueryResult::Rows(rows) => match rows.value(0, 0) {
+            Some(Value::Uint(n)) => *n,
+            Some(Value::Int(n)) => u64::try_from(*n).unwrap_or(0),
+            _ => 0,
+        },
+        _ => 0,
+    }
 }

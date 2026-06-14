@@ -67,6 +67,7 @@ pub use config::{
 };
 pub use consolidation::{
     ConsolidationCursor, ConsolidationWorkItem, LagSnapshot, MEMORY_LABELS, MemoryCounts,
+    WorkCounts,
 };
 pub use cooling::{CoolWrite, CoolingCandidate, CoolingCursor};
 pub use core_block_write::{CoreAttestation, CoreBlockReplacement, CoreEditWrite};

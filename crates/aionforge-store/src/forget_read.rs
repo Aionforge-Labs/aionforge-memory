@@ -21,6 +21,7 @@ use aionforge_domain::nodes::core::CoreBlock;
 use aionforge_domain::nodes::episodic::Episode;
 use aionforge_domain::nodes::procedural::{BadPattern, Skill};
 use aionforge_domain::nodes::semantic::{Entity, Fact};
+use aionforge_domain::nodes::work::{Tag, WorkItem};
 use selene_core::{PropertyMap, Value, db_string};
 use selene_graph::RowIndex;
 use serde::{Deserialize, Serialize};
@@ -116,6 +117,10 @@ pub enum ResolvedMemory {
     BadPattern(BadPattern),
     /// An identity-tier core block (persona/commitment/redline).
     Core(CoreBlock),
+    /// A work-tracking item (Identity-only; not a forgettable memory).
+    WorkItem(WorkItem),
+    /// A classification tag (Identity-only; not a forgettable memory).
+    Tag(Tag),
 }
 
 impl ResolvedMemory {
@@ -131,6 +136,8 @@ impl ResolvedMemory {
             Self::Skill(memory) => &memory.identity,
             Self::BadPattern(memory) => &memory.identity,
             Self::Core(memory) => &memory.identity,
+            Self::WorkItem(memory) => &memory.identity,
+            Self::Tag(memory) => &memory.identity,
         }
     }
 }
@@ -319,6 +326,10 @@ impl Store {
                 CoreBlock::LABEL => {
                     ResolvedMemory::Core(crate::core_block::from_properties(props)?)
                 }
+                // Identity-only kinds: decoded by their own `from_properties` (never
+                // `blocks_from_properties`, which requires a Stats block these lack).
+                WorkItem::LABEL => ResolvedMemory::WorkItem(crate::work::from_properties(props)?),
+                Tag::LABEL => ResolvedMemory::Tag(crate::tag::from_properties(props)?),
                 _ => continue,
             };
             return Ok(Some(resolved));

@@ -8,6 +8,7 @@ use aionforge_domain::ids::Id;
 use aionforge_domain::nodes::core::{BlockKind, CoreBlock};
 use aionforge_domain::nodes::episodic::{Episode, Role};
 use aionforge_domain::nodes::semantic::FactStatus;
+use aionforge_domain::nodes::work::{Tag, WorkItem, WorkStatus};
 use aionforge_domain::time::Timestamp;
 // `ResolvedMemory` is a store-crate type; `aionforge-mcp` depends on the store only through
 // the engine re-export (the store is a dev-dependency here), so it is named via the engine.
@@ -174,13 +175,14 @@ pub fn read_memory_tool<E: Embedder>(
     }
 
     // The read set is the six forgettable/pointable kinds (shared with forget/pin via
-    // MCP_MEMORY_LABELS so read and write breadth stay in lockstep) plus `CoreBlock` —
-    // forgetting-exempt, so absent from the write set, but `search` surfaces kind="core"
-    // ids that a by-id read must be able to resolve too.
+    // MCP_MEMORY_LABELS so read and write breadth stay in lockstep) plus `CoreBlock` and the
+    // Identity-only work-tracking kinds (`WorkItem`, `Tag`) — all forgetting-exempt, so absent
+    // from the write set, but a by-id read must still resolve their ids. Appended here (NOT
+    // folded into MCP_MEMORY_LABELS), so the exempt kinds never enter the forget/pin breadth.
     let read_labels: Vec<&str> = crate::lifecycle::MCP_MEMORY_LABELS
         .iter()
         .copied()
-        .chain(std::iter::once(CoreBlock::LABEL))
+        .chain([CoreBlock::LABEL, WorkItem::LABEL, Tag::LABEL])
         .collect();
 
     // Fetch each id (each under its own single snapshot); missing and unauthorized ids are
@@ -376,7 +378,7 @@ fn episode_visible(episode: &Episode, visible: &VisibleSet, surface_system: bool
 ///    hidden unless the reader holds the capability *and* opted in — for every kind, even
 ///    the roleless ones.
 /// 3. **Role gate (Episode-only)** — a `Role::System` turn stays hidden unless
-///    `surface_system`. Only `Episode` carries a `Role`; the other six kinds have none, so
+///    `surface_system`. Only `Episode` carries a `Role`; the other eight kinds have none, so
 ///    this conjunct is vacuously satisfied for them (matching `search`/`resolve_fact`, which
 ///    gate the roleless kinds on namespace + expiry alone).
 ///
@@ -388,7 +390,7 @@ fn memory_visible(memory: &ResolvedMemory, visible: &VisibleSet, surface_system:
         && visible.contains(&identity.namespace)
         && match memory {
             // Only episodes carry a Role, and a system-role turn is the instruction-injection
-            // vector the system reveal gates. The six roleless kinds have no such vector, so
+            // vector the system reveal gates. The eight roleless kinds have no such vector, so
             // they are gated by namespace + expiry alone — matching recall, which surfaces
             // e.g. core blocks on live + namespace-visible (selection.rs `core_block_entries`,
             // with no role/surface_system gate). Keeping read consistent with recall is what
@@ -564,6 +566,48 @@ fn render_memory_line(
             block_kind_tag(core.block_kind),
             tag_escape(&truncate_chars(&core.content, max_chars)),
         ),
+        ResolvedMemory::WorkItem(item) => {
+            // The headline is the title; the optional body rides after it (mirroring the Entity
+            // arm's `name — description`). Identity-only — no Stats, no supersession.
+            let mut body = item.title.clone();
+            if let Some(detail) = &item.body {
+                body.push_str(" — ");
+                body.push_str(detail);
+            }
+            format!(
+                "<memory id=\"{}\" kind=\"work_item\" ns=\"{}\" ingested_at=\"{}\" level=\"{}\" work_status=\"{}\" parent=\"{}\" ordinal=\"{}\">{}</memory>",
+                attr_escape(&item.identity.id.to_string()),
+                attr_escape(&item.identity.namespace.to_string()),
+                attr_escape(&item.identity.ingested_at.to_string()),
+                attr_escape(&item.level),
+                work_status_tag(item.work_status),
+                attr_escape(&render_optional_id(item.parent_id.as_ref())),
+                item.ordinal,
+                tag_escape(&truncate_chars(&body, max_chars)),
+            )
+        }
+        ResolvedMemory::Tag(tag) => format!(
+            "<memory id=\"{}\" kind=\"tag\" ns=\"{}\" ingested_at=\"{}\" slug=\"{}\">{}</memory>",
+            attr_escape(&tag.identity.id.to_string()),
+            attr_escape(&tag.identity.namespace.to_string()),
+            attr_escape(&tag.identity.ingested_at.to_string()),
+            attr_escape(&tag.slug),
+            tag_escape(&truncate_chars(
+                tag.display.as_deref().unwrap_or(&tag.slug),
+                max_chars
+            )),
+        ),
+    }
+}
+
+/// The stable scalar tag for a work item's lifecycle status (matches the domain `snake_case`).
+fn work_status_tag(status: WorkStatus) -> &'static str {
+    match status {
+        WorkStatus::Todo => "todo",
+        WorkStatus::InProgress => "in_progress",
+        WorkStatus::Blocked => "blocked",
+        WorkStatus::Done => "done",
+        WorkStatus::Dropped => "dropped",
     }
 }
 

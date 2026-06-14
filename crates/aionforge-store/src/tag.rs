@@ -9,6 +9,7 @@
 //! and is exempt from decay/forgetting by absence from the maintenance scan sets.
 
 use aionforge_domain::blocks::Identity;
+use aionforge_domain::edges::HasTag;
 use aionforge_domain::ids::Id;
 use aionforge_domain::namespace::Namespace;
 use aionforge_domain::nodes::work::Tag;
@@ -17,10 +18,11 @@ use selene_core::{DbString, LabelSet, NodeId, PropertyMap, Value, db_string};
 use selene_graph::{RowIndex, SeleneGraph};
 
 use crate::convert::{
-    as_id, as_namespace, as_str, as_timestamp, id_value, key, namespace_value, string_value,
-    timestamp_value,
+    as_id, as_namespace, as_str, as_timestamp, id_value, key, namespace_value, node_by_id,
+    string_value, timestamp_value,
 };
 use crate::error::StoreError;
+use crate::materialize::ensure_edge;
 use crate::store::Store;
 
 // Identity block (§3).
@@ -194,5 +196,68 @@ impl Store {
                 .transpose()?),
             None => Ok(None),
         }
+    }
+
+    /// Attach a `HAS_TAG` edge from a source node to the tag for `(namespace, slug)`, minting the
+    /// tag on first use (work-structure design §3). Returns the tag's domain id.
+    ///
+    /// Idempotent on both axes: the tag id is content-addressed over `(namespace, slug)` (a repeat
+    /// mint is a no-op) and the edge is written only when absent (the `ensure_edge` write-when-
+    /// absent discipline), so re-tagging an already-tagged pair changes nothing. The source is
+    /// resolved FIRST, so a bad source never mints an orphan tag; the tag and its edge are created
+    /// in ONE transaction, so a tagged node never observes a tag without its edge.
+    ///
+    /// `source_label` must be one of the `HAS_TAG` `FROM`-union kinds declared in the catalog (the
+    /// seven retrievable memory kinds plus `WorkItem`); an out-of-union label is rejected by the
+    /// strict schema at edge-create time. The source node is resolved by `(source_label,
+    /// source_id)`.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] if the source node is not found, or a lookup, create, or commit fails.
+    pub fn attach_tag(
+        &self,
+        source_label: &str,
+        source_id: &Id,
+        namespace: &Namespace,
+        slug: &str,
+        display: Option<&str>,
+        ingested_at: &Timestamp,
+    ) -> Result<Id, StoreError> {
+        let tag_id = content_id(namespace, slug);
+        let tag = Tag {
+            identity: Identity {
+                id: tag_id,
+                ingested_at: ingested_at.clone(),
+                namespace: namespace.clone(),
+                expired_at: None,
+            },
+            slug: slug.to_string(),
+            display: display.map(str::to_string),
+        };
+        let (labels, props) = to_node(&tag)?;
+
+        let mut txn = self.graph().begin_write();
+        {
+            let mut mutator = txn.mutator();
+            // Resolve the source first: a missing source must fail before any tag is minted.
+            let source_node =
+                node_by_id(mutator.read(), source_label, source_id)?.ok_or_else(|| {
+                    StoreError::decode(format!("{source_label} {source_id} not found to tag"))
+                })?;
+            // Mint-or-resolve the tag in this same txn (a concurrent writer may have minted it).
+            let tag_node = match tag_node_id_in(mutator.read(), &tag_id)? {
+                Some(existing) => existing,
+                None => mutator.create_node(labels, props)?,
+            };
+            ensure_edge(
+                &mut mutator,
+                HasTag::LABEL,
+                source_node,
+                tag_node,
+                PropertyMap::from_pairs(Vec::new())?,
+            )?;
+        }
+        txn.commit()?;
+        Ok(tag_id)
     }
 }
