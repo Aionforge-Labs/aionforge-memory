@@ -325,4 +325,87 @@ impl Store {
         txn.commit()?;
         Ok(updated)
     }
+
+    /// Re-parent a work item, returning the updated item (work-structure design §2).
+    ///
+    /// One atomic commit: resolve by domain id, read the current `parent_id`, and — when it
+    /// already equals `new_parent_id` — return `Ok(current)` with no write (the idempotency gate,
+    /// mirroring [`Store::advance_work_status`]). Setting a parent writes the `parent_id` scalar;
+    /// clearing it (to a root) REMOVES the property, since absence — not a null — is the "no
+    /// parent" semantic the `parent_id` index probes by. Re-parenting is NOT audited (it is not a
+    /// lifecycle transition) and NOT cycle-guarded here: the self-parent/cycle/orphan guard is a
+    /// higher-layer (tool-surface) concern, kept out of the mechanical persistence.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] if no work item carries `id`, or a mutation or the commit fails.
+    pub fn set_parent(&self, id: &Id, new_parent_id: Option<&Id>) -> Result<WorkItem, StoreError> {
+        let mut txn = self.graph().begin_write();
+        let updated = {
+            let mut mutator = txn.mutator();
+            let node = work_item_node_id_in(mutator.read(), id)?
+                .ok_or_else(|| StoreError::decode(format!("work item {id} not found")))?;
+            let current = {
+                let read = mutator.read();
+                let props = read
+                    .node_properties(node)
+                    .ok_or_else(|| StoreError::decode("work item vanished mid-reparent"))?;
+                from_properties(props)?
+            };
+            // No-op gate: re-parenting to the parent it already has writes nothing.
+            if current.parent_id.as_ref() == new_parent_id {
+                return Ok(current);
+            }
+            // Set the scalar to a parent, or REMOVE it to make the item a root — absence is the
+            // "no parent" the index probes by, so clearing must drop the property, not null it.
+            let diff = match new_parent_id {
+                Some(parent) => {
+                    PropertyDiff::new([(db_string(PARENT_ID)?, id_value(parent)?)], [])?
+                }
+                None => PropertyDiff::new([], [db_string(PARENT_ID)?])?,
+            };
+            mutator.update_node(node, LabelDiff::new([], [])?, diff)?;
+            WorkItem {
+                parent_id: new_parent_id.copied(),
+                ..current
+            }
+        };
+        txn.commit()?;
+        Ok(updated)
+    }
+
+    /// Set a work item's sibling ordinal, returning the updated item (work-structure design §2).
+    ///
+    /// One atomic commit mirroring [`Store::set_parent`]: a write to the same ordinal it already
+    /// holds is a no-op. `ordinal` is a `UINT` scalar, written directly (not through the enum
+    /// encoder). Sibling order is read by [`Store::work_items_by_parent`], which sorts by
+    /// `(ordinal, id)`. Not audited.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] if no work item carries `id`, or a mutation or the commit fails.
+    pub fn reorder(&self, id: &Id, ordinal: u64) -> Result<WorkItem, StoreError> {
+        let mut txn = self.graph().begin_write();
+        let updated = {
+            let mut mutator = txn.mutator();
+            let node = work_item_node_id_in(mutator.read(), id)?
+                .ok_or_else(|| StoreError::decode(format!("work item {id} not found")))?;
+            let current = {
+                let read = mutator.read();
+                let props = read
+                    .node_properties(node)
+                    .ok_or_else(|| StoreError::decode("work item vanished mid-reorder"))?;
+                from_properties(props)?
+            };
+            if current.ordinal == ordinal {
+                return Ok(current);
+            }
+            mutator.update_node(
+                node,
+                LabelDiff::new([], [])?,
+                PropertyDiff::new([(db_string(ORDINAL)?, Value::Uint(ordinal))], [])?,
+            )?;
+            WorkItem { ordinal, ..current }
+        };
+        txn.commit()?;
+        Ok(updated)
+    }
 }

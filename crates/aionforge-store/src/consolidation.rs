@@ -25,6 +25,7 @@ use aionforge_domain::nodes::episodic::{ConsolidationState, Episode};
 use aionforge_domain::nodes::forensic::{AuditEvent, AuditKind};
 use aionforge_domain::nodes::procedural::{BadPattern, Skill};
 use aionforge_domain::nodes::semantic::{Entity, Fact};
+use aionforge_domain::nodes::work::{WorkItem, WorkStatus};
 use aionforge_domain::time::Timestamp;
 use selene_core::{
     DbString, LabelDiff, LabelSet, NodeId, PropertyDiff, PropertyMap, Value, db_string,
@@ -166,6 +167,35 @@ impl MemoryCounts {
     #[must_use]
     pub fn total(&self) -> u64 {
         self.episodes + self.facts + self.entities + self.notes + self.skills + self.bad_patterns
+    }
+}
+
+/// A live per-status work-item census (global operator telemetry) — the work-tracking
+/// counterpart to [`MemoryCounts`].
+///
+/// Every field counts only *live* work items of that status (rows whose `expired_at` is unset),
+/// taken against one pinned snapshot so the per-status fields and [`WorkCounts::total`] agree.
+/// This is deliberately SEPARATE from the memory census: work items are exempt from forgetting
+/// and are never counted as memories, so a work item never moves [`MemoryCounts::total`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct WorkCounts {
+    /// Items awaiting a start (`todo`).
+    pub todo: u64,
+    /// Items underway (`in_progress`).
+    pub in_progress: u64,
+    /// Items blocked on a dependency (`blocked`).
+    pub blocked: u64,
+    /// Completed items (`done`).
+    pub done: u64,
+    /// Abandoned items (`dropped`).
+    pub dropped: u64,
+}
+
+impl WorkCounts {
+    /// Total live work items across every status.
+    #[must_use]
+    pub fn total(&self) -> u64 {
+        self.todo + self.in_progress + self.blocked + self.done + self.dropped
     }
 }
 
@@ -550,6 +580,53 @@ impl Store {
         counts.skills = count_label(Skill::LABEL)?;
         counts.bad_patterns = count_label(BadPattern::LABEL)?;
         Ok(counts)
+    }
+
+    /// A live per-status census of work items (operator telemetry) — the work-tracking
+    /// counterpart to [`Store::memory_counts`].
+    ///
+    /// Each [`WorkStatus`] bucket is counted against ONE pinned snapshot (so the per-status
+    /// fields and [`WorkCounts::total`] are mutually consistent) by probing the `work_status`
+    /// scalar index per status and keeping only *live* rows (those whose `expired_at` is unset —
+    /// the same liveness predicate as `memory_counts`). This census is deliberately SEPARATE
+    /// from the memory census: work items are exempt from forgetting and are never memories, so
+    /// `work_counts` and `memory_counts` share no rows and a work item never moves
+    /// [`MemoryCounts::total`].
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] if a label or property key cannot be interned.
+    pub fn work_counts(&self) -> Result<WorkCounts, StoreError> {
+        // One pinned snapshot across all five status buckets, so the fields and total() agree.
+        let snapshot = self.graph().read();
+        let label = db_string(WorkItem::LABEL)?;
+        let status_key = db_string("work_status")?;
+        let expired_key = db_string("expired_at")?;
+        let count_status = |status: WorkStatus| -> Result<u64, StoreError> {
+            let value = enum_value(&status)?;
+            let Some(rows) = snapshot.nodes_with_property_eq(&label, &status_key, &value) else {
+                return Ok(0);
+            };
+            let mut live = 0u64;
+            for row in rows.iter() {
+                let Some(node) = snapshot.node_id_for_row(RowIndex::new(row)) else {
+                    continue;
+                };
+                let Some(props) = snapshot.node_properties(node) else {
+                    continue;
+                };
+                if props.get(&expired_key).is_none() {
+                    live += 1;
+                }
+            }
+            Ok(live)
+        };
+        Ok(WorkCounts {
+            todo: count_status(WorkStatus::Todo)?,
+            in_progress: count_status(WorkStatus::InProgress)?,
+            blocked: count_status(WorkStatus::Blocked)?,
+            done: count_status(WorkStatus::Done)?,
+            dropped: count_status(WorkStatus::Dropped)?,
+        })
     }
 
     /// Snapshot the consolidation backlog for the lag metric (write-and-consolidation §3).
