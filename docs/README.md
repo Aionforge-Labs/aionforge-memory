@@ -5,6 +5,10 @@ This is reference and guides, not planning or changelogs.
 
 ## Start here
 
+- [Data model and mental model](data-model.md) - **read this first.** What the system
+  does with your information: the node/edge schema, what enters a node and how much, the
+  full capture → consolidate → recall → forget lifecycle, what an agent reads/writes and
+  what lands on its context window, and the honest limitations — with diagrams.
 - [Getting started](getting-started.md) - build, configure, validate, and run the
   single binary or Rust library.
 - [Embedding and provider guide](embedding-guide.md) - embedder config,

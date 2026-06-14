@@ -107,6 +107,15 @@ splitting. A new entity's id is a content hash over namespace, type, and the *no
 same normalization the exact-match gate uses), so two surfaces differing only in case or whitespace
 mint one id rather than splitting into duplicates, and the same surface always resolves the same way.
 
+### The cost of leaning toward splitting
+
+The split-over-merge default is a safety choice, but it has a real cost worth stating: the
+same real-world entity can **fragment into duplicate `Entity` nodes** when its surface forms
+vary beyond the exact-match and embedding-cluster thresholds. Fragmentation dilutes the
+high-precision entity-seed retrieval path and the PageRank seeds, and recall of a fragmented
+entity can miss facts attached to a sibling fragment. There is **no dedup/merge-repair tool**
+today. See [data-model.md](data-model.md) §7 for the honest-limitations framing.
+
 ## Supersession and contradiction detection
 
 `detect` is a pure function over the committed current facts (`current_support_facts`, scoped to the

@@ -41,6 +41,9 @@ The table below lists deferred work and the current safe posture.
 | Pi support | Intentionally deferred. | Read Pi's packaging/extension model and design a native integration. |
 | Semantic contradiction cooling | Drift cooling uses deterministic vector proximity to buy the detector time. | Any LLM contradiction classifier must stay off-cursor and opt-in. |
 | OAuth verifier | The crate has protected-resource metadata helpers and explicit MCP `principal` parameters for a verified host to pass identity, but the built-in HTTP server does not validate OAuth tokens or infer identity from transport state. | Full remote deployments must add an upstream OAuth verifier and map verified claims into the explicit principal object. |
+| External source references | No node carries a file/URI/path field. Provenance is sibling-node ids plus model/transport identity only, and the event body is stored inline in `Episode.content` (see [data-model.md](data-model.md) §4). | A first-class source-link field and indexable external references. |
+| Capture content sizing | No substrate-level min/max/quota on `Episode.content` — it is an unbounded string. The only byte bound is the 1 MiB Streamable-HTTP request-body limit, shared across a `batch_capture` of up to 64 items, and it does not apply to the in-process library path. | Optional ingress size/quota policy. |
+| Entity over-segmentation | Conservative, namespace-confined, split-leaning entity resolution can fragment one real-world thing into duplicate `Entity` nodes, diluting the entity-seed retrieval path; there is no merge-repair tool (see [data-model.md](data-model.md) §7). | A reconciliation/merge-repair pass with safety review. |
 
 ## Determinism boundary
 
