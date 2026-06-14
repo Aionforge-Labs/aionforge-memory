@@ -184,6 +184,7 @@ dependencies = [
  "aionforge-store",
  "serde",
  "serde_json",
+ "tracing",
 ]
 
 [[package]]

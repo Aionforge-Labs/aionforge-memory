@@ -15,6 +15,7 @@ aionforge-store = { path = "../aionforge-store", version = "0.2.2" }
 aionforge-embed = { path = "../aionforge-embed", version = "0.2.2" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+tracing = { workspace = true }
 
 [lints]
 workspace = true
