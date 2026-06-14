@@ -97,12 +97,21 @@ consolidation pipeline. They use stable operation names and bounded fields only:
 | `aionforge.consolidation.tick` | `batch_size`, `outcome`, `error`, `consolidated`, `retried`, `failed`, `pending_after` | One foreground or background consolidation tick. |
 | `aionforge.consolidation.episode` | `role`, `namespace`, `state`, `outcome`, `error` | One episode processed inside a tick. The episode id and content are never fields. |
 | `aionforge.consolidation.pass` | `pass`, `version`, `outcome`, `error` | One enabled consolidation pass applied to one episode. Pass names are stable rule identifiers from the registered pass set. |
+| `aionforge.forgetting.sweep` | `scanned`, `forgotten`, `spared`, `more`, `outcome`, `error` | One swept candidate page, mirroring `consolidation.tick`. The tally is counts only; `more` is a bool for whether a next cursor exists — never a candidate id or content. |
+| `aionforge.forgetting.point_forget` | `outcome`, `spare_reason`, `error` | One point-forget by id. `outcome` is `forgotten`, `already_forgotten`, `not_found`, or `protected`; `spare_reason` names the protection axis that held on `protected` (otherwise `none`), surfacing live what was previously only in the audit trail. |
+| `aionforge.forgetting.point_unforget` | `outcome`, `spare_reason`, `error` | One point-unforget by id. `outcome` is `restored`, `not_forgotten`, `not_found`, or `protected`; `spare_reason` as above. |
+| `aionforge.forgetting.erase` | `outcome`, `namespace`, `cascade_depth`, `cascade_nodes`, `error` | One right-to-erasure cascade. `outcome` is `erased`, `not_found`, `cascade_too_large`, or `unauthorized`. `cascade_depth`/`cascade_nodes` carry the purged shape when `erased` and the observed-at-cap shape when `cascade_too_large`; `namespace` is the refused namespace KIND on `unauthorized` — never the seed id, the principal, or content. |
+
+The forgetting spans honor the off-switch: when forgetting or erasure is **disabled**,
+the engine facade short-circuits before the forget crate is reached, so the `disabled`
+outcome stays a metric (`aionforge_forgetting_sweeps_total{outcome="disabled"}`) and no
+span is emitted — there is no work to instrument.
 
 Error fields reuse the metric vocabulary where possible: capture errors use
 `filter`, `store`, `unauthorized`, `invalid_signature`, `clock_skew`,
 `provenance_unavailable`, or `system_role_not_writable`; recall errors use `store`
 or `deadline_exceeded`; consolidation tick errors use `store` or `timeout`; pass
-errors use `transient` or `fatal`.
+errors use `transient` or `fatal`; forgetting spans use `store`.
 
 The store lifecycle also emits events on the `aionforge::store` target (complementing
 the `aionforge_store_open_*` metrics): `store opened` / `store open failed`
