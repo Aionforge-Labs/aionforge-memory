@@ -36,7 +36,7 @@ body:
     attributes:
       label: Version / commit
       description: Output of `aionforge --version`, the container image tag, or the git SHA you built from.
-      placeholder: "aionforge 0.1.0 (or git SHA abc1234)"
+      placeholder: "aionforge 0.2.0 (or git SHA abc1234)"
   - type: dropdown
     id: surface
     attributes:

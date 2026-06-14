@@ -10,7 +10,7 @@ homepage.workspace = true
 description = "L0 storage over the selene-db SharedGraph: typed read/write, parameter-bound GQL, schema/migration, and persistence."
 
 [dependencies]
-aionforge-domain = { path = "../aionforge-domain", version = "0.1.0" }
+aionforge-domain = { path = "../aionforge-domain", version = "0.2.0" }
 # `metrics` lights up selene-db's internal instrumentation (queries, commits, WAL,
 # snapshots, recoveries, cancellations, CALL-plan-cache hits, node/edge gauges) through
 # the same `metrics` 0.24 facade this workspace already records on. Off, every selene
