@@ -47,6 +47,7 @@ The repository ships an agent plugin at
 *in the task loop* rather than as an afterthought. It packages small, single-sourced
 Agent Skills for an externally configured Aionforge Memory MCP server:
 
+- `memory-bootstrap` — one-time, idempotent cold-start setup that seeds a foundational substrate for a fresh project (identity, conventions, architecture decisions, backlog skeleton), so the next session recalls real context.
 - `memory-recall` — search durable memory before planning, coding, review, or release.
 - `memory-capture` — write decisions, facts, validation results, corrections, and handoffs *as they happen*.
 - `work-tracking` — track tasks, blockers, TODOs, and plans as durable **work items** (`work_create` → `work_advance` → `work_link`), distinct from decaying memory episodes.
@@ -57,9 +58,10 @@ The skills are plain `SKILL.md` Agent Skills, so the same instructions work acro
 clients that support the format. **Claude Code** and **Codex** get the deepest
 integration; the plugin also includes compatibility manifests for Cursor. For Claude
 Code it additionally ships a default `aionforge-memory-steward` agent, the
-`/aionforge-memory:memory-session` and `/aionforge-memory:memory-handoff` commands,
-and a `SessionStart` hook that re-seeds the capture/work-tracking cadence into a fresh
-context after a startup, resume, or context compaction.
+`/aionforge-memory:memory-bootstrap`, `/aionforge-memory:memory-session`, and
+`/aionforge-memory:memory-handoff` commands, and a `SessionStart` hook that re-seeds
+the capture/work-tracking cadence into a fresh context after a startup, resume, or
+context compaction.
 
 The plugin never registers an MCP server of its own — configure the standalone
 `aionforge-memory` server separately (see
